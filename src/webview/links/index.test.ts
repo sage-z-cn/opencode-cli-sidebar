@@ -12,29 +12,112 @@ type ProvidedLink = {
     start: { x: number; y: number };
     end: { x: number; y: number };
   };
+  readonly text?: string;
   readonly activate: (...args: unknown[]) => void;
+  readonly hover?: (...args: unknown[]) => void;
+  readonly leave?: (...args: unknown[]) => void;
+  readonly dispose?: () => void;
 };
 
-const provideLinksForLine = (lineText: string) =>
-  new Promise<ReadonlyArray<ProvidedLink> | undefined>((resolve) => {
-    const getLine = vi.fn(() => ({
-      translateToString: () => lineText,
-    }));
-    const terminal = {
-      buffer: {
-        active: {
-          getLine,
-        },
-      },
-    };
+type MockRow = {
+  readonly text: string;
+  readonly isWrapped?: boolean;
+};
 
-    createLinkProvider(terminal as never).provideLinks(1, (links) => {
+type FakeElement = {
+  className: string;
+  style: Record<string, string>;
+  children: FakeElement[];
+  parent?: FakeElement;
+  removed: boolean;
+  appendChild: (child: FakeElement) => void;
+  remove: () => void;
+};
+
+const createFakeElement = (): FakeElement => {
+  const element: FakeElement = {
+    className: "",
+    style: {},
+    children: [],
+    removed: false,
+    appendChild(child) {
+      child.parent = element;
+      element.children.push(child);
+    },
+    remove() {
+      element.removed = true;
+      if (!element.parent) return;
+      const index = element.parent.children.indexOf(element);
+      if (index >= 0) {
+        element.parent.children.splice(index, 1);
+      }
+    },
+  };
+  return element;
+};
+
+const CELL_WIDTH = 10;
+const CELL_HEIGHT = 20;
+
+const createTerminalMock = (rows: ReadonlyArray<MockRow>, cols = 200) => {
+  const lines = rows.map((row) => ({
+    isWrapped: row.isWrapped ?? false,
+    length: row.text.length,
+    translateToString: () => row.text,
+  }));
+
+  const screen = createFakeElement() as FakeElement & {
+    ownerDocument: { createElement: () => FakeElement };
+    getBoundingClientRect: () => { width: number; height: number };
+  };
+  screen.ownerDocument = {
+    createElement: vi.fn(() => createFakeElement()),
+  };
+  screen.getBoundingClientRect = vi.fn(() => ({
+    width: cols * CELL_WIDTH,
+    height: rows.length * CELL_HEIGHT,
+  }));
+
+  const getLine = vi.fn((index: number) => lines[index]);
+  const terminal = {
+    cols,
+    rows: rows.length,
+    element: { querySelector: vi.fn(() => screen) },
+    buffer: { active: { viewportY: 0, getLine } },
+  };
+
+  return { terminal, screen };
+};
+
+const provideLinksForRows = (
+  rows: ReadonlyArray<MockRow>,
+  targetRow: number,
+  cols = 200,
+) =>
+  new Promise<ReadonlyArray<ProvidedLink> | undefined>((resolve) => {
+    const getLine = vi.fn((index: number) => {
+      const row = rows[index];
+      if (!row) {
+        return undefined;
+      }
+      return {
+        isWrapped: row.isWrapped ?? false,
+        length: row.text.length,
+        translateToString: () => row.text,
+      };
+    });
+    const terminal = { cols, buffer: { active: { getLine } } };
+
+    createLinkProvider(terminal as never).provideLinks(targetRow + 1, (links) => {
       // xterm.js passes 1-based bufferLineNumber, our code converts to
       // 0-based for getLine: getLine(bufferLineNumber - 1) = getLine(0)
-      expect(getLine).toHaveBeenCalledWith(0);
+      expect(getLine).toHaveBeenCalledWith(targetRow);
       resolve(links as unknown as ReadonlyArray<ProvidedLink> | undefined);
     });
   });
+
+const provideLinksForLine = (lineText: string) =>
+  provideLinksForRows([{ text: lineText }], 0);
 
 describe("createLinkProvider", () => {
   beforeEach(() => {
@@ -163,5 +246,221 @@ describe("createLinkProvider", () => {
         path: "liveai-server\\liveai-engine\\src\\main\\java\\com\\apexsoft\\util\\text\\TextUtil.java",
       }),
     );
+  });
+
+  it("stitches a hard-wrapped path across rows", async () => {
+    const rows = [
+      { text: "  src/webview/links/inde" },
+      { text: "  x.ts" },
+    ];
+
+    const first = await provideLinksForRows(rows, 0);
+    expect(first).toHaveLength(1);
+    expect(first?.[0]?.text).toBe("src/webview/links/inde");
+    expect(first?.[0]?.range).toEqual({
+      start: { x: 3, y: 1 },
+      end: { x: 24, y: 1 },
+    });
+    first?.[0]?.activate();
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: "openFile",
+      path: "src/webview/links/index.ts",
+      line: undefined,
+      endLine: undefined,
+      column: undefined,
+    });
+
+    const continuation = await provideLinksForRows(rows, 1);
+    expect(continuation).toHaveLength(1);
+    expect(continuation?.[0]?.text).toBe("x.ts");
+    continuation?.[0]?.activate();
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "openFile", path: "src/webview/links/index.ts" }),
+    );
+  });
+
+  it("underlines every wrapped fragment while any fragment is hovered", async () => {
+    const rows = [
+      { text: "  src/webview/links/inde" },
+      { text: "  x.ts" },
+    ];
+    const { terminal, screen } = createTerminalMock(rows);
+    const provider = createLinkProvider(terminal as never);
+    const getLinks = (targetRow: number) =>
+      new Promise<ReadonlyArray<ProvidedLink> | undefined>((resolve) => {
+        provider.provideLinks(targetRow + 1, (links) => {
+          resolve(links as unknown as ReadonlyArray<ProvidedLink> | undefined);
+        });
+      });
+
+    const first = await getLinks(0);
+    expect(first).toHaveLength(1);
+    // Single-row links keep xterm from drawing its rectangular multi-row
+    // underline over the sidebar.
+    expect(first?.[0]?.decorations?.underline).toBe(false);
+
+    first?.[0]?.hover?.();
+
+    expect(screen.children).toHaveLength(1);
+    const layer = screen.children[0];
+    expect(layer?.children).toHaveLength(2);
+    expect(layer?.style.pointerEvents).toBe("none");
+    expect(layer?.children[0]?.style).toMatchObject({
+      left: "20px",
+      top: "0px",
+      width: "220px",
+      height: "20px",
+    });
+    expect(layer?.children[1]?.style).toMatchObject({
+      left: "20px",
+      top: "20px",
+      width: "40px",
+    });
+    expect(layer?.children[0]?.style.borderBottom).toContain("1px solid");
+    expect(layer?.children[0]?.style.pointerEvents).toBe("none");
+
+    first?.[0]?.leave?.();
+    expect(layer?.removed).toBe(true);
+    expect(screen.children).toHaveLength(0);
+
+    // Hovering the continuation row must underline the first fragment too.
+    const continuation = await getLinks(1);
+    continuation?.[0]?.hover?.();
+
+    expect(screen.children).toHaveLength(1);
+    const continuationLayer = screen.children[0];
+    expect(continuationLayer?.children).toHaveLength(2);
+    expect(continuationLayer?.children[0]?.style.width).toBe("220px");
+    expect(continuationLayer?.children[1]?.style.width).toBe("40px");
+
+    continuation?.[0]?.dispose?.();
+    expect(continuationLayer?.removed).toBe(true);
+    expect(screen.children).toHaveLength(0);
+  });
+
+  it("keeps a dot split at the wrap boundary as part of the path", async () => {
+    const rows = [
+      { text: "  src/foo/v1." },
+      { text: "  2.ts" },
+    ];
+
+    const first = await provideLinksForRows(rows, 0);
+    expect(first).toHaveLength(1);
+    first?.[0]?.activate();
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "openFile", path: "src/foo/v1.2.ts" }),
+    );
+
+    const continuation = await provideLinksForRows(rows, 1);
+    continuation?.[0]?.activate();
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "openFile", path: "src/foo/v1.2.ts" }),
+    );
+  });
+
+  it("does not join prose rows into a wrapped path", async () => {
+    const rows = [
+      { text: "  see src/components/" },
+      { text: "  and then continue" },
+      { text: "  v2.0 released" },
+    ];
+
+    expect(await provideLinksForRows(rows, 0)).toHaveLength(0);
+    expect(await provideLinksForRows(rows, 1)).toHaveLength(0);
+    expect(await provideLinksForRows(rows, 2)).toHaveLength(0);
+  });
+
+  it("does not continue a transcript fragment into the sidebar", async () => {
+    const rows = [
+      { text: "  src/foo/" },
+      { text: " ".repeat(80) + "main.js" },
+    ];
+
+    expect(await provideLinksForRows(rows, 0, 120)).toHaveLength(0);
+
+    // The sidebar token is still its own single-line link.
+    const sidebar = await provideLinksForRows(rows, 1, 120);
+    expect(sidebar).toHaveLength(1);
+    sidebar?.[0]?.activate();
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "openFile", path: "main.js" }),
+    );
+  });
+
+  it("stitches a path wrapped across three rows", async () => {
+    const rows = [
+      { text: "  src/very/long/pa" },
+      { text: "  th/to/the/fi" },
+      { text: "  le.ts" },
+    ];
+    const expected = "src/very/long/path/to/the/file.ts";
+
+    const first = await provideLinksForRows(rows, 0);
+    expect(first?.[0]?.text).toBe("src/very/long/pa");
+    first?.[0]?.activate();
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "openFile", path: expected }),
+    );
+
+    const middle = await provideLinksForRows(rows, 1);
+    expect(middle).toHaveLength(1);
+    expect(middle?.[0]?.text).toBe("th/to/the/fi");
+    middle?.[0]?.activate();
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "openFile", path: expected }),
+    );
+
+    const last = await provideLinksForRows(rows, 2);
+    expect(last).toHaveLength(1);
+    expect(last?.[0]?.text).toBe("le.ts");
+    last?.[0]?.activate();
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "openFile", path: expected }),
+    );
+  });
+
+  it("keeps sidebar text out of wrapped transcript paths", async () => {
+    const sidebar = " ".repeat(60) + "src/other/side";
+    const rows = [
+      { text: `  src/webview/links/inde${sidebar}` },
+      { text: "  x.ts" },
+    ];
+
+    const links = await provideLinksForRows(rows, 0, 120);
+
+    expect(links).toHaveLength(1);
+    links?.[0]?.activate();
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "openFile", path: "src/webview/links/index.ts" }),
+    );
+  });
+
+  it("restores a line suffix split across rows", async () => {
+    const rows = [
+      { text: "  src/foo/bar.ts:" },
+      { text: "  120" },
+    ];
+
+    const links = await provideLinksForRows(rows, 0);
+
+    expect(links).toHaveLength(1);
+    links?.[0]?.activate();
+    expect(postMessage).toHaveBeenLastCalledWith({
+      type: "openFile",
+      path: "src/foo/bar.ts",
+      line: 120,
+      endLine: undefined,
+      column: undefined,
+    });
+  });
+
+  it("does not stitch unrelated adjacent lines into a path", async () => {
+    const rows = [
+      { text: "  see src/components/" },
+      { text: "  and then continue" },
+    ];
+
+    expect(await provideLinksForRows(rows, 0)).toHaveLength(0);
+    expect(await provideLinksForRows(rows, 1)).toHaveLength(0);
   });
 });

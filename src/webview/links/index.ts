@@ -15,6 +15,12 @@ interface Link {
 }
 
 const MAX_LINE_LENGTH = 10000;
+const MAX_WRAP_ROWS = 6;
+const MAX_WRAPPED_REFERENCE_LENGTH = 4096;
+
+// OpenCode renders the transcript next to a fixed-width right pane without a
+// border character, so sidebar tokens share buffer rows with chat content.
+const OPENCODE_SIDEBAR_WIDTH = 42;
 
 type ParsedFileReference = {
   readonly path: string;
@@ -26,6 +32,32 @@ type ParsedFileReference = {
 type CandidateReference = {
   readonly text: string;
   readonly startIndex: number;
+};
+
+type LineToken = {
+  readonly text: string;
+  // Token text before trailing prose punctuation was stripped. Cross-line
+  // joins use this so a wrap after "v1." is not corrupted into "v12.ts".
+  readonly rawText: string;
+  readonly startIndex: number;
+  readonly endIndex: number;
+};
+
+type RowFragment = {
+  readonly row: number;
+  readonly token: LineToken;
+  readonly cellOffsets: ReadonlyArray<number>;
+};
+
+type CrossLineReference = {
+  readonly reference: ParsedFileReference;
+  readonly fragments: ReadonlyArray<RowFragment>;
+};
+
+type RowData = {
+  readonly text: string | null;
+  readonly cellOffsets: number[] | null;
+  readonly tokens: ReadonlyArray<LineToken>;
 };
 
 const isTokenBoundary = (char: string): boolean => {
@@ -91,17 +123,26 @@ const stripTrailingPunctuation = (text: string): string => {
   return end === text.length ? text : text.slice(0, end);
 };
 
-// Build a map from string index -> starting cell x for every char position,
+// Build a map from UTF-16 string index -> starting cell x for every position,
 // plus the total cell width at the end. Used to convert string offsets
 // (returned by the tokenizer) into xterm cell coordinates.
 const buildCellOffsets = (lineText: string): number[] => {
-  const offsets: number[] = [];
+  const offsets: number[] = new Array<number>(lineText.length + 1);
   let cell = 0;
-  for (const ch of lineText) {
-    offsets.push(cell);
-    cell += getCellWidth(ch.codePointAt(0) ?? 0);
+  let index = 0;
+
+  while (index < lineText.length) {
+    const codePoint = lineText.codePointAt(index) ?? 0;
+    const charLength = codePoint > 0xffff ? 2 : 1;
+    offsets[index] = cell;
+    if (charLength === 2) {
+      offsets[index + 1] = cell;
+    }
+    cell += getCellWidth(codePoint);
+    index += charLength;
   }
-  offsets.push(cell);
+
+  offsets[lineText.length] = cell;
   return offsets;
 };
 
@@ -132,8 +173,40 @@ const collectCandidateReferences = (
   return candidates;
 };
 
+const collectTokens = (lineText: string): LineToken[] => {
+  const tokens: LineToken[] = [];
+
+  for (const candidate of collectCandidateReferences(lineText)) {
+    const text = stripTrailingPunctuation(candidate.text);
+    if (!text) continue;
+    tokens.push({
+      text,
+      rawText: candidate.text,
+      startIndex: candidate.startIndex,
+      endIndex: candidate.startIndex + text.length,
+    });
+  }
+
+  return tokens;
+};
+
 const SINGLE_FILE_RE =
   /^[A-Za-z0-9_.-]+\.(?:c|cc|cpp|cs|css|cts|env|fish|go|h|hpp|html|java|js|json|jsx|kt|lock|lua|md|mjs|mts|php|py|rb|rs|scss|sh|swift|toml|ts|tsx|txt|yaml|yml|zsh)(?::\d+(?::\d+)?)?(?:#L?\d+(?:-L?\d+)?)?$/i;
+
+const hasNonDriveLabelPrefix = (reference: string): boolean => {
+  const colonIdx = reference.indexOf(":");
+  if (colonIdx <= 0) {
+    return false;
+  }
+
+  const beforeColon = reference.slice(0, colonIdx);
+  const afterColon = reference.slice(colonIdx + 1);
+  return (
+    !/^[A-Za-z]$/.test(beforeColon) &&
+    !reference.startsWith("file://") &&
+    afterColon.includes("/")
+  );
+};
 
 const isLikelyFileReference = (candidate: string): boolean => {
   const withoutAtPrefix = candidate.startsWith("@")
@@ -149,17 +222,8 @@ const isLikelyFileReference = (candidate: string): boolean => {
 
   // Reject label:path patterns where a non-drive-letter word precedes
   // a slash-containing path (e.g. "Error:src/file.ts", "git:some/branch").
-  const colonIdx = withoutAtPrefix.indexOf(":");
-  if (colonIdx > 0) {
-    const beforeColon = withoutAtPrefix.slice(0, colonIdx);
-    const afterColon = withoutAtPrefix.slice(colonIdx + 1);
-    if (
-      !/^[A-Za-z]$/.test(beforeColon) &&
-      !withoutAtPrefix.startsWith("file://") &&
-      afterColon.includes("/")
-    ) {
-      return false;
-    }
+  if (hasNonDriveLabelPrefix(withoutAtPrefix)) {
+    return false;
   }
 
   return (
@@ -253,60 +317,423 @@ const parseFileReference = (candidate: string): ParsedFileReference | null => {
   };
 };
 
+const PATH_TOKEN_RE = /^[@A-Za-z0-9._\-/\\~:{}#]+$/;
+
+const isPathToken = (text: string): boolean => {
+  const withoutAtPrefix = text.startsWith("@") ? text.slice(1) : text;
+  return (
+    /^[a-zA-Z0-9_\-\.\/\\~]/.test(withoutAtPrefix) &&
+    PATH_TOKEN_RE.test(text) &&
+    !hasNonDriveLabelPrefix(withoutAtPrefix)
+  );
+};
+
+const stripReferenceSuffixes = (text: string): string => {
+  const withoutAtPrefix = text.startsWith("@") ? text.slice(1) : text;
+  const withoutHash = withoutAtPrefix.replace(/#L?\d+(?:-L?\d+)?$/, "");
+  return withoutHash.replace(/:\d+(?::\d+)?$/, "");
+};
+
+const hasCompletePathEnding = (text: string): boolean => {
+  const value = stripReferenceSuffixes(text);
+  const basename = value.split(/[/\\]/).pop() ?? "";
+
+  if (!basename || basename.endsWith(".")) {
+    return false;
+  }
+
+  return /\.[A-Za-z0-9][A-Za-z0-9._-]*$/.test(basename);
+};
+
+const isIncompletePathToken = (text: string): boolean =>
+  isPathToken(text) &&
+  /[A-Za-z0-9]/.test(text) &&
+  (text.includes("/") || text.includes("\\")) &&
+  !hasCompletePathEnding(text);
+
+const isPathContinuationToken = (text: string): boolean =>
+  isPathToken(text) && /[A-Za-z0-9]/.test(text);
+
+const isPathLikeJoined = (text: string): boolean =>
+  isPathToken(text) && (text.includes("/") || text.includes("\\"));
+
+const tokenStartCell = (data: RowData, token: LineToken): number =>
+  data.cellOffsets?.[token.startIndex] ?? 0;
+
+// A wrapped path fragment is the last transcript content on its row. Any
+// following prose means the path ended there rather than continuing below.
+// Trailing dots are allowed because a wrap can split right after "v1.".
+const hasFollowingTranscriptText = (
+  data: RowData,
+  token: LineToken,
+  sidebarStart: number,
+): boolean => {
+  const text = data.text;
+  const cellOffsets = data.cellOffsets;
+  if (text === null || !cellOffsets) {
+    return false;
+  }
+
+  let index = token.endIndex;
+  while (text[index] === ".") {
+    index++;
+  }
+
+  for (; index < text.length; index++) {
+    if ((cellOffsets[index] ?? 0) >= sidebarStart) {
+      break;
+    }
+    if (!/\s/.test(text[index] ?? "")) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const createRowReader = (terminal: Terminal) => {
+  const cache = new Map<number, RowData>();
+
+  return (row: number): RowData => {
+    const cached = cache.get(row);
+    if (cached) {
+      return cached;
+    }
+
+    const line = row >= 0 ? terminal.buffer.active.getLine(row) : undefined;
+    if (!line) {
+      const data: RowData = { text: null, cellOffsets: null, tokens: [] };
+      cache.set(row, data);
+      return data;
+    }
+
+    const text = line.translateToString(true);
+    if (text.length > MAX_LINE_LENGTH) {
+      const data: RowData = { text: null, cellOffsets: null, tokens: [] };
+      cache.set(row, data);
+      return data;
+    }
+
+    const data: RowData = {
+      text,
+      cellOffsets: buildCellOffsets(text),
+      tokens: collectTokens(text),
+    };
+    cache.set(row, data);
+    return data;
+  };
+};
+
+const getSidebarStart = (terminal: Terminal): number => {
+  const cols = terminal.cols;
+  return typeof cols === "number" && cols > OPENCODE_SIDEBAR_WIDTH
+    ? cols - OPENCODE_SIDEBAR_WIDTH
+    : Number.POSITIVE_INFINITY;
+};
+
+const overlaps = (a: LineToken, b: LineToken): boolean =>
+  a.startIndex < b.endIndex && b.startIndex < a.endIndex;
+
+type HoverUnderlineManager = {
+  show(fragments: ReadonlyArray<RowFragment>, owner: object): void;
+  hide(owner: object): void;
+};
+
+const createUnderlineLayer = (
+  screen: HTMLElement,
+  terminal: Terminal,
+  fragments: ReadonlyArray<RowFragment>,
+): HTMLElement | null => {
+  const rect = screen.getBoundingClientRect();
+  const cellWidth = rect.width / terminal.cols;
+  const cellHeight = rect.height / terminal.rows;
+
+  if (
+    !Number.isFinite(cellWidth) ||
+    !Number.isFinite(cellHeight) ||
+    cellWidth <= 0 ||
+    cellHeight <= 0
+  ) {
+    return null;
+  }
+
+  const doc = screen.ownerDocument;
+  const layer = doc.createElement("div");
+  layer.className = "opencode-link-underline-layer";
+  layer.style.position = "absolute";
+  layer.style.left = "0";
+  layer.style.top = "0";
+  layer.style.width = "100%";
+  layer.style.height = "100%";
+  layer.style.pointerEvents = "none";
+  layer.style.zIndex = "6";
+
+  const viewportY = terminal.buffer.active.viewportY;
+
+  for (const fragment of fragments) {
+    const viewportRow = fragment.row - viewportY;
+    if (viewportRow < 0 || viewportRow >= terminal.rows) continue;
+
+    const startCell = fragment.cellOffsets[fragment.token.startIndex] ?? 0;
+    const endCell = fragment.cellOffsets[fragment.token.endIndex] ?? startCell;
+    if (endCell <= startCell) continue;
+
+    const line = doc.createElement("div");
+    line.className = "opencode-link-underline";
+    line.style.position = "absolute";
+    line.style.left = `${startCell * cellWidth}px`;
+    line.style.top = `${viewportRow * cellHeight}px`;
+    line.style.width = `${(endCell - startCell) * cellWidth}px`;
+    line.style.height = `${cellHeight}px`;
+    line.style.boxSizing = "border-box";
+    line.style.borderBottom =
+      "1px solid var(--terminal-foreground, #cccccc)";
+    line.style.pointerEvents = "none";
+    layer.appendChild(line);
+  }
+
+  screen.appendChild(layer);
+  return layer;
+};
+
+const createHoverUnderlineManager = (
+  terminal: Terminal,
+): HoverUnderlineManager => {
+  let activeOwner: object | undefined;
+  let layer: HTMLElement | undefined;
+
+  const clear = (): void => {
+    layer?.remove();
+    layer = undefined;
+    activeOwner = undefined;
+  };
+
+  return {
+    show(fragments, owner) {
+      clear();
+
+      // xterm hides BufferDecorations while the alternate screen buffer is
+      // active, which is how full-screen TUIs like OpenCode run, so the
+      // underline is a plain overlay positioned from the cell grid instead.
+      const screen = terminal.element?.querySelector<HTMLElement>(
+        ".xterm-screen",
+      );
+      if (!screen) return;
+
+      const nextLayer = createUnderlineLayer(screen, terminal, fragments);
+      if (!nextLayer) return;
+
+      layer = nextLayer;
+      activeOwner = owner;
+    },
+    hide(owner) {
+      if (activeOwner === owner) {
+        clear();
+      }
+    },
+  };
+};
+
+type CrossLineLinkOptions = {
+  readonly underline: HoverUnderlineManager;
+  readonly fragments: ReadonlyArray<RowFragment>;
+};
+
+const createFileLink = (
+  row: number,
+  cellOffsets: ReadonlyArray<number>,
+  token: LineToken,
+  reference: ParsedFileReference,
+  crossLine?: CrossLineLinkOptions,
+): Link => {
+  const startCell = cellOffsets[token.startIndex] ?? 0;
+  const endCell = cellOffsets[token.endIndex] ?? startCell;
+  const owner = {};
+
+  const link: Link = {
+    text: token.text,
+    range: {
+      start: { x: startCell + 1, y: row + 1 },
+      end: { x: endCell, y: row + 1 },
+    },
+    // xterm underlines multi-row ranges as one rectangle, which would cover
+    // the OpenCode sidebar; wrapped links draw a per-fragment DOM overlay
+    // instead so hovering any fragment underlines the whole path.
+    decorations: { underline: crossLine === undefined, pointerCursor: true },
+    activate: () => {
+      postMessage({
+        type: "openFile",
+        path: reference.path,
+        line: reference.line,
+        endLine: reference.endLine,
+        column: reference.column,
+      });
+    },
+  };
+
+  if (crossLine) {
+    link.hover = () => crossLine.underline.show(crossLine.fragments, owner);
+    link.leave = () => crossLine.underline.hide(owner);
+    link.dispose = () => crossLine.underline.hide(owner);
+  }
+
+  return link;
+};
+
+const findCrossLineReference = (
+  terminal: Terminal,
+  requestedRow: number,
+  readRow: (row: number) => RowData,
+): CrossLineReference | null => {
+  const sidebarStart = getSidebarStart(terminal);
+  const firstStartRow = Math.max(0, requestedRow - MAX_WRAP_ROWS + 1);
+
+  const startCandidates = (
+    data: RowData,
+    includeSidebar: boolean,
+  ): LineToken[] => {
+    const candidates: LineToken[] = [];
+
+    for (const token of data.tokens) {
+      if (!isIncompletePathToken(token.text)) continue;
+      const inSidebar = tokenStartCell(data, token) >= sidebarStart;
+      if (inSidebar === includeSidebar) {
+        candidates.push(token);
+      }
+    }
+
+    return candidates.reverse();
+  };
+
+  const continuationCandidate = (
+    data: RowData,
+    includeSidebar: boolean,
+  ): LineToken | undefined => {
+    const transcript: LineToken[] = [];
+    const sidebar: LineToken[] = [];
+
+    for (const token of data.tokens) {
+      if (!isPathContinuationToken(token.text)) continue;
+      if (tokenStartCell(data, token) < sidebarStart) {
+        transcript.push(token);
+      } else {
+        sidebar.push(token);
+      }
+    }
+
+    // Sidebar tokens are only a fallback when the pane is hidden (pass 2);
+    // in pass 1 a transcript fragment must continue in the transcript.
+    return transcript[0] ?? (includeSidebar ? sidebar[0] : undefined);
+  };
+
+  // Try transcript fragments first so sidebar paths never win over a real
+  // wrapped transcript path. Sidebar candidates remain a fallback for when
+  // the pane is hidden and chat text legitimately extends into that region.
+  for (const includeSidebar of [false, true]) {
+    for (let startRow = firstStartRow; startRow <= requestedRow; startRow++) {
+      const startData = readRow(startRow);
+      const startCellOffsets = startData.cellOffsets;
+      if (!startCellOffsets) continue;
+
+      for (const startToken of startCandidates(startData, includeSidebar)) {
+        if (hasFollowingTranscriptText(startData, startToken, sidebarStart)) {
+          continue;
+        }
+
+        const fragments: RowFragment[] = [
+          { row: startRow, token: startToken, cellOffsets: startCellOffsets },
+        ];
+        let joined = startToken.rawText;
+        let completed = false;
+
+        for (let row = startRow + 1; row < startRow + MAX_WRAP_ROWS; row++) {
+          const data = readRow(row);
+          if (data.text === null || !data.cellOffsets) break;
+
+          const token = continuationCandidate(data, includeSidebar);
+          if (!token) break;
+
+          const tentative = joined + token.rawText;
+          if (tentative.length > MAX_WRAPPED_REFERENCE_LENGTH) break;
+          if (!isPathLikeJoined(tentative)) break;
+
+          // The last fragment may be followed by prose (e.g. ": 179 passed");
+          // intermediate fragments must occupy the rest of the wrapped row.
+          const completedTentative = joined + token.text;
+          const completes =
+            isPathLikeJoined(completedTentative) &&
+            hasCompletePathEnding(completedTentative);
+
+          if (!completes && hasFollowingTranscriptText(data, token, sidebarStart)) {
+            break;
+          }
+
+          fragments.push({ row, token, cellOffsets: data.cellOffsets });
+          joined = completes ? completedTentative : tentative;
+
+          if (completes) {
+            completed = true;
+            break;
+          }
+        }
+
+        if (!completed) continue;
+        if (!fragments.some((fragment) => fragment.row === requestedRow)) continue;
+
+        const reference = parseFileReference(joined);
+        if (!reference || !isLikelyFileReference(joined)) continue;
+
+        return { reference, fragments };
+      }
+    }
+  }
+
+  return null;
+};
+
 export function createLinkProvider(terminal: Terminal) {
+  const underline = createHoverUnderlineManager(terminal);
+
   return {
     provideLinks(
       bufferLineNumber: number,
       callback: (links: Link[] | undefined) => void,
     ) {
       // xterm.js passes 1-based bufferLineNumber; getLine expects 0-based.
-      const line = terminal.buffer.active.getLine(bufferLineNumber - 1);
-      if (!line) {
+      const row = bufferLineNumber - 1;
+      const readRow = createRowReader(terminal);
+      const current = readRow(row);
+
+      if (current.text === null || !current.cellOffsets) {
         callback(undefined);
         return;
       }
 
-      const lineText = line.translateToString(true);
-      if (lineText.length > MAX_LINE_LENGTH) {
-        callback(undefined);
-        return;
-      }
-
-      // Convert string indices to terminal cell x coordinates so wide chars
-      // (CJK / fullwidth / emoji, each 2 cells) don't shift the underline.
-      const cellOffsets = buildCellOffsets(lineText);
+      const crossLine = findCrossLineReference(terminal, row, readRow);
+      const crossFragment = crossLine?.fragments.find(
+        (fragment) => fragment.row === row,
+      );
 
       const links: Link[] = [];
-      for (const candidate of collectCandidateReferences(lineText)) {
-        // Strip trailing prose punctuation so it is not glued onto the opened
-        // path or underline (e.g. "index.ts," / "file.json，30" / "index.ts。").
-        const trimmedText = stripTrailingPunctuation(candidate.text);
-        if (!trimmedText || !isLikelyFileReference(trimmedText)) continue;
+      if (crossLine && crossFragment) {
+        links.push(
+          createFileLink(
+            row,
+            current.cellOffsets,
+            crossFragment.token,
+            crossLine.reference,
+            { underline, fragments: crossLine.fragments },
+          ),
+        );
+      }
 
-        const parsedReference = parseFileReference(trimmedText);
-        if (!parsedReference) continue;
+      for (const token of current.tokens) {
+        if (crossFragment && overlaps(token, crossFragment.token)) continue;
+        if (!isLikelyFileReference(token.text)) continue;
 
-        const startCell = cellOffsets[candidate.startIndex] ?? 0;
-        const endCell =
-          cellOffsets[candidate.startIndex + trimmedText.length] ?? startCell;
-
-        links.push({
-          text: trimmedText,
-          range: {
-            start: { x: startCell + 1, y: bufferLineNumber },
-            end: { x: endCell, y: bufferLineNumber },
-          },
-          decorations: { underline: true, pointerCursor: true },
-          activate: (_event: MouseEvent, _text: string) => {
-            postMessage({
-              type: "openFile",
-              path: parsedReference.path,
-              line: parsedReference.line,
-              endLine: parsedReference.endLine,
-              column: parsedReference.column,
-            });
-          },
-        });
+        const reference = parseFileReference(token.text);
+        if (!reference) continue;
+        links.push(createFileLink(row, current.cellOffsets, token, reference));
       }
 
       callback(links);
