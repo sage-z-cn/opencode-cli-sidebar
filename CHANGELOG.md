@@ -5,6 +5,14 @@ All notable changes to the "OpenCode CLI Sidebar" extension will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+#### 5.6.0
+**New Features**
+- **Sync**: Add cross-window process lock for auto-sync leadership.
+- **Links**: Stitch hard-wrapped file paths across rows with a shared hover underline.
+
+**Bug Fixes**
+- **Sync**: Stop auto-opening the conflict panel on new conflicts.
+
 #### 5.5.1
 **New Features**
 - **Sync**: Add bulk conflict resolution and credential error states.
