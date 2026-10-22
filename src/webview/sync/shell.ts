@@ -87,6 +87,7 @@ export function renderSyncShell(d: SyncShellStrings): string {
           <span class="dav-sub dav-sub--error" id="dav-sub-conflict" hidden></span>
           <span class="dav-sub dav-sub--error" id="dav-sub-paused" hidden></span>
           <span class="dav-sub dav-sub--warn" id="dav-sub-auth" hidden></span>
+          <span class="dav-sub" id="dav-sub-leader" hidden></span>
         </div>
       </div>
       <div class="dav-header-actions">

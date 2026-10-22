@@ -32,6 +32,7 @@
   "Auto sync paused": "自动同步已暂停",
   "Auto sync paused after repeated errors": "连续错误已触发熔断，自动同步暂停",
   "Auto sync paused · last sync {0}": "自动同步已暂停 · 上次同步 {0}",
+  "Auto-sync is handled by another window": "自动同步由另一窗口负责",
   "Auto-accept": "自动接受",
   "Automatic fix did not succeed. Run the following commands in the terminal, then start the install again.": "自动处理未成功。在终端依次执行以下命令，然后重新开始安装。",
   "Background subagent": "后台子代理",

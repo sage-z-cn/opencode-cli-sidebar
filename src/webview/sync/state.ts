@@ -17,6 +17,9 @@ export interface SyncUiState {
   /** Host-localized relative label, e.g. "3 min ago". */
   lastSyncLabel?: string;
   autoSyncPaused: boolean;
+  /** True when this window runs the automatic sync channels. Defaults to
+   * true until the first snapshot reports the real leadership. */
+  leader: boolean;
   settings?: WebDavSyncSettings;
   items: WebDavSyncItemUi[];
   excludes: string[];
@@ -31,6 +34,7 @@ export function initialSyncUiState(): SyncUiState {
     pendingCount: 0,
     conflictCount: 0,
     autoSyncPaused: false,
+    leader: true,
     items: [],
     excludes: [],
     conflicts: [],
@@ -50,6 +54,7 @@ export function mergeSnapshot(
     lastSyncAt: snapshot.lastSyncAt,
     lastSyncLabel: snapshot.lastSyncLabel,
     autoSyncPaused: snapshot.autoSyncPaused,
+    leader: snapshot.leader,
     settings: snapshot.settings,
     items: snapshot.items,
     excludes: snapshot.excludes,
@@ -72,6 +77,7 @@ export function mergeDelta(
     lastSyncAt: delta.lastSyncAt ?? prev.lastSyncAt,
     lastSyncLabel: delta.lastSyncLabel ?? prev.lastSyncLabel,
     autoSyncPaused: delta.autoSyncPaused ?? prev.autoSyncPaused,
+    leader: delta.leader ?? prev.leader,
     settings: prev.settings,
     items: prev.items,
     excludes: prev.excludes,

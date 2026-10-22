@@ -387,6 +387,8 @@ export interface WebDavSyncSnapshot {
   lastSyncLabel?: string;
   /** Circuit breaker: auto triggers paused after fatal or repeated errors. */
   autoSyncPaused: boolean;
+  /** True when this window is the leader that runs the auto-sync channels. */
+  leader: boolean;
   /** Connection, trigger and visibility settings edited in the general section. */
   settings: WebDavSyncSettings;
   items: WebDavSyncItemUi[];
@@ -404,6 +406,8 @@ export interface WebDavSyncStatusDelta {
   lastSyncAt?: number;
   lastSyncLabel?: string;
   autoSyncPaused?: boolean;
+  /** Leadership changed: this window now owns (or lost) the auto-sync channels. */
+  leader?: boolean;
   /** Transient toast text (host-localized); shown once, then dismissed. */
   notice?: string;
 }

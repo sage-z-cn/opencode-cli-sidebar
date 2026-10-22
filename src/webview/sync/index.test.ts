@@ -49,6 +49,7 @@ function snapshot(overrides: Partial<WebDavSyncSnapshot> = {}): WebDavSyncSnapsh
     pendingCount: 0,
     conflictCount: 0,
     autoSyncPaused: false,
+    leader: true,
     settings: syncSettings(),
     items: [
       { id: "opencode", path: "opencode.json", kind: "file", enabled: true, builtin: true },

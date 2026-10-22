@@ -177,6 +177,12 @@ export function renderPanel(state: SyncUiState): void {
   const authBadge = el("dav-sub-auth");
   authBadge.hidden = !auth;
   authBadge.textContent = auth ? st.stNeedsAuth : "";
+  // Non-leader window: another window owns the auto-sync channels.
+  const follower =
+    state.leader === false && state.state !== "unconfigured";
+  const leaderBadge = el("dav-sub-leader");
+  leaderBadge.hidden = !follower;
+  leaderBadge.textContent = follower ? st.notLeaderBadge : "";
 
   const navCount = el("dav-nav-conflict-count");
   navCount.classList.toggle("hidden", !(state.conflictCount > 0));
@@ -227,6 +233,7 @@ export function applySnapshotToPanel(
       lastSyncAt: snapshot.lastSyncAt,
       lastSyncLabel: snapshot.lastSyncLabel,
       autoSyncPaused: snapshot.autoSyncPaused,
+      leader: snapshot.leader,
       settings: snapshot.settings,
       items: snapshot.items,
       excludes: snapshot.excludes,

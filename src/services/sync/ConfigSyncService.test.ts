@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as vscodeTypes from "vscode";
 import type {
   HostMessage,
+  WebDavConflictEntry,
   WebDavHistoryEntry,
   WebDavServerConfig,
   WebDavSyncSnapshot,
@@ -25,7 +26,8 @@ import {
   type WebDavPutConditions,
   type WebDavStat,
 } from "./WebDavClient";
-import { hashContent, syncStorageDir } from "./SyncManifest";
+import { hashContent, SyncManifest, syncStorageDir } from "./SyncManifest";
+import { LOCK_STALE_MS, SyncProcessLock } from "./SyncProcessLock";
 
 const vscode = await vi.importActual<typeof import("../../test/mocks/vscode")>(
   "../../test/mocks/vscode",
@@ -38,6 +40,12 @@ class FakeClient implements WebDavClientLike {
   public failure: "fatal" | "auth" | "forbidden" | "transient" | undefined;
   /** Scripted per-attempt PUT failures, consumed in order. */
   public readonly putFailures: Array<"precondition" | "unsupported"> = [];
+  /** Fired just before a scripted precondition failure, simulating a
+   * competing window whose upload landed between scan and PUT. */
+  public beforePreconditionFailure?: (rel: string) => void;
+  /** Fired inside GET before the bytes are returned; lets a test mutate
+   * the remote (etag) between the stats that bracket a verification. */
+  public onGet?: (rel: string) => void;
   /** Rel paths whose remote DELETE fails with a transient error. */
   public readonly delFailures = new Set<string>();
   /** When above 0, every PUT from this call index on throws a rate-limit error. */
@@ -109,6 +117,7 @@ class FakeClient implements WebDavClientLike {
   public async get(rel: string): Promise<Buffer> {
     this.calls.get.push(rel);
     this.maybeFail();
+    this.onGet?.(rel);
     const file = this.files.get(rel);
     if (!file) {
       throw new WebDavTransientError("not found", 404);
@@ -140,6 +149,7 @@ class FakeClient implements WebDavClientLike {
     }
     const failure = this.putFailures.shift();
     if (failure === "precondition") {
+      this.beforePreconditionFailure?.(rel);
       throw new PreconditionFailedError("precondition failed", 412);
     }
     if (failure === "unsupported") {
@@ -575,7 +585,11 @@ describe("ConfigSyncService engine", () => {
       .mockImplementation(() => (clock += 1_000));
     const internal = service as unknown as {
       triggerAuto: (trigger: string) => Promise<void>;
+      isLeader: boolean;
     };
+    // Automatic passes require leadership; this test targets pass
+    // recording, not the election.
+    internal.isLeader = true;
     try {
       writeLocal("cli.json", "one");
       await service.syncNow();
@@ -1399,7 +1413,8 @@ describe("ConfigSyncService engine", () => {
     expect(snapshot.autoSyncPaused).toBe(false);
     expect(snapshot.settings.passwordSet).toBe(false);
     expect(snapshot.history).toEqual([]);
-    expect(deltas.at(-1)).toMatchObject({ state: "needsAuth" });
+    // The leadership delta may land before or after this one.
+    expect(deltas.some((delta) => delta.state === "needsAuth")).toBe(true);
   });
 
   it("recovers from the credentials state once the password is saved", async () => {
@@ -1424,7 +1439,8 @@ describe("ConfigSyncService engine", () => {
       "typed-password",
     );
     await vi.waitFor(() => {
-      if (client.calls.put.length === 0) {
+      const internal = service as unknown as { syncing: boolean };
+      if (client.calls.put.length === 0 || internal.syncing) {
         throw new Error("sync pass still running");
       }
     });
@@ -1462,7 +1478,9 @@ describe("ConfigSyncService engine", () => {
     const internal = service as unknown as {
       autoSyncPaused: boolean;
       triggerAuto: (trigger: string) => Promise<void>;
+      isLeader: boolean;
     };
+    internal.isLeader = true;
     writeLocal("cli.json", "v1");
     client.failure = "auth";
     await internal.triggerAuto("poll");
@@ -1492,7 +1510,9 @@ describe("ConfigSyncService engine", () => {
     const internal = service as unknown as {
       autoSyncPaused: boolean;
       triggerAuto: (trigger: string) => Promise<void>;
+      isLeader: boolean;
     };
+    internal.isLeader = true;
     writeLocal("cli.json", "v1");
     client.failure = "forbidden";
     await internal.triggerAuto("poll");
@@ -1529,7 +1549,9 @@ describe("ConfigSyncService engine", () => {
       const internal = service as unknown as {
         autoSyncPaused: boolean;
         triggerAuto: (trigger: string) => Promise<void>;
+        isLeader: boolean;
       };
+      internal.isLeader = true;
       writeLocal("cli.json", "v1");
       client.failure = "transient";
 
@@ -1555,7 +1577,9 @@ describe("ConfigSyncService engine", () => {
       const internal = service as unknown as {
         triggerAuto: (trigger: string) => Promise<void>;
         autoSyncPaused: boolean;
+        isLeader: boolean;
       };
+      internal.isLeader = true;
       writeLocal("cli.json", "v1");
       client.failure = "transient";
       await internal.triggerAuto("poll");
@@ -1837,6 +1861,12 @@ describe("ConfigSyncService engine", () => {
       pollIntervalMinutes: 0.5,
       showStatusIcon: false,
     });
+    // Leadership election is asynchronous; wait for the armed branch.
+    await vi.waitFor(() => {
+      if (!(service as unknown as { isLeader: boolean }).isLeader) {
+        throw new Error("waiting for leadership");
+      }
+    });
 
     // Options persisted, with the poll interval clamped to the minimum.
     expect(settings["sync.autoSyncEnabled"]).toBe(true);
@@ -1853,6 +1883,459 @@ describe("ConfigSyncService engine", () => {
     expect(internals.context.secrets.delete).not.toHaveBeenCalled();
     expect(client.calls.put).toEqual([]);
     expect(posted.some((m) => m.type === "webdavSaveResult" && m.ok)).toBe(true);
+  });
+
+  it("arms watcher and poller only in the leader window", async () => {
+    settings["sync.autoSyncEnabled"] = true;
+    settings["sync.autoSyncOnLocalChange"] = true;
+    settings["sync.autoSyncRemotePoll"] = true;
+    settings["sync.pollIntervalMinutes"] = 1;
+
+    // A foreign window already holds a fresh lock on the shared storage.
+    const lockPath = path.join(syncStorageDir(storageDir), "lock.json");
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        lockId: "other-window",
+        pid: -1,
+        hostname: "elsewhere",
+        acquiredAt: Date.now(),
+        renewedAt: Date.now(),
+      }),
+      "utf8",
+    );
+    const watcherCallsBefore =
+      vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length;
+
+    service.initialize();
+    const internals = service as unknown as {
+      isLeader: boolean;
+      lockAcquireInFlight?: Promise<void>;
+      watcher?: unknown;
+      pollTimer?: unknown;
+      lockRetryTimer?: unknown;
+    };
+    // The acquire retries against the held lock and times out (~2s).
+    await vi.waitFor(
+      () => {
+        if (internals.lockAcquireInFlight) {
+          throw new Error("waiting for the lock attempt to settle");
+        }
+      },
+      { timeout: 5_000 },
+    );
+    expect(internals.isLeader).toBe(false);
+    expect(internals.watcher).toBeUndefined();
+    expect(internals.pollTimer).toBeUndefined();
+    expect(
+      vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length,
+    ).toBe(watcherCallsBefore);
+    expect((await service.getSnapshot()).leader).toBe(false);
+    expect(deltas.some((delta) => delta.leader === false)).toBe(false);
+    // Losing is not final: a retry is scheduled to reclaim leadership.
+    expect(internals.lockRetryTimer).toBeDefined();
+
+    // The lock frees up: a direct re-arm elects this window and arms the
+    // automatic channels.
+    fs.rmSync(lockPath);
+    (service as unknown as { armTriggers: () => void }).armTriggers();
+    await vi.waitFor(
+      () => {
+        if (!internals.isLeader) {
+          throw new Error("waiting for leadership");
+        }
+      },
+      { timeout: 5_000 },
+    );
+    expect(
+      vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length,
+    ).toBeGreaterThan(watcherCallsBefore);
+    expect(internals.pollTimer).toBeDefined();
+    expect(deltas.some((delta) => delta.leader === true)).toBe(true);
+    expect((await service.getSnapshot()).leader).toBe(true);
+  });
+
+  it("disarms the auto channels when leadership is lost", async () => {
+    settings["sync.autoSyncEnabled"] = true;
+    settings["sync.autoSyncOnLocalChange"] = true;
+    settings["sync.autoSyncRemotePoll"] = true;
+    settings["sync.pollIntervalMinutes"] = 1;
+    const internals = service as unknown as {
+      isLeader: boolean;
+      watcher?: { dispose: ReturnType<typeof vi.fn> } | undefined;
+      pollTimer?: unknown;
+      lockHeartbeatTimer?: unknown;
+      lockRetryTimer?: unknown;
+      heartbeatTick: () => Promise<void>;
+    };
+    service.initialize();
+    await vi.waitFor(
+      () => {
+        if (!internals.isLeader) {
+          throw new Error("waiting for leadership");
+        }
+      },
+      { timeout: 5_000 },
+    );
+    const armedWatcher = internals.watcher;
+    expect(armedWatcher).toBeDefined();
+    expect(internals.pollTimer).toBeDefined();
+
+    // Another window takes over the lock with fresh heartbeats.
+    const lockPath = path.join(syncStorageDir(storageDir), "lock.json");
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        lockId: "usurper",
+        pid: -1,
+        hostname: "elsewhere",
+        acquiredAt: Date.now(),
+        renewedAt: Date.now(),
+      }),
+      "utf8",
+    );
+
+    await internals.heartbeatTick();
+    expect(internals.isLeader).toBe(false);
+    expect(armedWatcher?.dispose).toHaveBeenCalled();
+    expect(internals.watcher).toBeUndefined();
+    expect(internals.pollTimer).toBeUndefined();
+    expect(internals.lockHeartbeatTimer).toBeUndefined();
+    expect(internals.lockRetryTimer).toBeDefined();
+    expect(deltas.some((delta) => delta.leader === false)).toBe(true);
+    expect((await service.getSnapshot()).leader).toBe(false);
+  });
+
+  it("skips the startup pass in a follower window", async () => {
+    settings["sync.autoSyncEnabled"] = true;
+    settings["sync.autoSyncOnStartup"] = true;
+    writeLocal("cli.json", "one");
+    // A foreign window already holds a fresh lock on the shared storage.
+    const lockPath = path.join(syncStorageDir(storageDir), "lock.json");
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        lockId: "other-window",
+        pid: -1,
+        hostname: "elsewhere",
+        acquiredAt: Date.now(),
+        renewedAt: Date.now(),
+      }),
+      "utf8",
+    );
+
+    service.initialize();
+    const internals = service as unknown as {
+      isLeader: boolean;
+      lockAcquireInFlight?: Promise<void>;
+    };
+    await vi.waitFor(
+      () => {
+        if (internals.lockAcquireInFlight) {
+          throw new Error("waiting for the lock attempt to settle");
+        }
+      },
+      { timeout: 5_000 },
+    );
+    expect(internals.isLeader).toBe(false);
+    // Give the post-settle startup branch a chance to misfire.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(client.calls.propfind).toEqual([]);
+    expect(clientFactoryCalls).toBe(0);
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.history).toEqual([]);
+    expect(snapshot.leader).toBe(false);
+  });
+
+  it("runs the startup pass only after leadership is decided", async () => {
+    settings["sync.autoSyncEnabled"] = true;
+    settings["sync.autoSyncOnStartup"] = true;
+    writeLocal("cli.json", "one");
+
+    service.initialize();
+    // Uncontended lock: this window becomes leader and the startup pass
+    // runs after the election settles.
+    await vi.waitFor(() => {
+      if (client.calls.put.length === 0) {
+        throw new Error("waiting for the startup pass");
+      }
+    }, 5_000);
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.leader).toBe(true);
+    expect(snapshot.history[0]).toMatchObject({
+      result: "success",
+      trigger: "startup",
+    });
+  });
+
+  it("releases the lock when the circuit breaker pauses auto sync", async () => {
+    settings["sync.autoSyncEnabled"] = true;
+    writeLocal("cli.json", "v1");
+    service.initialize();
+    await vi.waitFor(
+      () => {
+        if (!(service as unknown as { isLeader: boolean }).isLeader) {
+          throw new Error("waiting for leadership");
+        }
+      },
+      { timeout: 5_000 },
+    );
+    const lockPath = path.join(syncStorageDir(storageDir), "lock.json");
+    expect(fs.existsSync(lockPath)).toBe(true);
+
+    // A fatal failure on any pass opens the breaker.
+    client.failure = "fatal";
+    await service.syncNow();
+    expect(
+      (service as unknown as { autoSyncPaused: boolean }).autoSyncPaused,
+    ).toBe(true);
+
+    // The paused leader gave up the lock: a healthy window takes over.
+    await vi.waitFor(() => {
+      if (fs.existsSync(lockPath)) {
+        throw new Error("waiting for the lock release");
+      }
+    });
+    const other = new SyncProcessLock(lockPath);
+    await expect(other.acquire(1_000)).resolves.toBe(true);
+    expect(deltas.some((delta) => delta.leader === false)).toBe(true);
+  });
+
+  it("releases the lock when sync is disabled while acquisition is in flight", async () => {
+    settings["sync.autoSyncEnabled"] = true;
+    // A lock that goes stale a moment later keeps the acquisition busy
+    // (fresh on the first read, stale after a retry round) so sync can be
+    // disabled before the takeover lands.
+    const lockPath = path.join(syncStorageDir(storageDir), "lock.json");
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        lockId: "other-window",
+        pid: -1,
+        hostname: "elsewhere",
+        acquiredAt: Date.now(),
+        renewedAt: Date.now() - (LOCK_STALE_MS - 500),
+      }),
+      "utf8",
+    );
+
+    service.initialize();
+    // The user disables sync while the election is still in flight.
+    settings["sync.enabled"] = false;
+    const internals = service as unknown as {
+      isLeader: boolean;
+      lockAcquireInFlight?: Promise<void>;
+    };
+    await vi.waitFor(
+      () => {
+        if (internals.lockAcquireInFlight) {
+          throw new Error("waiting for the lock attempt to settle");
+        }
+      },
+      { timeout: 5_000 },
+    );
+
+    // The takeover succeeded but was refused: no leadership, no channels,
+    // and the lock file is gone so another window can win it immediately.
+    expect(internals.isLeader).toBe(false);
+    await vi.waitFor(() => {
+      if (fs.existsSync(lockPath)) {
+        throw new Error("waiting for the lock release");
+      }
+    });
+    expect(deltas.some((delta) => delta.leader === true)).toBe(false);
+    expect(vscode.workspace.createFileSystemWatcher).not.toHaveBeenCalled();
+    const other = new SyncProcessLock(lockPath);
+    await expect(other.acquire(1_000)).resolves.toBe(true);
+  });
+
+  it("skips the disk write when the downloaded content already matches", async () => {
+    writeLocal("cli.json", "same");
+    const abs = path.join(configDir, "cli.json");
+    const mtimeBefore = fs.statSync(abs).mtimeMs;
+    const manifest = new SyncManifest(storageDir);
+    await manifest.load();
+    client.addFile("cli.json", "same");
+    const stat: WebDavStat = {
+      path: "cli.json",
+      etag: client.files.get("cli.json")?.etag ?? null,
+      size: 4,
+      lastModified: 1_000,
+      isDir: false,
+    };
+    const downloadFile = (
+      service as unknown as {
+        downloadFile: (
+          client: WebDavClientLike,
+          rel: string,
+          abs: string,
+          manifest: SyncManifest,
+          stat: WebDavStat | null,
+          cachedContent: Buffer | null,
+          captured: { size: number; mtimeMs: number } | null,
+          recordConflict?: (entry: WebDavConflictEntry) => void,
+        ) => Promise<boolean>;
+      }
+    ).downloadFile.bind(service);
+    const conflicts: WebDavConflictEntry[] = [];
+
+    const downloaded = await downloadFile(
+      client,
+      "cli.json",
+      abs,
+      manifest,
+      stat,
+      Buffer.from("same", "utf8"),
+      null,
+      (entry) => conflicts.push(entry),
+    );
+
+    expect(downloaded).toBe(true);
+    expect(conflicts).toEqual([]);
+    // No rewrite: mtime untouched, no backup generation created.
+    expect(fs.statSync(abs).mtimeMs).toBe(mtimeBefore);
+    expect(backupCount("cli.json")).toBe(0);
+    // The manifest still checkpoints to the agreed hash.
+    expect(manifest.get("cli.json")?.baselineHash).toBe(
+      hashContent(Buffer.from("same", "utf8")),
+    );
+  });
+
+  it("agrees when a sibling window rewrote the local file with the same bytes mid-pass", async () => {
+    // Scan-time snapshot of the old bytes...
+    writeLocal("cli.json", "old");
+    const abs = path.join(configDir, "cli.json");
+    const captured = fs.statSync(abs);
+    // ...then a sibling window lands the identical remote content before
+    // our write phase, tripping the capturedStats guard.
+    writeLocal("cli.json", "same");
+    const manifest = new SyncManifest(storageDir);
+    await manifest.load();
+    client.addFile("cli.json", "same");
+    const stat: WebDavStat = {
+      path: "cli.json",
+      etag: client.files.get("cli.json")?.etag ?? null,
+      size: 4,
+      lastModified: 1_000,
+      isDir: false,
+    };
+    const downloadFile = (
+      service as unknown as {
+        downloadFile: (
+          client: WebDavClientLike,
+          rel: string,
+          abs: string,
+          manifest: SyncManifest,
+          stat: WebDavStat | null,
+          cachedContent: Buffer | null,
+          captured: { size: number; mtimeMs: number } | null,
+          recordConflict?: (entry: WebDavConflictEntry) => void,
+        ) => Promise<boolean>;
+      }
+    ).downloadFile.bind(service);
+    const conflicts: WebDavConflictEntry[] = [];
+
+    const downloaded = await downloadFile(
+      client,
+      "cli.json",
+      abs,
+      manifest,
+      stat,
+      Buffer.from("same", "utf8"),
+      { size: captured.size, mtimeMs: captured.mtimeMs },
+      (entry) => conflicts.push(entry),
+    );
+
+    // Identical bytes are an agree: baseline checkpoint, no conflict, no
+    // rewrite and no backup.
+    expect(downloaded).toBe(true);
+    expect(conflicts).toEqual([]);
+    expect(readLocal("cli.json")).toBe("same");
+    expect(backupCount("cli.json")).toBe(0);
+    expect(manifest.get("cli.json")?.baselineHash).toBe(
+      hashContent(Buffer.from("same", "utf8")),
+    );
+  });
+
+  it("treats a 412 on first upload as an agree when the remote bytes match", async () => {
+    writeLocal("cli.json", "one");
+    // A competing window's identical upload lands between our scan and
+    // our CAS PUT, so the PUT fails with 412.
+    client.putFailures.push("precondition");
+    client.beforePreconditionFailure = (rel) => {
+      client.addFile(rel, "one");
+    };
+
+    await service.syncNow();
+
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.conflictCount).toBe(0);
+    expect(client.calls.get).toContain("cli.json");
+    expect(snapshot.history[0]).toMatchObject({
+      result: "success",
+      trigger: "manual",
+    });
+    const manifestPath = path.join(syncStorageDir(storageDir), "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    expect(manifest.files["cli.json"].baselineHash).toBe(
+      hashContent(Buffer.from("one", "utf8")),
+    );
+    // The baseline now agrees: a second pass is a pure no-op.
+    client.calls.put.length = 0;
+    client.calls.get.length = 0;
+    await service.syncNow();
+    expect(client.calls.put).toEqual([]);
+  });
+
+  it("keeps the conflict path when a 412 hides differing content", async () => {
+    writeLocal("cli.json", "one");
+    client.putFailures.push("precondition");
+    client.beforePreconditionFailure = (rel) => {
+      client.addFile(rel, "different");
+    };
+
+    await service.syncNow();
+
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.conflictCount).toBe(1);
+    expect(snapshot.conflicts[0]).toMatchObject({
+      kind: "content",
+      reason: "preconditionFailed",
+    });
+  });
+
+  it("falls back to the conflict path when the etag changes during a 412 agree check", async () => {
+    writeLocal("cli.json", "one");
+    client.putFailures.push("precondition");
+    client.beforePreconditionFailure = (rel) => {
+      client.addFile(rel, "one");
+    };
+    // The competing window rewrites the remote between our stat-get-stat
+    // bracket, so the verified bytes and the observed etags no longer
+    // pair: accepting the agree would let the next pass trust a stale
+    // hash through the etag-unchanged shortcut.
+    client.onGet = (rel) => {
+      const file = client.files.get(rel);
+      if (file) {
+        file.etag = '"rewritten"';
+      }
+    };
+
+    await service.syncNow();
+
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.conflictCount).toBe(1);
+    expect(snapshot.conflicts[0]).toMatchObject({
+      kind: "content",
+      reason: "preconditionFailed",
+    });
+    // No baseline was checkpointed for the unverified etag-byte pair.
+    const manifestPath = path.join(syncStorageDir(storageDir), "manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    expect(manifest.files["cli.json"]).toBeUndefined();
   });
 
   it("answers snapshot, log and connection-test requests", async () => {
@@ -2122,6 +2605,8 @@ describe("ConfigSyncService engine", () => {
   });
 
   it("accepts and syncs re: pattern items with re: excludes and deny-list priority", async () => {
+    // The exclude-add reconciliation is an automatic pass: lead first.
+    (service as unknown as { isLeader: boolean }).isLeader = true;
     writeLocal("cli.json", "v1");
     writeLocal("notes/a.md", "a");
     writeLocal("notes/draft.md", "d");

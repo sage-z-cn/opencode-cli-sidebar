@@ -34,6 +34,7 @@ export const syncL10nStrings: Record<string, string> = {
   autoOn: l10n.t("Auto sync on"),
   manualMode: l10n.t("Manual-only mode"),
   pausedBadge: l10n.t("Auto sync paused after repeated errors"),
+  notLeaderBadge: l10n.t("Auto-sync is handled by another window"),
   actSyncNow: l10n.t("Sync now"),
 
   // Panel header modes

@@ -2256,6 +2256,7 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding-bottom: 10px; margin-bottom: 10px;
   border-bottom: 1px solid var(--vscode-panel-border, #2e2e2e);
+  padding-left: 15px;
 }
 .dav-conflict-bar.hidden { display: none; }
 .dav-conflict-all {

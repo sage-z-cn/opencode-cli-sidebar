@@ -21,6 +21,7 @@ import type {
 } from "../../types";
 import { OutputChannelService } from "../OutputChannelService";
 import { resolveOpenCodeConfigDir } from "../openCodeConfigPath";
+import { SyncProcessLock } from "./SyncProcessLock";
 import {
   SyncManifest,
   hashContent,
@@ -66,6 +67,9 @@ const MIN_RATE_LIMIT_RESUME_MS = 30_000;
 const MAX_RATE_LIMIT_RESUME_MS = 35 * 60_000;
 const DEFAULT_RATE_LIMIT_WINDOW_MINUTES = 30;
 const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 600;
+const LOCK_ACQUIRE_TIMEOUT_MS = 2_000;
+const LOCK_HEARTBEAT_MS = 10_000;
+const LOCK_RETRY_MS = 60_000;
 
 /** What can start a sync pass; mirrors the persisted history trigger values. */
 export type SyncTrigger = WebDavSyncTrigger;
@@ -339,6 +343,16 @@ export class ConfigSyncService implements vscode.Disposable {
   private rateLimitResumeTimer: ReturnType<typeof setTimeout> | undefined;
   private localChangeDebounce: ReturnType<typeof setTimeout> | undefined;
 
+  /** Cross-window leadership over the auto-sync channels. */
+  private readonly syncLock: SyncProcessLock;
+  private lockHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  private lockRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** True while this window runs watcher/poller and rate-limit spend. */
+  private isLeader = false;
+  /** In-flight lock acquisition; undefined once isLeader is settled. */
+  private lockAcquireInFlight: Promise<void> | undefined;
+  private disposed = false;
+
   public constructor(
     context: vscode.ExtensionContext,
     deps: ConfigSyncServiceDeps,
@@ -351,6 +365,9 @@ export class ConfigSyncService implements vscode.Disposable {
       deps.clientFactory ?? ((options) => new WebDavClient(options));
     this.configDirProvider =
       deps.configDirProvider ?? (() => resolveOpenCodeConfigDir());
+    this.syncLock = new SyncProcessLock(
+      path.join(syncStorageDir(this.globalStoragePath()), "lock.json"),
+    );
 
     this.history = this.loadHistory();
 
@@ -379,12 +396,24 @@ export class ConfigSyncService implements vscode.Disposable {
       config.autoSyncEnabled &&
       config.autoSyncOnStartup
     ) {
-      void this.triggerAuto("startup");
+      // Settle leadership first: a follower window skips the startup
+      // pass entirely — the leader's watcher and polls already cover
+      // the machine, and a parallel startup pass from every window
+      // would race the manifest read-modify-write.
+      void this.whenLeadershipSettled().then(() => {
+        if (!this.disposed && this.isLeader) {
+          void this.triggerAuto("startup");
+        }
+      });
     }
   }
 
   public dispose(): void {
+    this.disposed = true;
     this.stopAutoTimers();
+    this.stopLockHeartbeat();
+    this.clearLockRetryTimer();
+    void this.syncLock.release();
     this.cachedClient = undefined;
     for (const disposable of this.disposables) {
       disposable.dispose();
@@ -421,6 +450,7 @@ export class ConfigSyncService implements vscode.Disposable {
         ? relativeTimeLabel(this.lastSyncAt)
         : undefined,
       autoSyncPaused: this.autoSyncPaused,
+      leader: this.isLeader,
       settings: {
         url: config.url,
         username: config.username,
@@ -696,7 +726,7 @@ export class ConfigSyncService implements vscode.Disposable {
         [...disabled],
         vscode.ConfigurationTarget.Global,
       );
-    this.armWatcher();
+    this.armTriggers();
     await this.requestSyncData();
   }
 
@@ -729,7 +759,7 @@ export class ConfigSyncService implements vscode.Disposable {
         [...config.customItems, stored],
         vscode.ConfigurationTarget.Global,
       );
-    this.armWatcher();
+    this.armTriggers();
     await this.requestSyncData();
   }
 
@@ -756,7 +786,7 @@ export class ConfigSyncService implements vscode.Disposable {
           vscode.ConfigurationTarget.Global,
         );
     }
-    this.armWatcher();
+    this.armTriggers();
     await this.requestSyncData();
   }
 
@@ -822,7 +852,7 @@ export class ConfigSyncService implements vscode.Disposable {
           next,
           vscode.ConfigurationTarget.Global,
         );
-      this.armWatcher();
+      this.armTriggers();
       this.postWebviewMessage({ type: "webdavSaveResult", ok: true });
       this.log("info", `exclude ${action === "add" ? "added" : "removed"}: ${stored}`);
       this.pushDelta({ conflictCount: this.conflicts.size });
@@ -1204,8 +1234,163 @@ export class ConfigSyncService implements vscode.Disposable {
   // ── Trigger sources ──
 
   private armTriggers(): void {
-    this.armWatcher();
-    this.armPoller();
+    this.armLeadership();
+  }
+
+  /**
+   * Auto-sync channels (watcher, poller, rate-limit spend) run in
+   * exactly one window per machine: the lock holder. The leader arms
+   * watcher and poller and heartbeats the lock; every other window
+   * disarms its channels and retries the lock periodically, so
+   * leadership moves within a bounded time after the leader closes.
+   */
+  private armLeadership(): void {
+    if (this.disposed) {
+      return;
+    }
+    const config = readSyncConfig();
+    if (!config.enabled || !config.url) {
+      // Sync is off: no window competes for the auto-sync channels, so
+      // there is nothing to elect — just drop any channels we had.
+      this.clearLockRetryTimer();
+      this.disarmLeadership(false);
+      return;
+    }
+    if (this.isLeader) {
+      // Already elected: refresh the channels for the new settings.
+      this.armWatcher();
+      this.armPoller();
+      return;
+    }
+    if (this.lockAcquireInFlight) {
+      // An attempt is in flight; it arms or schedules a retry on settle.
+      return;
+    }
+    this.lockAcquireInFlight = this.acquireLeadership();
+  }
+
+  /** Resolve once no lock acquisition is in flight, so isLeader is
+   * settled for this round (retry timers only fire much later). */
+  private async whenLeadershipSettled(): Promise<void> {
+    while (this.lockAcquireInFlight) {
+      await this.lockAcquireInFlight;
+    }
+  }
+
+  private async acquireLeadership(): Promise<void> {
+    try {
+      const acquired = await this.syncLock.acquire(LOCK_ACQUIRE_TIMEOUT_MS);
+      if (this.disposed) {
+        // Teardown raced the acquire: undo the ownership we just gained.
+        await this.syncLock.release().catch(() => undefined);
+        return;
+      }
+      if (!acquired) {
+        this.disarmLeadership(false);
+        this.scheduleLockRetry();
+        return;
+      }
+      // Sync may have been disabled while the acquire was in flight: a
+      // leader with empty channels must not keep holding (and heartbeating)
+      // the lock. Re-enabling sync re-arms via onDidChangeConfiguration.
+      const config = readSyncConfig();
+      if (!config.enabled || !config.url) {
+        await this.syncLock.release().catch(() => undefined);
+        return;
+      }
+      this.isLeader = true;
+      this.clearLockRetryTimer();
+      this.armWatcher();
+      this.armPoller();
+      this.startLockHeartbeat();
+      this.log("info", "leadership acquired");
+      this.pushDelta({ leader: true });
+    } catch (error) {
+      this.log(
+        "warn",
+        `leadership acquire failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      this.disarmLeadership(false);
+      this.scheduleLockRetry();
+    } finally {
+      this.lockAcquireInFlight = undefined;
+    }
+  }
+
+  /**
+   * Drop the auto-sync channels and give up the lock. `lost` marks a
+   * leadership that was held and is now gone (log + delta); an election
+   * loss never had channels to lose and stays silent.
+   */
+  private disarmLeadership(lost: boolean): void {
+    if (this.isLeader) {
+      this.isLeader = false;
+      if (lost) {
+        this.log("info", "leadership lost; auto sync disarmed in this window");
+        this.pushDelta({ leader: false });
+      }
+    }
+    this.watcher?.dispose();
+    this.watcher = undefined;
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = undefined;
+    }
+    this.stopLockHeartbeat();
+    void this.syncLock.release();
+  }
+
+  /** Heartbeat renews the lock; a failed renewal means another window
+   * owns the lock now, so this window must disarm immediately. */
+  private startLockHeartbeat(): void {
+    this.stopLockHeartbeat();
+    this.lockHeartbeatTimer = setInterval(() => {
+      void this.heartbeatTick();
+    }, LOCK_HEARTBEAT_MS);
+  }
+
+  private async heartbeatTick(): Promise<void> {
+    if (!this.isLeader || this.disposed) {
+      return;
+    }
+    let renewed = false;
+    try {
+      renewed = await this.syncLock.renew();
+    } catch {
+      renewed = false;
+    }
+    if (!renewed && !this.disposed && this.isLeader) {
+      this.disarmLeadership(true);
+      this.scheduleLockRetry();
+    }
+  }
+
+  /** One pending retry at a time; cleared once leadership is regained. */
+  private scheduleLockRetry(): void {
+    if (this.disposed || this.isLeader || this.lockRetryTimer) {
+      return;
+    }
+    this.lockRetryTimer = setTimeout(() => {
+      this.lockRetryTimer = undefined;
+      this.log("debug", "leadership retry");
+      this.armLeadership();
+    }, LOCK_RETRY_MS);
+  }
+
+  private clearLockRetryTimer(): void {
+    if (this.lockRetryTimer) {
+      clearTimeout(this.lockRetryTimer);
+      this.lockRetryTimer = undefined;
+    }
+  }
+
+  private stopLockHeartbeat(): void {
+    if (this.lockHeartbeatTimer) {
+      clearInterval(this.lockHeartbeatTimer);
+      this.lockHeartbeatTimer = undefined;
+    }
   }
 
   private armWatcher(): void {
@@ -1295,6 +1480,17 @@ export class ConfigSyncService implements vscode.Disposable {
   }
 
   private async triggerAuto(trigger: SyncTrigger): Promise<void> {
+    // Only the leader window runs automatic passes. Startup, watcher,
+    // poller, backoff retries and rate-limit resumes all funnel through
+    // here; manual sync, conflict resolution and server-card saves call
+    // runSync directly and are never gated.
+    if (!this.isLeader) {
+      this.log(
+        "debug",
+        `auto sync skipped (${trigger}); another window is the leader`,
+      );
+      return;
+    }
     if (this.autoSyncPaused) {
       return;
     }
@@ -1323,6 +1519,12 @@ export class ConfigSyncService implements vscode.Disposable {
     this.autoSyncPaused = true;
     this.state = "error";
     this.stopAutoTimers();
+    // A paused leader must not hold the machine hostage: drop the lock
+    // (and keep the retry path) so a healthy window can take over the
+    // automatic channels. Even if this window's cooldown callbacks fire
+    // later, the leadership gate in triggerAuto blocks them.
+    this.disarmLeadership(true);
+    this.scheduleLockRetry();
     this.log("warn", `automatic sync paused: ${reason}`);
     if (!wasPaused) {
       this.pushDelta({ state: "error", autoSyncPaused: true });
@@ -2098,6 +2300,47 @@ export class ConfigSyncService implements vscode.Disposable {
       await client.put(rel, content, conditions);
     } catch (error) {
       if (error instanceof PreconditionFailedError) {
+        // Two windows can first-upload the same content nearly in
+        // parallel: the loser's CAS PUT fails although the remote bytes
+        // already match. Identical content is an agree, not a conflict.
+        // The recorded ETag must pair with the verified bytes, so stat,
+        // GET, stat again and accept only an unchanged ETag — a remote
+        // rewrite in between would otherwise let the next pass trust a
+        // stale hash through the etag-unchanged shortcut. Mirrors
+        // downloadFile's observe-before-read rule.
+        let remoteMatches = false;
+        let agreedEtag: string | null = null;
+        try {
+          const statBefore = await this.statRemoteFile(client, rel);
+          if (statBefore) {
+            const remoteContent = await client.get(rel);
+            if (hashContent(remoteContent) === localHash) {
+              const statAfter = await this.statRemoteFile(client, rel);
+              if (statAfter && statAfter.etag === statBefore.etag) {
+                remoteMatches = true;
+                agreedEtag = statAfter.etag;
+              }
+            }
+          }
+        } catch {
+          // Remote read failed: fall through to the conflict path.
+          remoteMatches = false;
+        }
+        if (remoteMatches) {
+          const now = Date.now();
+          manifest.set(rel, {
+            localHash,
+            remoteEtag: agreedEtag,
+            remoteHash: localHash,
+            baselineHash: localHash,
+            lastSyncAt: now,
+          });
+          this.log(
+            "info",
+            `upload skipped; the server copy already matches: ${rel}`,
+          );
+          return true;
+        }
         let localStat: fs.Stats | undefined;
         try {
           localStat = await fs.promises.stat(abs);
@@ -2190,6 +2433,8 @@ export class ConfigSyncService implements vscode.Disposable {
     // make the next pass believe an outdated local copy is current.
     const remoteStat = stat ?? (await this.statRemoteFile(client, rel));
     const content = cachedContent ?? (await client.get(rel));
+    const etag = remoteStat?.etag ?? null;
+    const hash = hashContent(content);
     if (captured) {
       // The scan snapshot is stale the moment anything touched the local
       // file since; overwriting would silently discard those edits.
@@ -2205,6 +2450,32 @@ export class ConfigSyncService implements vscode.Disposable {
         current.size !== captured.size ||
         current.mtimeMs !== captured.mtimeMs
       ) {
+        // A sibling window rewriting the very same bytes also trips this
+        // guard, and identical content is an agree, not a conflict:
+        // checkpoint the baseline without touching the disk. Only a real
+        // local edit keeps the localModifiedDuringSync conflict.
+        if (current?.isFile()) {
+          try {
+            const currentContent = await fs.promises.readFile(abs);
+            if (hashContent(currentContent) === hash) {
+              const now = Date.now();
+              manifest.set(rel, {
+                localHash: hash,
+                remoteEtag: etag,
+                remoteHash: hash,
+                baselineHash: hash,
+                lastSyncAt: now,
+              });
+              this.log(
+                "debug",
+                `download skipped; local copy was rewritten with the same content: ${rel}`,
+              );
+              return true;
+            }
+          } catch {
+            // Unreadable local copy: fall through to the conflict path.
+          }
+        }
         recordConflict?.(
           this.conflictEntry(
             rel,
@@ -2221,8 +2492,30 @@ export class ConfigSyncService implements vscode.Disposable {
         return false;
       }
     }
-    const etag = remoteStat?.etag ?? null;
     if (fs.existsSync(abs)) {
+      // Identical content: rewriting would only churn the mtime and echo
+      // through every window's watcher. Adopt the remote state and skip
+      // the write, checkpointing the manifest like a normal download.
+      try {
+        const localContent = await fs.promises.readFile(abs);
+        if (hashContent(localContent) === hash) {
+          const now = Date.now();
+          manifest.set(rel, {
+            localHash: hash,
+            remoteEtag: etag,
+            remoteHash: hash,
+            baselineHash: hash,
+            lastSyncAt: now,
+          });
+          this.log(
+            "debug",
+            `download skipped; local copy already matches: ${rel}`,
+          );
+          return true;
+        }
+      } catch {
+        // Unreadable local copy: fall through to backup and overwrite.
+      }
       const backedUp = await this.backupLocalFile(abs, rel);
       if (!backedUp) {
         // Refuse to destroy the local copy without a safety backup.
@@ -2243,7 +2536,6 @@ export class ConfigSyncService implements vscode.Disposable {
     // Raw remote bytes hit the disk untouched; hash normalization only
     // affects comparisons.
     await fs.promises.writeFile(abs, content);
-    const hash = hashContent(content);
     const now = Date.now();
     manifest.set(rel, {
       localHash: hash,

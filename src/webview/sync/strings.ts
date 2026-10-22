@@ -57,6 +57,10 @@ export const st = {
   autoOn: syncT("autoOn", "Auto sync on"),
   manualMode: syncT("manualMode", "Manual-only mode"),
   pausedBadge: syncT("pausedBadge", "Auto sync paused after repeated errors"),
+  notLeaderBadge: syncT(
+    "notLeaderBadge",
+    "Auto-sync is handled by another window",
+  ),
   actSyncNow: syncT("actSyncNow", "Sync now"),
 
   // ── Panel header ──
