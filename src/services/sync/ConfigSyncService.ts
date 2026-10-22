@@ -1761,11 +1761,13 @@ export class ConfigSyncService implements vscode.Disposable {
       }
       this.pushDelta(delta);
       if (newConflictIds.length > 0) {
+        // Notify without stealing focus: the panel stays closed and the
+        // user opens it from the toolbar when ready.
         const notice = l10n.t(
           "Sync conflict detected in {count} file(s). Open the sync panel to resolve.",
           { count: newConflictIds.length },
         );
-        this.pushDelta({ openConflicts: true, notice });
+        this.pushDelta({ notice });
         if (!this.isWebviewVisible()) {
           void vscode.window.showInformationMessage(notice);
         }

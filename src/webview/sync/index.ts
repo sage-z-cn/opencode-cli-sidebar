@@ -225,15 +225,12 @@ export function applyWebdavStatus(delta: WebDavSyncStatusDelta): void {
     showNotice(delta.notice);
   }
   // Deltas never carry the conflicts array: when conflicts appear or
-  // grow, ask the host for a full snapshot so the list is fresh.
+  // grow, ask the host for a full snapshot so the list is fresh. The
+  // panel is never auto-opened; the user opens it from the toolbar.
   if (
-    delta.openConflicts ||
-    (delta.conflictCount !== undefined && delta.conflictCount > prevConflictCount)
+    delta.conflictCount !== undefined && delta.conflictCount > prevConflictCount
   ) {
     postMessage({ type: "requestWebdavSyncData" });
-  }
-  if (delta.openConflicts) {
-    openSyncPanel("conflict");
   }
   render();
 }

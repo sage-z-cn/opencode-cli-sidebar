@@ -406,8 +406,6 @@ export interface WebDavSyncStatusDelta {
   autoSyncPaused?: boolean;
   /** Transient toast text (host-localized); shown once, then dismissed. */
   notice?: string;
-  /** Ask the webview to open the panel focused on the conflicts section. */
-  openConflicts?: boolean;
 }
 
 /** Connection-test draft taken from the form; never persisted by the host. */

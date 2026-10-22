@@ -18,6 +18,7 @@ import {
   applyWebdavStatus,
   applyWebdavLog,
   applyWebdavSaveResult,
+  closeSyncPanel,
   initSyncUi,
 } from "./index";
 import {
@@ -770,13 +771,11 @@ describe("sync UI (webview)", () => {
       expect(posted().pop()).toEqual({ type: "openWebdavDiff", id: "c2" });
     });
 
-    it("opens the conflict section on the openConflicts push", () => {
+    it("keeps the panel closed when a conflict delta arrives", () => {
+      closeSyncPanel();
       applyWebdavSyncData(snapshot());
-      applyWebdavStatus({ openConflicts: true, conflictCount: 1 });
-      expect(overlay().classList.contains("hidden")).toBe(false);
-      expect(
-        document.querySelector('.dav-pane[data-pane="conflict"]')?.classList.contains("is-on"),
-      ).toBe(true);
+      applyWebdavStatus({ conflictCount: 1 });
+      expect(overlay().classList.contains("hidden")).toBe(true);
     });
 
     it("multi-selects conflicts and posts one batch decision", () => {
@@ -884,7 +883,7 @@ describe("sync UI (webview)", () => {
         ).length;
       const before = requestCount();
 
-      applyWebdavStatus({ openConflicts: true, conflictCount: 1 });
+      applyWebdavStatus({ conflictCount: 1 });
       expect(requestCount()).toBe(before + 1);
 
       applyWebdavStatus({ conflictCount: 2 });
