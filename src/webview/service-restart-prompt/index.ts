@@ -10,6 +10,7 @@
  */
 import type { ServiceRestartPromptAction } from "../../types";
 import { postMessage } from "../shared/vscode-api";
+import { ICONS, icon } from "../shared/icons";
 
 /** 注入方为 terminal/html.ts 的 nonce 脚本 window.__SERVICE_RESTART_L10N__；缺失时回退英文。 */
 const l10nStrings: Record<string, string> =
@@ -48,7 +49,9 @@ function buildOverlay(): HTMLDivElement {
     '<div class="srp-dialog" role="alertdialog" aria-modal="true" aria-labelledby="srp-title" aria-describedby="srp-body">' +
     '<button type="button" class="srp-close" id="srp-close" aria-label="' +
     escapeHtml(t("close", "Close")) +
-    '">✕</button>' +
+    '">' +
+    icon(ICONS.x) +
+    "</button>" +
     '<div class="srp-title" id="srp-title">' +
     escapeHtml(t("title", "Restart confirmation")) +
     "</div>" +
@@ -81,7 +84,7 @@ function buildOverlay(): HTMLDivElement {
   el
     .querySelector("#srp-cancel")
     ?.addEventListener("click", () => answer("cancel"));
-  // 右上角 ✕ 与取消语义相同：隐藏并回传 cancel
+  // 右上角关闭按钮与取消语义相同：隐藏并回传 cancel
   el
     .querySelector("#srp-close")
     ?.addEventListener("click", () => answer("cancel"));

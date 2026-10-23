@@ -31,7 +31,7 @@ export function syncStatusLine(state: SyncUiState): SyncStatusLine {
     return {
       text: st.stConflict(state.conflictCount),
       color: warn,
-      iconHtml: SYNC_ICONS.warn,
+      iconHtml: SYNC_ICONS.conflict,
       blink: false,
     };
   }
@@ -47,7 +47,7 @@ export function syncStatusLine(state: SyncUiState): SyncStatusLine {
     return {
       text: st.stNeedsAuth,
       color: yellow,
-      iconHtml: SYNC_ICONS.key,
+      iconHtml: SYNC_ICONS.auth,
       blink: false,
     };
   }
@@ -71,7 +71,7 @@ export function syncStatusLine(state: SyncUiState): SyncStatusLine {
     return {
       text: st.stPending(state.pendingCount),
       color: yellow,
-      iconHtml: SYNC_ICONS.up,
+      iconHtml: SYNC_ICONS.pending,
       blink: false,
     };
   }

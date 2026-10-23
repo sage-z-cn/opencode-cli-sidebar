@@ -101,7 +101,7 @@ export type SyncIconKind =
 
 export interface SyncIconInfo {
   kind: SyncIconKind;
-  /** Count badge for pending / conflict. */
+  /** Count used in status labels; the toolbar no longer draws a badge. */
   count?: number;
 }
 

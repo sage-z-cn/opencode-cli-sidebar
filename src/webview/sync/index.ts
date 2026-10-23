@@ -147,8 +147,7 @@ function statusShown(): boolean {
 function renderIcon(): void {
   const btn = document.getElementById("btn-dav-sync-panel");
   const glyph = document.getElementById("dav-sync-glyph");
-  const count = document.getElementById("dav-sync-count");
-  if (!btn || !glyph || !count) {
+  if (!btn || !glyph) {
     return;
   }
   entryGlyphHtml ??= glyph.innerHTML;
@@ -168,8 +167,6 @@ function renderIcon(): void {
       btn.setAttribute("title", entryTitle);
     }
     glyph.innerHTML = entryGlyphHtml;
-    count.textContent = "";
-    count.classList.add("hidden");
     closeSyncTooltip();
     return;
   }
@@ -185,19 +182,16 @@ function renderIcon(): void {
     info.kind === "syncing"
       ? SYNC_ICONS.cloudSync
       : info.kind === "pending"
-        ? SYNC_ICONS.up
+        ? SYNC_ICONS.pending
         : info.kind === "conflict"
-          ? SYNC_ICONS.warn
+          ? SYNC_ICONS.conflict
           : info.kind === "auth"
-            ? SYNC_ICONS.key
+            ? SYNC_ICONS.auth
             : SYNC_ICONS.off;
   glyph.innerHTML =
     info.kind === "syncing"
       ? `<span class="dav-blink">${iconHtml}</span>`
       : iconHtml;
-  const n = info.count ?? 0;
-  count.textContent = String(n);
-  count.classList.toggle("hidden", n <= 0);
 }
 
 // ── Notice / inline errors ──

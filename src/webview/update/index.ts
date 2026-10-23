@@ -14,6 +14,7 @@ import type {
   OpenCodeUpdateUiStatus,
 } from "../../types";
 import { postMessage } from "../shared/vscode-api";
+import { ICONS as LUCIDE_ICONS, icon } from "../shared/icons";
 
 // ── Strings (injected host-side; see update/l10n.ts) ──
 
@@ -62,19 +63,13 @@ const METHOD_DESCS: Record<string, string> = {
 const HINT_TTL_MS = 4500;
 
 const ICONS = {
-  check:
-    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>',
-  x: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
-  sync:
-    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/></svg>',
-  info:
-    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>',
-  error:
-    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>',
-  copy:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
-  send:
-    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>',
+  check: icon(LUCIDE_ICONS.check, 13),
+  x: icon(LUCIDE_ICONS.x, 13),
+  sync: icon(LUCIDE_ICONS.refresh, 13),
+  info: icon(LUCIDE_ICONS.info, 13),
+  error: icon(LUCIDE_ICONS.circleX, 13),
+  copy: icon(LUCIDE_ICONS.copy, 13),
+  send: icon(LUCIDE_ICONS.send, 13),
 };
 
 function escapeHtml(s: string): string {

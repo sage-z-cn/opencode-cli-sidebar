@@ -15,6 +15,7 @@ import {
   uniqueChords,
 } from "../../services/openCodeKeymapState";
 import { postMessage } from "../shared/vscode-api";
+import { ICONS, icon } from "../shared/icons";
 
 /** 注入方为 terminal/html.ts 的 nonce 脚本 window.__KEYMAP_L10N__；缺失时回退英文。 */
 const keymapL10n: Record<string, string> =
@@ -366,11 +367,8 @@ function renderL2(): void {
   }
   if (!host) return;
 
-  const iconEdit =
-    '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M11.2 2.3a1.5 1.5 0 0 1 2.1 2.1L5.2 12.5 2 13.5l1-3.2 8.2-8z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
-  // 垃圾桶
-  const iconDel =
-    '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3.5h3v1M5 4.5l.5 8h5l.5-8M6.8 7v3.2M9.2 7v3.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const iconEdit = icon(ICONS.pencil);
+  const iconDel = icon(ICONS.trash);
 
   const msgEl = $("#km-l2-msg");
   const showPrompt = Boolean(

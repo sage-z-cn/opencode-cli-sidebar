@@ -49,6 +49,7 @@ export function renderTerminalHtml({
       content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Icons: Lucide (https://lucide.dev), ISC License -->
     <title>OpenCode CLI Sidebar</title>
     <link rel="stylesheet" href="${cssUri}" />
     ${toolbarL10nScript}

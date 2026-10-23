@@ -188,7 +188,6 @@ describe("sync UI (webview)", () => {
       <div class="toolbar">
         <button type="button" id="btn-dav-sync-panel" class="toolbar-btn dav-sync-entry hidden" aria-haspopup="dialog" aria-label="OpenCode config sync" title="OpenCode config sync">
           <span class="dav-sync-glyph" id="dav-sync-glyph"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 2h10v10H2z"/></svg></span>
-          <span class="dav-sync-count hidden" id="dav-sync-count"></span>
         </button>
       </div>
       ${renderSyncShell(SHELL)}`;
@@ -231,11 +230,10 @@ describe("sync UI (webview)", () => {
       expect(syncButton().getAttribute("title")).toBe("OpenCode config sync");
     });
 
-    it("shows with count for pending / conflict, plain for syncing / error / paused", () => {
+    it("paints pending / conflict / syncing / error / paused / auth states", () => {
       applyWebdavSyncData(snapshot({ pendingCount: 2 }));
       expect(syncButton().classList.contains("hidden")).toBe(false);
       expect(syncButton().dataset.state).toBe("pending");
-      expect(document.getElementById("dav-sync-count")?.textContent).toBe("2");
       expect(document.getElementById("dav-sync-glyph")?.innerHTML).not.toContain(
         "M2 2h10v10H2z",
       );
@@ -246,11 +244,9 @@ describe("sync UI (webview)", () => {
 
       applyWebdavSyncData(snapshot({ conflictCount: 1, pendingCount: 0 }));
       expect(syncButton().dataset.state).toBe("conflict");
-      expect(document.getElementById("dav-sync-count")?.textContent).toBe("1");
 
       applyWebdavSyncData(snapshot({ state: "syncing", conflictCount: 0 }));
       expect(syncButton().dataset.state).toBe("syncing");
-      expect(document.getElementById("dav-sync-count")?.classList.contains("hidden")).toBe(true);
 
       applyWebdavSyncData(snapshot({ state: "error" }));
       expect(syncButton().dataset.state).toBe("error");
@@ -260,9 +256,6 @@ describe("sync UI (webview)", () => {
 
       applyWebdavSyncData(snapshot({ state: "needsAuth" }));
       expect(syncButton().dataset.state).toBe("auth");
-      expect(
-        document.getElementById("dav-sync-count")?.classList.contains("hidden"),
-      ).toBe(true);
     });
 
     it("respects the showStatusIcon master switch", () => {

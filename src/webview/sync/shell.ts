@@ -1,10 +1,11 @@
 /**
  * Pure HTML shell for the WebDAV sync UI (tooltip + panel).
  *
- * No imports: the extension host (terminal/html.ts via sync/markup.ts)
- * passes a localized string dict; tests pass their own so the runtime
- * modules never depend on vscode.
+ * The extension host (terminal/html.ts via sync/markup.ts) passes a
+ * localized string dict; tests pass their own so the runtime modules never
+ * depend on vscode. Icons come from the DOM-free Lucide serializer.
  */
+import { SYNC_ICONS } from "./icons";
 
 export interface SyncShellStrings {
   tipDismiss: string;
@@ -74,7 +75,7 @@ export function renderSyncShell(d: SyncShellStrings): string {
 <div class="dav-tip hidden" id="dav-sync-tip" role="tooltip">
   <span class="dav-tip-ic" id="dav-sync-tip-ic"></span>
   <span class="dav-tip-text" id="dav-sync-tip-text"></span>
-  <button type="button" class="dav-tip-close" id="dav-sync-tip-close" aria-label="${d.tipDismiss}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+  <button type="button" class="dav-tip-close" id="dav-sync-tip-close" aria-label="${d.tipDismiss}">${SYNC_ICONS.close}</button>
 </div>
 <div class="dav-overlay hidden" id="dav-overlay">
   <div class="dav-modal" id="dav-modal" role="dialog" aria-modal="true" aria-label="${d.panelAria}">
@@ -91,7 +92,7 @@ export function renderSyncShell(d: SyncShellStrings): string {
         </div>
       </div>
       <div class="dav-header-actions">
-        <button type="button" class="dav-icon-btn" id="dav-modal-close" title="${d.closeTitle}" aria-label="${d.closeTitle}">✕</button>
+        <button type="button" class="dav-icon-btn" id="dav-modal-close" title="${d.closeTitle}" aria-label="${d.closeTitle}">${SYNC_ICONS.panelClose}</button>
       </div>
     </div>
     <div class="dav-error hidden" id="dav-error" role="alert"><span id="dav-error-text"></span></div>
@@ -117,7 +118,7 @@ export function renderSyncShell(d: SyncShellStrings): string {
           <div class="dav-master-row">
             <label class="dav-check"><input type="checkbox" id="dav-f-master" aria-label="${d.autoSync}"><span>${d.autoSync}</span></label>
             <button type="button" class="dav-sub-chev" id="dav-sub-toggle" aria-expanded="true" title="${d.chevTitle}">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="dav-chev" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+              ${SYNC_ICONS.chevron}
             </button>
           </div>
           <div class="dav-sub-settings" id="dav-auto-group">
@@ -220,7 +221,7 @@ export function renderSyncShell(d: SyncShellStrings): string {
             <div class="dav-hist-grid dav-hist-head">
               <span>${d.hTime}</span><span>${d.hTrigger}</span><span>${d.hResult}</span><span>${d.hSummary}</span>
             </div>
-            <button type="button" class="dav-hist-clear" id="dav-hist-clear" title="${d.histClear}" aria-label="${d.histClear}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+            <button type="button" class="dav-hist-clear" id="dav-hist-clear" title="${d.histClear}" aria-label="${d.histClear}">${SYNC_ICONS.trash}</button>
           </div>
           <div id="dav-hist-list"></div>
         </div>

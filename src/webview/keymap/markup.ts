@@ -1,4 +1,5 @@
 import { l10n } from "../../i18n";
+import { ICONS, icon } from "../shared/icons";
 
 /** Markup for the OpenCode Keymap L1/L2 modals. */
 export function renderKeymapModals(): string {
@@ -15,15 +16,12 @@ export function renderKeymapModals(): string {
       </div>
       <div class="km-header-actions">
         <button type="button" class="km-icon-btn" id="km-reload" title="${l10n.t("Reload")}" aria-label="${l10n.t("Reload")}">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M13.5 8a5.5 5.5 0 1 1-1.64-3.86" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-            <path d="M13.5 2.5v3.2h-3.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
+          ${icon(ICONS.refresh)}
         </button>
-        <button type="button" class="km-icon-btn" id="km-close" aria-label="${l10n.t("Close")}">✕</button>
+        <button type="button" class="km-icon-btn" id="km-close" aria-label="${l10n.t("Close")}">${icon(ICONS.x)}</button>
       </div>
     </div>
-    <div class="km-error hidden" id="km-error" role="alert"><span id="km-error-text"></span><button type="button" class="km-error-dismiss" id="km-error-dismiss" aria-label="${l10n.t("Close")}">×</button></div>
+    <div class="km-error hidden" id="km-error" role="alert"><span id="km-error-text"></span><button type="button" class="km-error-dismiss" id="km-error-dismiss" aria-label="${l10n.t("Close")}">${icon(ICONS.x, 12)}</button></div>
     <div class="km-main">
       <nav class="km-side-nav" id="km-side-nav" aria-label="${l10n.t("Shortcut categories")}"></nav>
       <div class="km-content">
@@ -38,16 +36,11 @@ export function renderKeymapModals(): string {
             <input type="search" id="km-search" placeholder="${l10n.t("Search commands, descriptions, or keys…")}" autocomplete="off" />
             <div class="km-search-actions">
               <button type="button" class="km-search-btn" id="km-search-record" title="${l10n.t("Record keys to search")}" aria-label="${l10n.t("Record keys to search")}" aria-pressed="false">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <rect x="1.5" y="3.5" width="13" height="9" rx="1.3" stroke="currentColor" stroke-width="1.2"/>
-                  <path d="M4 6h.01M6.4 6h.01M8.8 6h.01M11.2 6h.01M4 8.6h.01M6.4 8.6h.01M8.8 8.6h.01M11.2 8.6h.01M6 11h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-                </svg>
+                ${icon(ICONS.keyboard)}
                 <span class="capture-dot" aria-hidden="true"></span>
               </button>
               <button type="button" class="km-search-btn hidden" id="km-search-clear" title="${l10n.t("Clear search")}" aria-label="${l10n.t("Clear search")}">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-                </svg>
+                ${icon(ICONS.x)}
               </button>
             </div>
           </div>
@@ -67,7 +60,7 @@ export function renderKeymapModals(): string {
         </div>
         <div class="km-l2-desc" id="km-l2-desc"></div>
       </div>
-      <button type="button" class="km-icon-btn" id="km-l2-close" aria-label="${l10n.t("Close")}">✕</button>
+      <button type="button" class="km-icon-btn" id="km-l2-close" aria-label="${l10n.t("Close")}">${icon(ICONS.x)}</button>
     </div>
     <div class="km-l2-body">
       <div class="km-l2-label">${l10n.t("Binding list (multiple shortcuts allowed)")}</div>

@@ -1,4 +1,5 @@
 import { l10n } from "../../i18n";
+import { ICONS, icon } from "../shared/icons";
 
 /** Markup for the OpenCode CLI Settings modal. */
 export function renderOpenCodeCliSettingsModal(): string {
@@ -23,15 +24,12 @@ export function renderOpenCodeCliSettingsModal(): string {
       </div>
       <div class="occs-header-actions">
         <button type="button" class="occs-icon-btn" id="occs-reload" title="${l10n.t("Reload")}" aria-label="${l10n.t("Reload")}">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M13.5 8a5.5 5.5 0 1 1-1.64-3.86" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-            <path d="M13.5 2.5v3.2h-3.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
+          ${icon(ICONS.refresh)}
         </button>
-        <button type="button" class="occs-icon-btn" id="occs-close" aria-label="${l10n.t("Close")}">✕</button>
+        <button type="button" class="occs-icon-btn" id="occs-close" aria-label="${l10n.t("Close")}">${icon(ICONS.x)}</button>
       </div>
     </div>
-    <div class="occs-error hidden" id="occs-error" role="alert"><span id="occs-error-text"></span><button type="button" class="occs-icon-btn" id="occs-error-dismiss" aria-label="${l10n.t("Close")}">×</button></div>
+    <div class="occs-error hidden" id="occs-error" role="alert"><span id="occs-error-text"></span><button type="button" class="occs-icon-btn" id="occs-error-dismiss" aria-label="${l10n.t("Close")}">${icon(ICONS.x)}</button></div>
     <div class="occs-main">
       <nav class="occs-side-nav" id="occs-side-nav" aria-label="${l10n.t("Settings groups")}"></nav>
       <div class="occs-body">

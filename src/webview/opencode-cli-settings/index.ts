@@ -11,6 +11,7 @@ import type {
   OpenCodeThemeSwatch,
 } from "../../types";
 import { postMessage } from "../shared/vscode-api";
+import { ICONS, icon } from "../shared/icons";
 import { openKeymapModal } from "../keymap";
 
 const l10nStrings: Record<string, string> =
@@ -476,15 +477,12 @@ function pluginActionsHtml(name: string): string {
     Boolean(info?.hasUpdate && info?.latest);
   const updateBtn = canUpdate
     ? `<button type="button" class="occs-icon-btn" data-oc-plugin-update="${index}" data-oc-plugin-version="${escapeHtml(info?.latest ?? "")}" title="${escapeHtml(t("updateVersion", "Update"))}" aria-label="${escapeHtml(t("updateVersion", "Update"))}">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M8 12.5V3.5M8 3.5 4.5 7M8 3.5 11.5 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M3 13h10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-        </svg>
+        ${icon(ICONS.upload, 12)}
       </button>`
     : "";
   return `<div class="occs-plugin-actions">
     ${updateBtn}
-    <button type="button" class="occs-icon-btn" data-oc-plugin-remove="${index}" title="${escapeHtml(t("removePlugin", "Remove plugin"))}" aria-label="${escapeHtml(t("removePlugin", "Remove plugin"))}">×</button>
+    <button type="button" class="occs-icon-btn" data-oc-plugin-remove="${index}" title="${escapeHtml(t("removePlugin", "Remove plugin"))}" aria-label="${escapeHtml(t("removePlugin", "Remove plugin"))}">${icon(ICONS.x, 12)}</button>
   </div>`;
 }
 

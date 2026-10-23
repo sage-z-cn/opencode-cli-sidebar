@@ -1,4 +1,5 @@
 import { l10n } from "../../i18n";
+import { ICONS, icon } from "../shared/icons";
 import html from "./toolbar.html?raw";
 
 const titleL10nMap: Record<string, string> = {
@@ -25,6 +26,16 @@ function localizeTitles(input: string): string {
   });
 }
 
+function localizeIcons(input: string): string {
+  return input.replace(
+    /\{\{icon:(\w+)(?::(\d+))?\}\}/g,
+    (_, key: string, size: string | undefined) => {
+      const node = ICONS[key as keyof typeof ICONS];
+      return node ? icon(node, size ? Number(size) : 14) : `{{icon:${key}}}`;
+    },
+  );
+}
+
 export const toolbarL10nStrings: Record<string, string> = {
   switchToEditor: titleL10nMap.toggleEditor,
   switchToSidebar: l10n.t("Switch to Sidebar"),
@@ -32,5 +43,5 @@ export const toolbarL10nStrings: Record<string, string> = {
 };
 
 export function renderToolbar(): string {
-  return localizeTitles(html);
+  return localizeIcons(localizeTitles(html));
 }

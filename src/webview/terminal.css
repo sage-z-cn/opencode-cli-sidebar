@@ -1967,7 +1967,7 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 
 /* L0: status shown on the config sync button next to the keymap button */
 .dav-sync-entry {
-  display: inline-flex; align-items: center; gap: 2px;
+  display: inline-flex; align-items: center;
 }
 .dav-sync-entry:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); }
 /* A carried status is always fully visible, not dimmed like idle buttons. */
@@ -1976,8 +1976,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .dav-sync-entry[data-state="pending"], .dav-sync-entry[data-state="auth"] { color: var(--vscode-editorWarning-foreground, #cca700); }
 .dav-sync-entry[data-state="conflict"], .dav-sync-entry[data-state="error"] { color: var(--vscode-errorForeground, #f87171); }
 .dav-sync-glyph { display: inline-flex; }
-.dav-sync-count { font-size: 10px; font-weight: 600; }
-.dav-sync-count.hidden { display: none; }
 .dav-blink { animation: dav-blink 1.2s ease-in-out infinite; display: inline-flex; }
 @keyframes dav-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) {

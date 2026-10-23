@@ -1,4 +1,5 @@
 import { postMessage } from "../shared/vscode-api";
+import { ICONS, icon } from "../shared/icons";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import { scheduleRefresh } from "../shared/utils";
@@ -116,10 +117,12 @@ export function updateEditorAttachmentIcon(isEditorTab: boolean): void {
   const strings =
     (window as unknown as { __TOOLBAR_L10N__?: Record<string, string> })
       .__TOOLBAR_L10N__ ?? {};
-  const icon = document.getElementById("settings-toggle-editor-icon");
+  const iconEl = document.getElementById("settings-toggle-editor-icon");
   const label = document.getElementById("settings-toggle-editor-label");
-  if (icon) {
-    icon.textContent = isEditorTab ? "↖︎" : "↗︎";
+  if (iconEl) {
+    iconEl.innerHTML = isEditorTab
+      ? icon(ICONS.arrowUpLeft)
+      : icon(ICONS.arrowUpRight);
   }
   if (label) {
     label.textContent = isEditorTab
