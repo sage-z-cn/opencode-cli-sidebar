@@ -190,6 +190,14 @@ export const commands = {
   executeCommand: vi.fn(),
 };
 
+export const extensions = {
+  getExtension: vi.fn((id: string): unknown => {
+    void id;
+    return undefined;
+  }),
+  all: [] as unknown[],
+};
+
 export enum ConfigurationTarget {
   Global = 1,
   Workspace = 2,

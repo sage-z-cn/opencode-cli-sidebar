@@ -161,6 +161,18 @@ const scheduleAbsoluteReferenceSend = createFileSendScheduler(
     provider.formatFileReference({ path: toAbsoluteReference(uri) }),
 );
 
+const LEGACY_EXTENSION_ID = "sagez.ai-sidebar-terminal";
+
+/**
+ * The pre-rebrand extension still registers every legacy command ID when it
+ * is installed. Registering the aliases as well makes one of the two
+ * extensions fail activation with "command already exists", so leave the
+ * IDs to the legacy extension and only alias them when it is absent.
+ */
+function isLegacyExtensionInstalled(): boolean {
+  return vscode.extensions.getExtension(LEGACY_EXTENSION_ID) !== undefined;
+}
+
 /**
  * Command IDs of the pre-rebrand `ai-sidebar-terminal` extension, mapped to
  * their current equivalents. VS Code persists customized user keybindings by
@@ -385,12 +397,20 @@ export function registerTerminalCommands(
     },
   );
 
-  const legacyAliasCommands = Object.entries(LEGACY_COMMAND_ALIASES).map(
-    ([legacyId, currentId]) =>
-      vscode.commands.registerCommand(legacyId, (...args: unknown[]) =>
-        vscode.commands.executeCommand(currentId, ...args),
-      ),
-  );
+  const legacyExtensionInstalled = isLegacyExtensionInstalled();
+  if (legacyExtensionInstalled) {
+    deps.outputChannel?.warn(
+      `[TerminalCommands] ${LEGACY_EXTENSION_ID} is installed; skipping legacy command aliases to avoid duplicate registration. Uninstall it to route old keybindings to this extension.`,
+    );
+  }
+  const legacyAliasCommands = legacyExtensionInstalled
+    ? []
+    : Object.entries(LEGACY_COMMAND_ALIASES).map(
+        ([legacyId, currentId]) =>
+          vscode.commands.registerCommand(legacyId, (...args: unknown[]) =>
+            vscode.commands.executeCommand(currentId, ...args),
+          ),
+      );
 
   return [
     startCommand,

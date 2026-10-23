@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { ExtensionLifecycle } from "./ExtensionLifecycle";
+import { OpenCodeCliSettingsService } from "../services/OpenCodeCliSettingsService";
 import { OutputCaptureManager } from "../services/OutputCaptureManager";
 import { OutputChannelService } from "../services/OutputChannelService";
 import { InstanceRegistry } from "../services/InstanceRegistry";
@@ -45,6 +46,10 @@ describe("ExtensionLifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
+    vi.spyOn(
+      OpenCodeCliSettingsService.prototype,
+      "applyVsCodeTheme",
+    ).mockResolvedValue(false);
     OutputChannelService.resetInstance();
     lifecycle = new ExtensionLifecycle();
     mockContext = new vscode.ExtensionContext();
@@ -66,6 +71,95 @@ describe("ExtensionLifecycle", () => {
       await lifecycle.activate(mockContext);
 
       expect(mockContext.subscriptions.length).toBeGreaterThan(0);
+    });
+
+    it("applies the VS Code theme by default", async () => {
+      const applyVsCodeTheme = vi.mocked(
+        OpenCodeCliSettingsService.prototype.applyVsCodeTheme,
+      );
+      applyVsCodeTheme.mockResolvedValue(true);
+
+      await lifecycle.activate(mockContext);
+
+      expect(applyVsCodeTheme).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves OpenCode's theme alone when followVsCodeTheme is disabled", async () => {
+      vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+        (section: string) => {
+          if (section === "opencode-cli-sidebar") {
+            return {
+              get: vi.fn((key: string, def: any) =>
+                key === "followVsCodeTheme" ? false : def,
+              ),
+              inspect: vi.fn(() => undefined),
+              update: vi.fn(),
+            } as any;
+          }
+          return {
+            get: vi.fn((_key: string, def: any) => def),
+            inspect: vi.fn(() => undefined),
+            update: vi.fn(),
+          } as any;
+        },
+      );
+      const applyVsCodeTheme = vi.mocked(
+        OpenCodeCliSettingsService.prototype.applyVsCodeTheme,
+      );
+
+      await lifecycle.activate(mockContext);
+
+      expect(applyVsCodeTheme).not.toHaveBeenCalled();
+    });
+
+    it("re-applies the VS Code theme when followVsCodeTheme is re-enabled", async () => {
+      let followVsCodeTheme = false;
+      const configuration = {
+        get: vi.fn((key: string, def: any) =>
+          key === "followVsCodeTheme" ? followVsCodeTheme : def,
+        ),
+        inspect: vi.fn(() => undefined),
+        update: vi.fn(),
+      };
+      vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+        (section: string) =>
+          (section === "opencode-cli-sidebar"
+            ? configuration
+            : {
+                get: vi.fn((_key: string, def: any) => def),
+                inspect: vi.fn(() => undefined),
+                update: vi.fn(),
+              }) as any,
+      );
+      const applyVsCodeTheme = vi.mocked(
+        OpenCodeCliSettingsService.prototype.applyVsCodeTheme,
+      );
+
+      await lifecycle.activate(mockContext);
+      applyVsCodeTheme.mockClear();
+
+      const listener = vi.mocked(vscode.workspace.onDidChangeConfiguration)
+        .mock.calls[0]?.[0] as
+        | ((event: {
+            affectsConfiguration: (section: string) => boolean;
+          }) => void)
+        | undefined;
+      expect(listener).toBeTypeOf("function");
+
+      const event = {
+        affectsConfiguration: (section: string) =>
+          section === "opencode-cli-sidebar.followVsCodeTheme",
+      };
+
+      listener?.(event);
+      await Promise.resolve();
+      expect(applyVsCodeTheme).not.toHaveBeenCalled();
+
+      followVsCodeTheme = true;
+      listener?.(event);
+      await vi.waitFor(() => {
+        expect(applyVsCodeTheme).toHaveBeenCalledTimes(1);
+      });
     });
 
     it("should register webview provider", async () => {

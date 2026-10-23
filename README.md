@@ -128,6 +128,10 @@ Also under OpenCode v2, an **OpenCode CLI Settings** button appears next to the 
 - The Keybindings group is a jump link that opens the Keymap modal
 - Writes preserve other `cli.json` fields; restoring a default removes that key
 
+### Theme behavior
+
+The sidebar terminal follows VS Code's terminal theme: background, foreground, cursor/selection colors, and the 16 ANSI colors come from the active workbench theme, and they update immediately when the theme changes. OpenCode's default `opencode` theme only provides light/dark variants, so switching between themes of the same kind may not change its colors. By default, `opencode-cli-sidebar.followVsCodeTheme` is enabled: the extension sets OpenCode's **Theme name** and **Theme mode** to `system`, so the TUI re-reads the terminal palette and follows each workbench theme. This overrides a locally chosen OpenCode theme. Changing **Theme name** or **Theme mode** in OpenCode CLI Settings turns the setting off so the explicit choice sticks; re-enable it to follow VS Code again.
+
 > Like the keymap button, this button is shown only for OpenCode v2.
 
 ## HTTP API Integration
@@ -198,6 +202,7 @@ Available settings in VS Code settings (`Cmd+,` / `Ctrl+,`):
 | `opencode-cli-sidebar.shellPath`      | string  | `""`              | Custom shell path (empty = VS Code default)          |
 | `opencode-cli-sidebar.shellArgs`      | array   | `[]`              | Custom shell arguments                               |
 | `opencode-cli-sidebar.sendKeybindingsToShell` | boolean | `true` | Send Ctrl/Cmd shortcuts to terminal |
+| `opencode-cli-sidebar.followVsCodeTheme` | boolean | `true` | Follow VS Code's terminal theme by setting OpenCode theme name/mode to `system` |
 | `opencode-cli-sidebar.focusIndicatorMode` | string | `"bottomBorder"` | Focus indicator when the sidebar has keyboard focus: `off`, `bottomBorder`, or `fullBorder` |
 | `opencode-cli-sidebar.focusIndicatorBorderWidth` | number | `2` | Focus indicator border width in pixels (1-8) |
 
@@ -280,6 +285,10 @@ npx @vscode/vsce package
 - Go to Extensions (`Cmd+Shift+X` / `Ctrl+Shift+X`)
 - Click "..." menu → "Install from VSIX"
 - Select the generated `.vsix` file
+
+### Upgrading from ai-sidebar-terminal
+
+If the pre-rebrand `sagez.ai-sidebar-terminal` extension is still installed, uninstall it from the Extensions view. Both extensions register the `ai-sidebar-terminal.*` command IDs; the current extension detects the old one, skips the legacy aliases, and logs a warning so activation does not fail. Uninstalling the old extension lets the current extension own those legacy IDs and route old keybindings here.
 
 ## License
 

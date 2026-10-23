@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as pty from "node-pty";
 import * as os from "os";
 import * as path from "path";
+import { ensureNodePtySpawnHelperExecutable } from "./NodePtySpawnHelper";
 
 export interface Terminal {
   id: string;
@@ -68,6 +69,11 @@ export class TerminalManager {
       TERM: "xterm-256color",
       ...env,
     } as Record<string, string>;
+
+    // Some VSIX builds store node-pty's spawn-helper without the executable
+    // bit. Repair it before spawning; otherwise posix_spawn fails with
+    // EACCES and the sidebar only renders xterm's black background.
+    ensureNodePtySpawnHelperExecutable();
 
     const ptyProcess = pty.spawn(shell, ptyArgs, {
       name: "xterm-256color",

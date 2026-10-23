@@ -16,6 +16,14 @@ import { OutputChannelService } from "./OutputChannelService";
 import { isVersionNewer } from "./semver";
 import type { OpenCodeCliPluginUpdateInfo } from "../types";
 
+/**
+ * OpenCode's terminal-palette theme. Unlike the default `opencode` theme,
+ * which only has light/dark variants, `system` reads the terminal's ANSI
+ * palette, which the webview mirrors from VS Code's terminal colors.
+ */
+export const VSCODE_TERMINAL_THEME_NAME = "system";
+export const VSCODE_TERMINAL_THEME_MODE = "system";
+
 export interface OpenCodeCliSettingsPayload {
   /** Effective values keyed by dotted path (defaults filled in). */
   values: Record<string, unknown>;
@@ -92,6 +100,30 @@ export class OpenCodeCliSettingsService {
     await this.mutateDoc((doc) => {
       deletePath(doc, id);
     });
+  }
+
+  /**
+   * Make OpenCode use the terminal palette so the TUI follows VS Code's
+   * terminal theme. Writes both `theme.name` and `theme.mode` to `system`,
+   * overriding a local OpenCode theme choice. Callers gate this on the
+   * `followVsCodeTheme` setting.
+   *
+   * @returns true when the config file was changed.
+   */
+  public async applyVsCodeTheme(): Promise<boolean> {
+    const configPath = this.resolveConfigPath();
+    const doc = this.readDoc(configPath);
+    if (
+      getPath(doc, "theme.name") === VSCODE_TERMINAL_THEME_NAME &&
+      getPath(doc, "theme.mode") === VSCODE_TERMINAL_THEME_MODE
+    ) {
+      return false;
+    }
+    await this.mutateDoc((current) => {
+      setPath(current, "theme.name", VSCODE_TERMINAL_THEME_NAME);
+      setPath(current, "theme.mode", VSCODE_TERMINAL_THEME_MODE);
+    });
+    return true;
   }
 
   /** Readonly display entries are edited manually in cli.json only. */

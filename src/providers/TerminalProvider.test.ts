@@ -5,6 +5,7 @@ import type * as vscodeTypes from "../test/mocks/vscode";
 import { OutputCaptureManager } from "../services/OutputCaptureManager";
 import { InstanceStore } from "../services/InstanceStore";
 import { OutputChannelService } from "../services/OutputChannelService";
+import { OpenCodeCliSettingsService } from "../services/OpenCodeCliSettingsService";
 import { PortManager } from "../services/PortManager";
 import type {
   OpenCodeUpdateService,
@@ -240,6 +241,67 @@ describe("TerminalProvider", () => {
       "workbench.action.openSettings",
       "opencode-cli-sidebar.",
     );
+  });
+
+  describe("OpenCode CLI theme persistence", () => {
+    function mockSaveDependencies() {
+      const configuration = mockConfiguration();
+      provider = createProvider();
+      vi.spyOn(
+        provider as any,
+        "requestOpenCodeCliSettingsData",
+      ).mockResolvedValue(undefined);
+      const save = vi
+        .spyOn(OpenCodeCliSettingsService.prototype, "save")
+        .mockResolvedValue(undefined);
+      return { configuration, save };
+    }
+
+    it("turns off followVsCodeTheme when the user picks a theme", async () => {
+      const { configuration, save } = mockSaveDependencies();
+
+      await provider.saveOpenCodeCliSetting("theme.name", "nord");
+
+      expect(configuration.update).toHaveBeenCalledWith(
+        "followVsCodeTheme",
+        false,
+        vscode.ConfigurationTarget.Global,
+      );
+      expect(save).toHaveBeenCalledWith("theme.name", "nord");
+    });
+
+    it("keeps followVsCodeTheme when it is already disabled", async () => {
+      const configuration = mockConfiguration();
+      configuration.get.mockImplementation((key: string, def: unknown) =>
+        key === "followVsCodeTheme" ? false : def,
+      );
+      provider = createProvider();
+      vi.spyOn(
+        provider as any,
+        "requestOpenCodeCliSettingsData",
+      ).mockResolvedValue(undefined);
+      const save = vi
+        .spyOn(OpenCodeCliSettingsService.prototype, "save")
+        .mockResolvedValue(undefined);
+
+      await provider.saveOpenCodeCliSetting("theme.name", "nord");
+
+      expect(configuration.update).not.toHaveBeenCalledWith(
+        "followVsCodeTheme",
+        false,
+        vscode.ConfigurationTarget.Global,
+      );
+      expect(save).toHaveBeenCalledWith("theme.name", "nord");
+    });
+
+    it("does not touch followVsCodeTheme for non-theme settings", async () => {
+      const { configuration, save } = mockSaveDependencies();
+
+      await provider.saveOpenCodeCliSetting("animations", false);
+
+      expect(configuration.update).not.toHaveBeenCalled();
+      expect(save).toHaveBeenCalledWith("animations", false);
+    });
   });
 
   it("routes openKeyboardShortcuts messages", () => {

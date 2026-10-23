@@ -280,6 +280,64 @@ describe("createBackgroundSync", () => {
     container.remove();
   });
 
+  it("force-reapplies the sampled color after xterm rewrites a layer", () => {
+    const tuiBg = makeCell({ bgDefault: false, bgRgb: true, bg: 0x224466 });
+    const terminal = makeTerminal({
+      rows: 1,
+      cols: 2,
+      cells: [[tuiBg, tuiBg]],
+    });
+    attachParser(terminal);
+
+    const container = document.createElement("div");
+    const surface = document.createElement("div");
+    surface.className = "xterm";
+    const scrollable = document.createElement("div");
+    scrollable.className = "xterm-scrollable-element";
+    surface.appendChild(scrollable);
+    container.appendChild(surface);
+    document.body.appendChild(container);
+
+    const sync = createBackgroundSync(terminal, container);
+    expect(scrollable.style.backgroundColor).toBe("rgb(34, 68, 102)");
+
+    // xterm's Viewport repaints this layer with theme.background on a change.
+    scrollable.style.backgroundColor = "rgb(255, 255, 255)";
+    sync.syncNow();
+    expect(scrollable.style.backgroundColor).toBe("rgb(255, 255, 255)");
+
+    sync.syncNow(true);
+    expect(scrollable.style.backgroundColor).toBe("rgb(34, 68, 102)");
+
+    sync.dispose();
+    container.remove();
+  });
+
+  it("drops the recorded OSC 11 default when the theme resets", () => {
+    const empty = makeCell({ bgDefault: true });
+    const terminal = makeTerminal({
+      rows: 1,
+      cols: 2,
+      cells: [[empty, empty]],
+    });
+    const { handlers } = attachParser(terminal);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const sync = createBackgroundSync(terminal, container);
+
+    handlers.get(11)?.("rgb:1a1a/2b2b/3c3c");
+    sync.syncNow();
+    expect(container.style.backgroundColor).toBe("rgb(26, 43, 60)");
+
+    sync.resetThemeOverrides();
+    sync.syncNow(true);
+    expect(container.style.backgroundColor).toBe("rgb(10, 10, 10)");
+
+    sync.dispose();
+    container.remove();
+  });
+
   it("stops reacting after dispose", () => {
     const terminal = makeTerminal({
       rows: 1,

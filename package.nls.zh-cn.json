@@ -27,6 +27,7 @@
   "configuration.opencode-cli-sidebar.shellPath.description": "用于终端的自定义 Shell 路径。留空则使用 VS Code 的默认 Shell。在 Windows 上可用于指定 PowerShell、Git Bash 或其他 Shell。",
   "configuration.opencode-cli-sidebar.shellArgs.description": "传递给 Shell 的自定义参数。留空则自动检测。示例：cmd.exe 使用 [\"/c\"]，PowerShell 使用 [\"-Command\"]。",
   "configuration.opencode-cli-sidebar.sendKeybindingsToShell.description": "将 Ctrl/Cmd + 字母快捷键（包括 Ctrl+P）直接发送到侧边栏终端，而不是让 VS Code 拦截。此扩展主要用于运行 opencode（带有自定义快捷键的 TUI），因此默认开启。如果即使侧边栏终端聚焦时也偏好使用正常的 IDE 快捷键，可以关闭。Ctrl+C 等控制键始终发送到终端。",
+  "configuration.opencode-cli-sidebar.followVsCodeTheme.description": "让 OpenCode TUI 跟随 VS Code 的终端主题。启用时会把 OpenCode 的主题名称和模式设为 system，并覆盖本地主题选择。关闭后使用 OpenCode 自己的主题设置。",
   "configuration.opencode-cli-sidebar.autoShareContext.description": "通过 editor-context WebSocket 向 OpenCode 实时共享编辑器上下文（打开的文件、选择内容）。在 AI 工具会话（重新）启动时生效（重启命令、重新打开侧边栏或重载窗口）。",
   "configuration.opencode-cli-sidebar.httpTimeout.description": "与 OpenCode 通信的 HTTP API 请求超时时间（毫秒）",
   "configuration.opencode-cli-sidebar.enableHttpApi.description": "启用 HTTP API 以进行 VS Code 与 OpenCode 之间的双向通信",

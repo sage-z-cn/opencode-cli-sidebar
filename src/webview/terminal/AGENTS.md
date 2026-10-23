@@ -11,6 +11,7 @@
 |---|---|
 | `index.ts` | `initTerminal()` — primary xterm bootstrap; returns `{ terminal, fitAddon, dispose }` |
 | `config.ts` | Parses `TerminalConfig` from `#terminal-container` `data-*` attributes |
+| `theme.ts` | Resolves the xterm palette from VS Code webview variables (`--vscode-terminal-*`) and watches for theme changes |
 | `terminal-container.ts` | Emits the `<div id="terminal-container" data-*>` fragment |
 | `keyboard.ts` | `attachCustomKeyEventHandler` wiring; `ALWAYS_TERMINAL_CONTROL` set |
 | `resize.ts` | `ResizeObserver` + `IntersectionObserver` + initial-fit phases |
@@ -23,7 +24,7 @@
 ## initTerminal() Sequence (order-sensitive)
 
 1. Read config from `container.dataset.*`
-2. Create `Terminal` (cursorBlink/style, fontSize, fontFamily, theme, scrollback)
+2. Create `Terminal` (cursorBlink/style, fontSize, fontFamily, theme from `theme.ts`, scrollback)
 3. `attachCustomKeyEventHandler(handler)`
 4. Load `FitAddon`
 5. Load `WebLinksAddon`
@@ -76,6 +77,8 @@ All three share the same extraction logic but #2 has a duplicated copy. When cha
 - `*.html?raw` imports are inlined as source strings via webpack `asset/source` loader — the `.d.ts` declares the module shape.
 - CSP requires nonce on all inline scripts; `cspSource` comes from the host webview object.
 - WebGL fallback is silent — there is no explicit CanvasAddon swap.
+- The xterm palette mirrors the integrated terminal via `--vscode-terminal-*`; `background-sync` may override `--terminal-background` afterward to match a TUI's painted background. On a workbench theme change xterm drops OSC overrides, so `background-sync` resets its mirrored OSC state and force-repaints every layer.
+- After applying a workbench theme change, the webview sends `CSI ? 997 ; 1 n` / `; 2 n` through `terminalInput`, but only while the alternate screen is active. OpenCode's TUI treats it as a color-scheme notification and re-queries OSC 10/11, so its own theme updates without a restart; normal-screen shell prompts never receive it.
 
 ## Verification
 

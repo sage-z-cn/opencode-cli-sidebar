@@ -8,6 +8,7 @@ import { ContextSharingService } from "../services/ContextSharingService";
 import { ContextManager } from "../services/ContextManager";
 import { OutputChannelService } from "../services/OutputChannelService";
 import { SettingsMigrationService } from "../services/SettingsMigrationService";
+import { OpenCodeCliSettingsService } from "../services/OpenCodeCliSettingsService";
 import { setOpenCodeCliCompatDiagnostics } from "../services/OpenCodeCliCompat";
 import { InstanceDiscoveryService } from "../services/InstanceDiscoveryService";
 import { OpenCodeApiClient } from "../services/OpenCodeApiClient";
@@ -127,6 +128,47 @@ export class ExtensionLifecycle {
         }`,
       );
     }
+
+    // Keep OpenCode's TUI on its terminal-palette theme while the VS Code
+    // setting is enabled. This intentionally overrides a local OpenCode theme
+    // choice; users can disable the setting to manage the theme themselves.
+    const followVsCodeTheme = (): boolean =>
+      vscode.workspace
+        .getConfiguration("opencode-cli-sidebar")
+        .get<boolean>("followVsCodeTheme", true);
+    const applyFollowVsCodeTheme = async (): Promise<void> => {
+      if (!followVsCodeTheme()) {
+        return;
+      }
+      try {
+        const changed = await new OpenCodeCliSettingsService(
+          logger,
+        ).applyVsCodeTheme();
+        if (changed) {
+          logger.info(
+            "[ExtensionLifecycle] OpenCode theme set to system to follow VS Code",
+          );
+        }
+      } catch (error) {
+        logger.warn(
+          `[ExtensionLifecycle] Could not apply the VS Code theme to OpenCode: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    };
+    await applyFollowVsCodeTheme();
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (
+          event.affectsConfiguration(
+            "opencode-cli-sidebar.followVsCodeTheme",
+          )
+        ) {
+          void applyFollowVsCodeTheme();
+        }
+      }),
+    );
 
     setOpenCodeCliCompatDiagnostics((level, message) => {
       if (level === "warn") {

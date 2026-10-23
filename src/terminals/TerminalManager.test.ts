@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { TerminalManager } from "./TerminalManager";
+import { ensureNodePtySpawnHelperExecutable } from "./NodePtySpawnHelper";
 import type * as nodePtyTypes from "../test/mocks/node-pty";
 import type * as vscodeTypes from "../test/mocks/vscode";
 
@@ -19,6 +20,10 @@ vi.mock("node-pty", async () => {
   const actual = await vi.importActual("../test/mocks/node-pty");
   return actual;
 });
+
+vi.mock("./NodePtySpawnHelper", () => ({
+  ensureNodePtySpawnHelperExecutable: vi.fn(),
+}));
 
 describe("TerminalManager", () => {
   let manager: TerminalManager;
@@ -47,6 +52,12 @@ describe("TerminalManager", () => {
 
       expect(terminal).toBeDefined();
       expect(terminal.id).toBe("test-id");
+    });
+
+    it("should ensure node-pty spawn-helper is executable before spawning", () => {
+      manager.createTerminal("test-id");
+
+      expect(ensureNodePtySpawnHelperExecutable).toHaveBeenCalledTimes(1);
     });
 
     it("should kill existing terminal with same id", () => {

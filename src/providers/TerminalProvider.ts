@@ -1188,6 +1188,30 @@ export class TerminalProvider
     path: string,
     value: unknown,
   ): Promise<void> {
+    // An explicit theme choice in the settings modal is a stronger signal
+    // than the follow-VS-Code default. Turn the default off before saving so
+    // the choice is not silently reverted on the next activation.
+    if (path === "theme.name" || path === "theme.mode") {
+      const config = vscode.workspace.getConfiguration("opencode-cli-sidebar");
+      if (config.get<boolean>("followVsCodeTheme", true)) {
+        try {
+          await config.update(
+            "followVsCodeTheme",
+            false,
+            vscode.ConfigurationTarget.Global,
+          );
+          this.logger.info(
+            "[TerminalProvider] Disabled followVsCodeTheme after a manual theme change",
+          );
+        } catch (error) {
+          this.logger.warn(
+            `[TerminalProvider] Failed to disable followVsCodeTheme after a manual theme change: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+    }
     try {
       await this.openCodeCliSettingsService.save(path, value);
       this.postWebviewMessage({

@@ -156,6 +156,22 @@ describe("registerTerminalCommands", () => {
     expect(commands.size).toBe(18);
   });
 
+  it("skips legacy aliases while the pre-rebrand extension is installed", () => {
+    vi.mocked(vscode.extensions.getExtension).mockReturnValue({} as never);
+    const outputChannel = createOutputChannelMock();
+    const commands = registerAndGetCommands(
+      createDependencies({
+        outputChannel: outputChannel as unknown as OutputChannelService,
+      }),
+    );
+
+    expect(commands.has("ai-sidebar-terminal.start")).toBe(false);
+    expect(commands.size).toBe(9);
+    expect(outputChannel.warn).toHaveBeenCalledWith(
+      expect.stringContaining("sagez.ai-sidebar-terminal"),
+    );
+  });
+
   it("registers legacy ai-sidebar-terminal aliases for all old command IDs", () => {
     const commands = registerAndGetCommands(createDependencies());
 

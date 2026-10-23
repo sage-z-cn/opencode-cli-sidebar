@@ -251,6 +251,11 @@
           "default": true,
           "description": "%configuration.opencode-cli-sidebar.sendKeybindingsToShell.description%"
         },
+        "opencode-cli-sidebar.followVsCodeTheme": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.opencode-cli-sidebar.followVsCodeTheme.description%"
+        },
         "opencode-cli-sidebar.autoShareContext": {
           "type": "boolean",
           "default": true,

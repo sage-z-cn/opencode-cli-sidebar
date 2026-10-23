@@ -4,7 +4,16 @@ html {
   padding: 0;
   height: 100%;
   overflow: hidden;
-  background-color: var(--vscode-editor-background, #0a0a0a);
+  background-color: var(
+    --terminal-background,
+    var(
+      --vscode-terminal-background,
+      var(
+        --vscode-sideBar-background,
+        var(--vscode-panel-background, var(--vscode-editor-background, #0a0a0a))
+      )
+    )
+  );
   display: flex;
   flex-direction: column;
 }
@@ -17,7 +26,16 @@ html {
   overflow: hidden;
   touch-action: none;
   /* Painted by background-sync to match the live TUI/shell theme. */
-  background-color: var(--terminal-background, #0a0a0a);
+  background-color: var(
+    --terminal-background,
+    var(
+      --vscode-terminal-background,
+      var(
+        --vscode-sideBar-background,
+        var(--vscode-panel-background, var(--vscode-editor-background, #0a0a0a))
+      )
+    )
+  );
 }
 
 /* Stretch xterm's host element to the container so the FitAddon row-rounding

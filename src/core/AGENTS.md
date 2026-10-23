@@ -20,6 +20,7 @@
 - Do not add command registrations directly in providers or lifecycle bodies; add them to the matching command file (`terminalCommands.ts` or `syncCommands.ts`) and pass dependencies through `getCommandDependencies()` / the sync service registry.
 - `getCommandDependencies()` intentionally exposes getters so commands see current provider/service references after activation changes.
 - File-reference commands send to `deps.sendPrompt()`, so they follow the active instance/session selected by `SessionRuntime` rather than manually choosing a terminal.
+- `terminalCommands.ts` registers the legacy `ai-sidebar-terminal.*` aliases only when the pre-rebrand extension is absent. If both extensions run, the second registration throws `command 'ai-sidebar-terminal.start' already exists` and activation fails.
 
 ## Verification
 

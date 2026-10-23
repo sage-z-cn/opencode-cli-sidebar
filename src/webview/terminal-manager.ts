@@ -5,6 +5,7 @@ import { Terminal, type ITerminalAddon, type ITerminalOptions } from "@xterm/xte
 import type { DroppedBlobFile, TerminalBackendType } from "../types";
 import { postMessage } from "./shared/vscode-api";
 import { fitFullWidth } from "./terminal/fit";
+import { readVsCodeTerminalTheme } from "./terminal/theme";
 
 export interface TerminalInstance {
   terminal: Terminal;
@@ -20,10 +21,6 @@ const DEFAULT_TERMINAL_OPTIONS: ITerminalOptions = {
   fontSize: 14,
   fontFamily: "monospace",
   scrollback: 10000,
-  theme: {
-    background: "#0a0a0a",
-    foreground: "#cccccc",
-  },
 };
 
 class CanvasAddonFallback implements ITerminalAddon {
@@ -62,7 +59,7 @@ export class TerminalManager {
       ...DEFAULT_TERMINAL_OPTIONS,
       ...options,
       theme: {
-        ...DEFAULT_TERMINAL_OPTIONS.theme,
+        ...readVsCodeTerminalTheme(),
         ...options.theme,
       },
     });

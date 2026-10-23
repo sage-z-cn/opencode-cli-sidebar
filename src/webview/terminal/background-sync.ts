@@ -198,8 +198,14 @@ export function sampleDominantBackground(
 }
 
 export interface BackgroundSync {
-  /** Force an immediate resample + apply. */
-  syncNow: () => void;
+  /**
+   * Resample + apply immediately. `force` rewrites every surface layer even
+   * when the sampled color is unchanged, which is required after xterm's
+   * theme change rewrites the scrollable layer.
+   */
+  syncNow: (force?: boolean) => void;
+  /** Drop the recorded OSC 11 override (xterm resets it on theme change). */
+  resetThemeOverrides: () => void;
   dispose: () => void;
 }
 
@@ -216,8 +222,8 @@ export function createBackgroundSync(
   let rafId: number | null = null;
   let applied = "";
 
-  const apply = (color: string): void => {
-    if (applied === color) {
+  const apply = (color: string, force = false): void => {
+    if (!force && applied === color) {
       return;
     }
     applied = color;
@@ -246,11 +252,15 @@ export function createBackgroundSync(
     }
   };
 
-  const syncNow = (): void => {
+  const syncNow = (force = false): void => {
     if (disposed) {
       return;
     }
-    apply(sampleDominantBackground(terminal));
+    apply(sampleDominantBackground(terminal), force);
+  };
+
+  const resetThemeOverrides = (): void => {
+    oscDefaultByTerminal.delete(terminal);
   };
 
   const schedule = (): void => {
@@ -290,6 +300,7 @@ export function createBackgroundSync(
 
   return {
     syncNow,
+    resetThemeOverrides,
     dispose: () => {
       disposed = true;
       if (rafId !== null) {

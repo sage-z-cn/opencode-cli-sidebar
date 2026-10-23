@@ -14,6 +14,12 @@ import { createLinkProvider } from "../links";
 import { handleDrop } from "../dragdrop";
 import { postMessage } from "../shared/vscode-api";
 import { createBackgroundSync } from "./background-sync";
+import {
+  applyTerminalThemeVariables,
+  applyWorkbenchThemeChange,
+  readVsCodeTerminalTheme,
+  watchVsCodeTerminalTheme,
+} from "./theme";
 
 export interface TerminalInstance {
   terminal: Terminal;
@@ -58,21 +64,18 @@ export function initTerminal(
   },
 ): TerminalInstance | null {
   const config = readTerminalConfig(container);
+  const initialTheme = readVsCodeTerminalTheme();
 
   const requestPaste = () => postMessage({ type: "triggerPaste" });
 
-  document.documentElement.style.setProperty("--terminal-background", "#0a0a0a");
-  document.documentElement.style.setProperty("--terminal-foreground", "#cccccc");
+  applyTerminalThemeVariables(initialTheme);
 
   const terminal = new Terminal({
     cursorBlink: config.cursorBlink,
     cursorStyle: config.cursorStyle,
     fontSize: config.fontSize,
     fontFamily: config.fontFamily,
-    theme: {
-      background: "#0a0a0a",
-      foreground: "#cccccc",
-    },
+    theme: initialTheme,
     scrollback: config.scrollback,
   });
 
@@ -153,6 +156,14 @@ export function initTerminal(
   performInitialFit(terminal, fitAddon);
   const cleanupResize = setupResizeHandling(terminal, fitAddon, container);
   const backgroundSync = createBackgroundSync(terminal, container);
+  const themeWatcher = watchVsCodeTerminalTheme((nextTheme) => {
+    applyWorkbenchThemeChange(
+      terminal,
+      nextTheme,
+      backgroundSync,
+      (data) => options.onData(data),
+    );
+  });
 
   terminal.onData((data) => {
     if (data) {
@@ -204,6 +215,7 @@ export function initTerminal(
   window.addEventListener("drop", dropHandler);
 
   const dispose = () => {
+    themeWatcher.dispose();
     backgroundSync.dispose();
     cleanupResize();
     cleanupVisibility();

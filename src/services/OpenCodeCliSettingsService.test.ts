@@ -368,4 +368,68 @@ describe("OpenCodeCliSettingsService", () => {
     };
     expect(doc.plugins[0]).toBe("demo-pkg@1.0.0");
   });
+
+  it("applies the VS Code terminal theme when the config has no theme", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ animations: false }),
+      "utf8",
+    );
+
+    const changed = await service.applyVsCodeTheme();
+
+    expect(changed).toBe(true);
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      animations: boolean;
+      theme: { name: string; mode: string };
+    };
+    expect(doc.theme.name).toBe("system");
+    expect(doc.theme.mode).toBe("system");
+    expect(doc.animations).toBe(false);
+  });
+
+  it("overrides a local OpenCode theme when following VS Code", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        theme: { name: "nord", mode: "dark" },
+        keybinds: { "session.new": "alt+n" },
+      }),
+      "utf8",
+    );
+
+    const changed = await service.applyVsCodeTheme();
+
+    expect(changed).toBe(true);
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      theme: { name: string; mode: string };
+      keybinds: Record<string, string>;
+    };
+    expect(doc.theme.name).toBe("system");
+    expect(doc.theme.mode).toBe("system");
+    expect(doc.keybinds["session.new"]).toBe("alt+n");
+  });
+
+  it("does not rewrite an already-following config", async () => {
+    const original = JSON.stringify({
+      theme: { name: "system", mode: "system" },
+    });
+    fs.writeFileSync(configPath, original, "utf8");
+
+    const changed = await service.applyVsCodeTheme();
+
+    expect(changed).toBe(false);
+    expect(fs.readFileSync(configPath, "utf8")).toBe(original);
+  });
+
+  it("creates cli.json when applying the VS Code theme to a missing file", async () => {
+    const changed = await service.applyVsCodeTheme();
+
+    expect(changed).toBe(true);
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      theme: { name: string; mode: string };
+    };
+    expect(doc.theme.name).toBe("system");
+    expect(doc.theme.mode).toBe("system");
+  });
 });

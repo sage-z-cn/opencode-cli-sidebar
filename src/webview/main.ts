@@ -8,7 +8,7 @@ import {
 } from "./clipboard";
 import { postMessage } from "./shared/vscode-api";
 import { showServiceRestartPrompt } from "./service-restart-prompt";
-import { initTerminal } from "./terminal";
+import { initTerminal, type TerminalInstance } from "./terminal";
 import { readTerminalConfig } from "./terminal/config";
 import { createFocusIndicator } from "./terminal/focus-indicator";
 import { createMessageHandler, type MessageHandlerCallbacks } from "./messages";
@@ -155,13 +155,18 @@ const callbacks: MessageHandlerCallbacks = {
 const messageHandler = createMessageHandler(callbacks);
 
 let terminalManager: TerminalManager | null = null;
+let terminalInstance: TerminalInstance | null = null;
+
+function disposeTerminal(): void {
+  terminalInstance?.dispose();
+  terminalInstance = null;
+  terminalManager?.destroy();
+  terminalManager = null;
+}
 
 function initApp(): void {
   // Clean up previous instance if webview is reused
-  if (terminalManager) {
-    terminalManager.destroy();
-    terminalManager = null;
-  }
+  disposeTerminal();
 
   const container = document.getElementById("terminal-container");
   if (!container) return;
@@ -180,6 +185,7 @@ function initApp(): void {
       postMessage({ type: "terminalResize", cols, rows });
     },
   });
+  terminalInstance = instance;
 
   if (instance) {
     messageHandler.terminal = instance.terminal;
