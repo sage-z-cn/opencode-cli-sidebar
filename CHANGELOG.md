@@ -5,6 +5,10 @@ All notable changes to the "OpenCode CLI Sidebar" extension will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+#### Unreleased
+**Bug Fixes**
+- **Sync**: Keep conflict and status state consistent across all VS Code windows.
+
 #### 5.6.0
 **New Features**
 - **Sync**: Add cross-window process lock for auto-sync leadership.

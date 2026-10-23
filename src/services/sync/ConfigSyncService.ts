@@ -27,6 +27,7 @@ import {
   hashContent,
   syncStorageDir,
 } from "./SyncManifest";
+import { SyncStatusStore, type SyncStatusData } from "./SyncStatusStore";
 import {
   PreconditionFailedError,
   WebDavClient,
@@ -288,6 +289,16 @@ interface RemoteTree {
   baseMissing: boolean;
 }
 
+/** Merge instructions for one shared-status write. */
+interface PersistStatusOptions {
+  /** Conflict entries this window owns; overlaid on the file's list. */
+  conflicts?: WebDavConflictEntry[];
+  /** True when `conflicts` is a full pass result and replaces the file list. */
+  replaceConflicts?: boolean;
+  /** Ids resolved in this window and removed from the file's list. */
+  removedConflictIds?: string[];
+}
+
 /**
  * ConfigSyncService orchestrates WebDAV config sync: three-way merge of
  * local files against a remote tree with a persisted baseline manifest,
@@ -324,6 +335,19 @@ export class ConfigSyncService implements vscode.Disposable {
    * so a pending update of our own is never read back as stale. */
   private historyWrite: PromiseLike<void> = Promise.resolve();
   private logLines: string[] = [];
+
+  /** Machine-shared UI status (sync/status.json under globalStorage). */
+  private readonly statusStore: SyncStatusStore;
+  private readonly statusStoreFilePath: string;
+  private statusWatcher: vscode.FileSystemWatcher | undefined;
+  /** Revision of the shared status this window last wrote or adopted. */
+  private lastStatusRevision = 0;
+  /** Write token of the shared status this window last wrote or adopted;
+   *  revision equality alone cannot tell concurrent sibling writes apart. */
+  private lastStatusWriteId: string | undefined;
+  /** Serialized status persistence chain; awaited before adopting the shared
+   * file so pending updates of our own are never read back as foreign. */
+  private statusWrite: Promise<void> = Promise.resolve();
 
   private failureStreak = 0;
   private nextBackoffMs = FIRST_BACKOFF_MS;
@@ -368,6 +392,28 @@ export class ConfigSyncService implements vscode.Disposable {
     this.syncLock = new SyncProcessLock(
       path.join(syncStorageDir(this.globalStoragePath()), "lock.json"),
     );
+    this.statusStore = new SyncStatusStore(this.globalStoragePath());
+    this.statusStoreFilePath = this.statusStore.filePath;
+    try {
+      // Watch the machine-shared status file so conflicts resolved in a
+      // sibling window converge here without waiting for a panel refresh.
+      const pattern = new vscode.RelativePattern(
+        vscode.Uri.file(path.dirname(this.statusStoreFilePath)),
+        "status.json",
+      );
+      const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+      const onEvent = () => void this.onExternalStatusFileChange();
+      watcher.onDidChange(onEvent);
+      watcher.onDidCreate(onEvent);
+      watcher.onDidDelete(onEvent);
+      this.statusWatcher = watcher;
+    } catch (error) {
+      this.logger.warn(
+        `[WebDavSync] failed to create status file watcher: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
 
     this.history = this.loadHistory();
 
@@ -410,6 +456,8 @@ export class ConfigSyncService implements vscode.Disposable {
 
   public dispose(): void {
     this.disposed = true;
+    this.statusWatcher?.dispose();
+    this.statusWatcher = undefined;
     this.stopAutoTimers();
     this.stopLockHeartbeat();
     this.clearLockRetryTimer();
@@ -424,9 +472,12 @@ export class ConfigSyncService implements vscode.Disposable {
 
   public async getSnapshot(): Promise<WebDavSyncSnapshot> {
     // Cross-window freshness: other windows append to or clear the shared
-    // store. Await our own pending write first so it is never read back
-    // as stale, then re-read the merged persisted truth.
+    // history store, and rewrite the shared status file. Await our own
+    // pending writes first so they are never read back as stale, then
+    // re-read the merged persisted truth.
     await this.historyWrite;
+    await this.statusWrite;
+    await this.adoptSharedStatus();
     this.history = this.loadHistory();
     const config = readSyncConfig();
     const configured = config.enabled && !!config.url;
@@ -917,6 +968,16 @@ export class ConfigSyncService implements vscode.Disposable {
     // Resolution and the sync transfer phase share one manifest; their
     // read-modify-write cycles must never interleave.
     await this.enqueueExclusive(async () => {
+      // Settle our own pending writes, then force-adopt the shared truth:
+      // entries another window already resolved must vanish here too
+      // (unknown ids are skipped by the loop below).
+      await this.statusWrite;
+      await this.adoptSharedStatus(true);
+      const resolvedIds: string[] = [];
+      // Fresh conflicts raised while resolving are the only entries this
+      // window may add back; everything else stays as the file has it, so
+      // a sibling's concurrent resolution is not overwritten.
+      const reconflictedEntries: WebDavConflictEntry[] = [];
       let failed = 0;
       for (const id of targets) {
         const current = this.conflicts.get(id);
@@ -929,6 +990,7 @@ export class ConfigSyncService implements vscode.Disposable {
             config,
             current,
             resolution,
+            (entry) => reconflictedEntries.push(entry),
           );
           if (reconflicted) {
             this.log(
@@ -937,6 +999,7 @@ export class ConfigSyncService implements vscode.Disposable {
             );
           } else {
             this.conflicts.delete(id);
+            resolvedIds.push(id);
             this.log(
               "info",
               `conflict resolved (${current.kind}/${resolution}): ${rel}`,
@@ -951,6 +1014,10 @@ export class ConfigSyncService implements vscode.Disposable {
           );
         }
       }
+      await this.persistStatus({
+        conflicts: reconflictedEntries,
+        removedConflictIds: resolvedIds,
+      });
       this.pushDelta({ conflictCount: this.conflicts.size });
       await this.requestSyncData();
       if (failed > 0) {
@@ -967,6 +1034,7 @@ export class ConfigSyncService implements vscode.Disposable {
     config: SyncEngineConfig,
     current: WebDavConflictEntry,
     resolution: "local" | "remote",
+    onReconflicted?: (entry: WebDavConflictEntry) => void,
   ): Promise<boolean> {
     let reconflicted = false;
     const recordConflict = (entry: WebDavConflictEntry): void => {
@@ -976,6 +1044,7 @@ export class ConfigSyncService implements vscode.Disposable {
         }
       }
       this.conflicts.set(entry.id, entry);
+      onReconflicted?.(entry);
       reconflicted = true;
     };
     const client = await this.createClientFromSettings(config);
@@ -1529,6 +1598,7 @@ export class ConfigSyncService implements vscode.Disposable {
     if (!wasPaused) {
       this.pushDelta({ state: "error", autoSyncPaused: true });
     }
+    void this.persistStatus();
   }
 
   private rearm(): void {
@@ -1541,6 +1611,7 @@ export class ConfigSyncService implements vscode.Disposable {
     this.state = config.enabled && config.url ? "idle" : "unconfigured";
     this.armTriggers();
     this.pushDelta({ state: this.state, autoSyncPaused: false });
+    void this.persistStatus();
   }
 
   /** Enter the credentials state and remember which connection inputs it was
@@ -1570,6 +1641,7 @@ export class ConfigSyncService implements vscode.Disposable {
     this.state = config.enabled && config.url ? "idle" : "unconfigured";
     this.log("info", "sync settings changed; credentials state cleared");
     this.pushDelta({ state: this.state });
+    void this.persistStatus();
   }
 
   private stopAutoTimers(): void {
@@ -1660,6 +1732,10 @@ export class ConfigSyncService implements vscode.Disposable {
     if (config.username !== "" && password === undefined) {
       const wasNeedsAuth = this.state === "needsAuth";
       this.enterNeedsAuth();
+      // Persist unconditionally: the shared file may still predate this
+      // verdict, and this state blocks automatic passes (triggerAuto),
+      // so no later write would ever propagate it to sibling windows.
+      void this.persistStatus();
       if (!wasNeedsAuth) {
         this.log(
           "info",
@@ -1671,6 +1747,7 @@ export class ConfigSyncService implements vscode.Disposable {
     }
     this.state = "syncing";
     this.pushDelta({ state: "syncing" });
+    void this.persistStatus();
     // Visible to the catch blocks so an aborted pass can checkpoint.
     let applyAgreesAndForgets: (() => Promise<void>) | undefined;
     let completedUploads = 0;
@@ -1922,6 +1999,12 @@ export class ConfigSyncService implements vscode.Disposable {
         this.autoSyncPaused = false;
         this.armTriggers();
       }
+      // The scan covers both sides, so its conflict list is authoritative
+      // and replaces whatever the shared file held.
+      void this.persistStatus({
+        conflicts: [...this.conflicts.values()],
+        replaceConflicts: true,
+      });
       const direction =
         completedUploads > 0 && completedDownloads > 0
           ? "both"
@@ -2049,6 +2132,7 @@ export class ConfigSyncService implements vscode.Disposable {
     });
     this.log("warn", `sync aborted (auth): ${error.message}`);
     this.pushDelta({ state: "needsAuth" });
+    void this.persistStatus();
   }
 
   private handleTransientFailure(
@@ -2085,6 +2169,7 @@ export class ConfigSyncService implements vscode.Disposable {
       }, delay);
     }
     this.pushDelta({ state: "error" });
+    void this.persistStatus();
   }
 
   /**
@@ -2141,6 +2226,7 @@ export class ConfigSyncService implements vscode.Disposable {
       `rate limited by server (${cooldownSource}); resuming in ${seconds}s`,
     );
     this.pushDelta({ state: "error" });
+    void this.persistStatus();
     this.clearRateLimitResume();
     this.rateLimitResumeTimer = setTimeout(() => {
       this.rateLimitResumeTimer = undefined;
@@ -2843,6 +2929,144 @@ export class ConfigSyncService implements vscode.Disposable {
     this.historyWrite = this.context.globalState
       .update(HISTORY_KEY, next)
       .then(undefined, () => undefined);
+  }
+
+  // ── Cross-window status sharing ──
+
+  /**
+   * Adopt the machine-shared status file when a sibling wrote a token this
+   * window has not seen. Revision numbers can collide across windows, so the
+   * token is the identity. An in-flight sync pass owns this window's state
+   * and writes the file at completion, so adoption is skipped unless forced.
+   */
+  private async adoptSharedStatus(force = false): Promise<boolean> {
+    if (this.disposed) {
+      return false;
+    }
+    if (this.syncing && !force) {
+      return false;
+    }
+    const data = await this.statusStore.load().catch(() => undefined);
+    if (!data || data.writeId === this.lastStatusWriteId) {
+      return false;
+    }
+    this.state = data.state;
+    this.conflicts = new Map(
+      data.conflicts.map((entry) => [entry.id, entry] as const),
+    );
+    this.lastSyncAt = data.lastSyncAt ?? undefined;
+    this.pendingCount = data.pendingCount;
+    this.autoSyncPaused = data.autoSyncPaused;
+    this.lastStatusRevision = data.revision;
+    this.lastStatusWriteId = data.writeId;
+    return true;
+  }
+
+  /** Watcher callback: a sibling window changed the shared status file. */
+  private async onExternalStatusFileChange(): Promise<void> {
+    try {
+      if (await this.adoptSharedStatus()) {
+        this.pushDelta({
+          state: this.state,
+          pendingCount: this.pendingCount,
+          conflictCount: this.conflicts.size,
+          ...(this.lastSyncAt !== undefined
+            ? {
+                lastSyncAt: this.lastSyncAt,
+                lastSyncLabel: relativeTimeLabel(this.lastSyncAt),
+              }
+            : {}),
+          autoSyncPaused: this.autoSyncPaused,
+        });
+        await this.requestSyncData();
+      }
+    } catch (error) {
+      this.logger.debug(
+        `[WebDavSync] failed to adopt shared status: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Persist the UI-visible status to the machine-shared file. Writes are
+   * serialized in call order, so a slow local write can never land after a
+   * newer one. Conflict entries are only replaced when the caller owns a
+   * fresh list; state-only writes keep the file's list so a stale window
+   * cannot resurrect conflicts another window already resolved.
+   */
+  private persistStatus(options: PersistStatusOptions = {}): Promise<void> {
+    if (this.disposed) {
+      return Promise.resolve();
+    }
+    const run = this.statusWrite.then(
+      () => this.writeStatus(options),
+      () => this.writeStatus(options),
+    );
+    this.statusWrite = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return this.statusWrite;
+  }
+
+  private async writeStatus(options: PersistStatusOptions): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    const previous = await this.statusStore.load().catch(() => undefined);
+    const revision =
+      Math.max(previous?.revision ?? 0, this.lastStatusRevision) + 1;
+    const writeId = crypto.randomBytes(8).toString("hex");
+    // A freshly opened window has no lastSyncAt of its own; keep the
+    // machine value instead of writing null over another window's pass.
+    const lastSyncAt =
+      Math.max(previous?.lastSyncAt ?? 0, this.lastSyncAt ?? 0) || null;
+    const data: SyncStatusData = {
+      revision,
+      writeId,
+      updatedAt: Date.now(),
+      // "unconfigured" is derived from this window's settings; the shared
+      // file only carries runtime states.
+      state: this.state === "unconfigured" ? "idle" : this.state,
+      conflicts: this.mergePersistedConflicts(previous?.conflicts, options),
+      lastSyncAt,
+      pendingCount: this.pendingCount,
+      autoSyncPaused: this.autoSyncPaused,
+    };
+    try {
+      await this.statusStore.save(data);
+      this.lastStatusRevision = revision;
+      this.lastStatusWriteId = writeId;
+    } catch (error) {
+      // A failed status write never fails the sync pass, but keep a trace
+      // so cross-window divergence is diagnosable.
+      this.logger.debug(
+        `[WebDavSync] failed to persist shared status: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private mergePersistedConflicts(
+    previous: WebDavConflictEntry[] | undefined,
+    options: PersistStatusOptions,
+  ): WebDavConflictEntry[] {
+    if (options.replaceConflicts) {
+      return options.conflicts ?? [];
+    }
+    const merged = new Map(
+      (previous ?? []).map((entry) => [entry.id, entry] as const),
+    );
+    for (const id of options.removedConflictIds ?? []) {
+      merged.delete(id);
+    }
+    for (const entry of options.conflicts ?? []) {
+      merged.set(entry.id, entry);
+    }
+    return [...merged.values()];
   }
 }
 

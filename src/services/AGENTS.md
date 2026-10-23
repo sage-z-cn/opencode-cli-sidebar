@@ -39,6 +39,7 @@
 - Data safety first: ambiguous states resolve to conflicts, never silent overwrites. Local destruction paths require a successful backup first. The exception is deliberate scope exit: adding an exclusion purges the corresponding remote files without a prompt.
 - `ConfigSyncService` resolves through `syncServiceRegistry`; commands and the message router never instantiate it directly.
 - Sync passwords go to VS Code SecretStorage; never log credentials or write them to settings/state.
+- Machine-wide UI status (conflicts, state, lastSyncAt, pendingCount, autoSyncPaused) lives in `sync/status.json` under globalStorage; every window watches the file and converges through it. `leader` stays per-window. Writes are serialized per window and carry a unique `writeId` (revision numbers can collide across windows). State-only writes preserve the file's conflict list; only a full pass scan replaces it and conflict resolution removes resolved entries, so a stale window cannot resurrect resolved conflicts.
 
 ## Verification
 

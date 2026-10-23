@@ -28,6 +28,7 @@ import {
 } from "./WebDavClient";
 import { hashContent, SyncManifest, syncStorageDir } from "./SyncManifest";
 import { LOCK_STALE_MS, SyncProcessLock } from "./SyncProcessLock";
+import { SyncStatusStore, type SyncStatusData } from "./SyncStatusStore";
 
 const vscode = await vi.importActual<typeof import("../../test/mocks/vscode")>(
   "../../test/mocks/vscode",
@@ -245,6 +246,18 @@ function makeContext(storageDir: string): vscodeTypes.ExtensionContext {
   );
   context.secrets.get = vi.fn(async () => "stored-password");
   return context;
+}
+
+/** Watcher creations targeting the config directory (the recursive glob
+ * pattern "**" plus "/*"). Other watchers, e.g. the shared status file,
+ * do not count. */
+function configDirWatcherCalls(): number {
+  const calls = vi.mocked(vscode.workspace.createFileSystemWatcher).mock
+    .calls as unknown as Array<[unknown]>;
+  return calls.filter(
+    ([pattern]) =>
+      (pattern as { pattern?: string } | undefined)?.pattern === "**/*",
+  ).length;
 }
 
 describe("ConfigSyncService decision matrix", () => {
@@ -1905,8 +1918,7 @@ describe("ConfigSyncService engine", () => {
       }),
       "utf8",
     );
-    const watcherCallsBefore =
-      vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length;
+    const watcherCallsBefore = configDirWatcherCalls();
 
     service.initialize();
     const internals = service as unknown as {
@@ -1928,9 +1940,9 @@ describe("ConfigSyncService engine", () => {
     expect(internals.isLeader).toBe(false);
     expect(internals.watcher).toBeUndefined();
     expect(internals.pollTimer).toBeUndefined();
-    expect(
-      vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length,
-    ).toBe(watcherCallsBefore);
+    // The follower created no config-directory watcher; only the shared
+    // status-file watcher exists from construction.
+    expect(configDirWatcherCalls()).toBe(watcherCallsBefore);
     expect((await service.getSnapshot()).leader).toBe(false);
     expect(deltas.some((delta) => delta.leader === false)).toBe(false);
     // Losing is not final: a retry is scheduled to reclaim leadership.
@@ -1948,9 +1960,7 @@ describe("ConfigSyncService engine", () => {
       },
       { timeout: 5_000 },
     );
-    expect(
-      vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length,
-    ).toBeGreaterThan(watcherCallsBefore);
+    expect(configDirWatcherCalls()).toBeGreaterThan(watcherCallsBefore);
     expect(internals.pollTimer).toBeDefined();
     expect(deltas.some((delta) => delta.leader === true)).toBe(true);
     expect((await service.getSnapshot()).leader).toBe(true);
@@ -2147,7 +2157,9 @@ describe("ConfigSyncService engine", () => {
       }
     });
     expect(deltas.some((delta) => delta.leader === true)).toBe(false);
-    expect(vscode.workspace.createFileSystemWatcher).not.toHaveBeenCalled();
+    // No config-directory watcher was created; only the constructor's
+    // shared status-file watcher ever existed.
+    expect(configDirWatcherCalls()).toBe(0);
     const other = new SyncProcessLock(lockPath);
     await expect(other.acquire(1_000)).resolves.toBe(true);
   });
@@ -2807,5 +2819,306 @@ describe("multi-window shared globalState", () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+});
+
+describe("cross-window status sharing", () => {
+  let storageDir: string;
+  let configDir: string;
+  let previousConfigDir: string | undefined;
+  let client: FakeClient;
+  let context: vscodeTypes.ExtensionContext;
+  let serviceA: ConfigSyncService;
+  let extraServices: ConfigSyncService[];
+
+  function writeLocal(rel: string, content: string): void {
+    const abs = path.join(configDir, ...rel.split("/"));
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content, "utf8");
+  }
+
+  function readLocal(rel: string): string {
+    return fs.readFileSync(path.join(configDir, ...rel.split("/")), "utf8");
+  }
+
+  /** A sibling window: same storage, config dir and server as serviceA. */
+  function buildWindow(posted: HostMessage[]): ConfigSyncService {
+    const service = new ConfigSyncService(context, {
+      logger: OutputChannelService.getInstance(),
+      postWebviewMessage: (message) => {
+        posted.push(message);
+      },
+      isWebviewVisible: () => true,
+      clientFactory: () => client,
+    });
+    extraServices.push(service);
+    return service;
+  }
+
+  /** Wait until the window's snapshot reports the given conflict count. */
+  async function waitForConflicts(
+    service: ConfigSyncService,
+    conflictCount: number,
+  ): Promise<WebDavSyncSnapshot> {
+    return vi.waitFor(async () => {
+      const snapshot = await service.getSnapshot();
+      if (snapshot.conflictCount !== conflictCount) {
+        throw new Error(`waiting for ${conflictCount} conflict(s)`);
+      }
+      return snapshot;
+    });
+  }
+
+  beforeEach(() => {
+    storageDir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-syncstore-"));
+    configDir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-syncconf-"));
+    previousConfigDir = process.env.OPENCODE_CONFIG_DIR;
+    process.env.OPENCODE_CONFIG_DIR = configDir;
+
+    const settings: Record<string, unknown> = {
+      "sync.enabled": true,
+      "sync.url": "https://dav.test",
+      "sync.username": "user",
+      "sync.basePath": "/opencode-config/",
+      "sync.autoSyncEnabled": false,
+      "sync.autoSyncOnStartup": false,
+      "sync.autoSyncOnLocalChange": false,
+      "sync.autoSyncRemotePoll": false,
+      "sync.pollIntervalMinutes": 30,
+      "sync.customItems": [],
+      "sync.disabledItems": [],
+      "sync.onConflict": "prompt",
+      "sync.deletions": "prompt",
+    };
+    vi.mocked(vscode.workspace.getConfiguration).mockImplementation(((
+      _section?: string,
+    ) => ({
+      get: (key: string, defaultValue?: unknown) =>
+        key in settings ? settings[key] : defaultValue,
+      inspect: () => undefined,
+      update: async (key: string, value: unknown) => {
+        settings[key] = value;
+      },
+    })) as never);
+
+    client = new FakeClient();
+    // Both windows share the storage, config dir and fake server, exactly
+    // like two VS Code windows on one machine.
+    context = makeContext(storageDir);
+    extraServices = [];
+    serviceA = buildWindow([]);
+  });
+
+  afterEach(async () => {
+    // Drain in-flight passes before the temp dirs vanish.
+    for (const service of extraServices) {
+      const internal = service as unknown as { syncing: boolean };
+      const drainDeadline = Date.now() + 5000;
+      while (internal.syncing && Date.now() < drainDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      service.dispose();
+    }
+    OutputChannelService.resetInstance();
+    if (previousConfigDir === undefined) {
+      delete process.env.OPENCODE_CONFIG_DIR;
+    } else {
+      process.env.OPENCODE_CONFIG_DIR = previousConfigDir;
+    }
+    fs.rmSync(storageDir, { recursive: true, force: true });
+    fs.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it("shows conflicts detected in another window", async () => {
+    // First-sync content difference without a baseline: one conflict.
+    writeLocal("cli.json", "local-new");
+    client.addFile("cli.json", "remote-new");
+    await serviceA.syncNow();
+    const snapshotA = await waitForConflicts(serviceA, 1);
+
+    const serviceB = buildWindow([]);
+    const snapshotB = await waitForConflicts(serviceB, 1);
+
+    expect(snapshotB.conflicts.map((conflict) => conflict.id)).toEqual(
+      snapshotA.conflicts.map((conflict) => conflict.id),
+    );
+    expect(snapshotB.state).toBe("idle");
+    expect(snapshotB.lastSyncAt).toBe(snapshotA.lastSyncAt);
+  });
+
+  it("drops conflicts another window already resolved", async () => {
+    writeLocal("cli.json", "local-new");
+    client.addFile("cli.json", "remote-new");
+    await serviceA.syncNow();
+    const snapshotA = await waitForConflicts(serviceA, 1);
+    const ids = snapshotA.conflicts.map((conflict) => conflict.id);
+
+    const serviceB = buildWindow([]);
+    // Window B saw the shared conflict list before the resolution.
+    await waitForConflicts(serviceB, 1);
+
+    await serviceA.resolveConflicts(ids, "local");
+    expect(readLocal("cli.json")).toBe("local-new");
+
+    const snapshotB = await serviceB.getSnapshot();
+    expect(snapshotB.conflictCount).toBe(0);
+    expect(snapshotB.conflicts).toEqual([]);
+    expect(snapshotB.state).toBe("idle");
+    expect(snapshotB.lastSyncAt).toBe(snapshotA.lastSyncAt);
+  });
+
+  it("propagates the missing-password state to other windows", async () => {
+    // Settings arrived via VS Code Settings Sync but no password is
+    // stored on this device: every pass ends in needsAuth without any
+    // transfer, and the state must still reach sibling windows.
+    context.secrets.get = vi.fn(async () => undefined);
+    await serviceA.syncNow();
+    const snapshotA = await serviceA.getSnapshot();
+    expect(snapshotA.state).toBe("needsAuth");
+
+    const serviceB = buildWindow([]);
+    const snapshotB = await serviceB.getSnapshot();
+    expect(snapshotB.state).toBe("needsAuth");
+  });
+
+  it("pushes a snapshot when another window rewrites the shared status", async () => {
+    writeLocal("cli.json", "local-new");
+    client.addFile("cli.json", "remote-new");
+    await serviceA.syncNow();
+    await waitForConflicts(serviceA, 1);
+
+    // Capture the status-file watcher handlers of a freshly constructed
+    // sibling window; only that window registers under this mock.
+    const statusHandlers: Array<() => void> = [];
+    vi.mocked(vscode.workspace.createFileSystemWatcher).mockImplementation(((
+      (pattern: unknown) => {
+        const isStatusWatcher =
+          (pattern as { pattern?: string } | undefined)?.pattern ===
+          "status.json";
+        const register = (listener: () => void) => {
+          if (isStatusWatcher) {
+            statusHandlers.push(listener);
+          }
+          return { dispose: vi.fn() };
+        };
+        return {
+          onDidChange: vi.fn(register),
+          onDidCreate: vi.fn(register),
+          onDidDelete: vi.fn(register),
+          dispose: vi.fn(),
+        };
+      }
+    ) as never));
+
+    const postedB: HostMessage[] = [];
+    buildWindow(postedB);
+    expect(statusHandlers.length).toBe(3);
+
+    const onStatusChange = statusHandlers[0];
+    expect(onStatusChange).toBeDefined();
+    onStatusChange?.();
+
+    await vi.waitFor(() => {
+      const messages = postedB.filter(
+        (m): m is Extract<HostMessage, { type: "webdavSyncData" }> =>
+          m.type === "webdavSyncData",
+      );
+      const last = messages[messages.length - 1];
+      if (!last || last.snapshot.conflictCount !== 1) {
+        throw new Error("waiting for the pushed shared snapshot");
+      }
+    });
+  });
+
+  it("serializes status writes so revisions are not computed concurrently", async () => {
+    const serviceB = buildWindow([]);
+    const internals = serviceB as unknown as {
+      statusStore: SyncStatusStore;
+      persistStatus: (options?: unknown) => Promise<void>;
+    };
+    const originalSave = internals.statusStore.save.bind(internals.statusStore);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    internals.statusStore.save = async (data: SyncStatusData) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await originalSave(data);
+      inFlight -= 1;
+    };
+
+    await Promise.all([
+      internals.persistStatus(),
+      internals.persistStatus(),
+    ]);
+
+    expect(maxInFlight).toBe(1);
+    expect((await internals.statusStore.load())?.revision).toBe(2);
+  });
+
+  it("does not resurrect conflicts another window already resolved", async () => {
+    writeLocal("cli.json", "local-new");
+    client.addFile("cli.json", "remote-new");
+    await serviceA.syncNow();
+    const snapshotA = await waitForConflicts(serviceA, 1);
+    const ids = snapshotA.conflicts.map((conflict) => conflict.id);
+
+    // Window B saw the shared conflict list, then window A resolved it.
+    const serviceB = buildWindow([]);
+    await waitForConflicts(serviceB, 1);
+    await serviceA.resolveConflicts(ids, "local");
+    expect((await serviceA.getSnapshot()).conflictCount).toBe(0);
+
+    // B still holds the stale list in memory; a state-only write must keep
+    // the file's (resolved) list instead of pushing the stale entries back.
+    await (
+      serviceB as unknown as { persistStatus: () => Promise<void> }
+    ).persistStatus();
+
+    expect((await new SyncStatusStore(storageDir).load())?.conflicts).toEqual(
+      [],
+    );
+    expect((await serviceA.getSnapshot()).conflictCount).toBe(0);
+  });
+
+  it("keeps the machine lastSyncAt when a fresh window writes status", async () => {
+    writeLocal("cli.json", "v1");
+    await serviceA.syncNow();
+    const snapshotA = await serviceA.getSnapshot();
+    expect(snapshotA.lastSyncAt).toBeTypeOf("number");
+
+    // B has not adopted the machine state yet and has no lastSyncAt of its
+    // own; writing its status must not erase A's timestamp.
+    const serviceB = buildWindow([]);
+    await (
+      serviceB as unknown as { persistStatus: () => Promise<void> }
+    ).persistStatus();
+
+    expect((await serviceA.getSnapshot()).lastSyncAt).toBe(
+      snapshotA.lastSyncAt,
+    );
+  });
+
+  it("adopts a sibling write that reuses the current revision", async () => {
+    writeLocal("cli.json", "v1");
+    await serviceA.syncNow();
+    const store = new SyncStatusStore(storageDir);
+    const current = await store.load();
+    expect(current).toBeDefined();
+    const foreignConflict = {
+      id: "content:cli.json",
+      path: "cli.json",
+      kind: "content" as const,
+    };
+    await store.save({
+      ...(current as SyncStatusData),
+      writeId: "concurrent-sibling",
+      conflicts: [foreignConflict],
+    });
+
+    const snapshot = await serviceA.getSnapshot();
+    expect(snapshot.conflictCount).toBe(1);
+    expect(snapshot.conflicts).toEqual([foreignConflict]);
   });
 });
