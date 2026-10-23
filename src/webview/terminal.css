@@ -217,36 +217,18 @@ html {
   display: flex;
 }
 
-/* ── Font Size Tooltip (shared by A+/A−, hangs below the pair) ── */
+/* ── Font Size Menu (current size shown inside the dropdown) ── */
 .font-size-host {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 2px;
 }
 
-.font-size-tooltip {
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 2000;
-  margin-top: 7px;
-  padding: 3px 8px;
-  border-radius: 4px;
-  background: var(--vscode-dropdown-background, #252526);
-  border: 1px solid var(--vscode-dropdown-border, #454545);
-  box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
-  color: var(--vscode-dropdown-foreground, #cccccc);
-  font-size: 11px;
-  font-family: var(--vscode-font-family);
-  line-height: 1.2;
+.font-size-current {
+  padding: 3px 10px 5px;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+  font-size: 10px;
   white-space: nowrap;
-  pointer-events: none;
-}
-
-.font-size-tooltip.hidden {
-  display: none;
 }
 
 /* ── Settings Dropdown ── */

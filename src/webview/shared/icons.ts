@@ -8,6 +8,9 @@
  * Icons: Lucide (https://lucide.dev), ISC License.
  */
 import {
+  AArrowDown,
+  AArrowUp,
+  ALargeSmall,
   ArrowUp,
   ArrowUpLeft,
   ArrowUpRight,
@@ -39,6 +42,9 @@ import {
 } from "lucide";
 
 export const ICONS = {
+  aArrowDown: AArrowDown,
+  aArrowUp: AArrowUp,
+  aLargeSmall: ALargeSmall,
   arrowUp: ArrowUp,
   arrowUpLeft: ArrowUpLeft,
   arrowUpRight: ArrowUpRight,

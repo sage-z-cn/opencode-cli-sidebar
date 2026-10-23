@@ -14,7 +14,7 @@ import { createFocusIndicator } from "./terminal/focus-indicator";
 import { createMessageHandler, type MessageHandlerCallbacks } from "./messages";
 import {
   setupReloadButton,
-  setupFontSizeButtons,
+  setupFontSizeMenu,
   setupSettingsButton,
   updateEditorAttachmentIcon,
 } from "./toolbar";
@@ -220,14 +220,11 @@ function initApp(): void {
   );
 
   setupReloadButton();
-  setupFontSizeButtons(
+  setupFontSizeMenu(
     () => messageHandler.terminal,
     () => messageHandler.fitAddon,
   );
-  setupSettingsButton({
-    getTerminal: () => messageHandler.terminal,
-    getFitAddon: () => messageHandler.fitAddon,
-  });
+  setupSettingsButton();
   document.getElementById("btn-keymap")?.addEventListener("click", () => {
     openKeymapModal();
   });

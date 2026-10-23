@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Improvements**
 - **Sync**: Carry the sync status on the config sync toolbar button instead of a separate status icon.
 - **UI**: Replace hand-drawn toolbar and panel icons with Lucide icons.
+- **UI**: Merge the font increase, decrease, and reset actions into one toolbar dropdown.
 - **UI**: Use cloud icons for sync conflict and credential states; drop count badges from the toolbar status.
 
 #### 5.6.0

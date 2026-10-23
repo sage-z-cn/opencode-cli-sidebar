@@ -29,23 +29,27 @@
     <div class="font-size-host">
       <button
         type="button"
-        id="btn-font-increase"
+        id="btn-font-size"
         class="toolbar-btn"
-        aria-label="Increase Font Size"
-        title="{{t:fontIncrease}}"
+        aria-label="{{t:fontSize}}"
+        aria-haspopup="menu"
+        aria-expanded="false"
+        title="{{t:fontSize}}"
       >
-        A+
+        {{icon:aLargeSmall}}
       </button>
-      <div class="font-size-tooltip hidden" id="font-size-tooltip" role="status" aria-live="polite"></div>
-      <button
-        type="button"
-        id="btn-font-decrease"
-        class="toolbar-btn"
-        aria-label="Decrease Font Size"
-        title="{{t:fontDecrease}}"
-      >
-        A&#x2212;
-      </button>
+      <div class="settings-dropdown font-size-dropdown hidden" id="dropdown-font-size" role="menu">
+        <div class="font-size-current" id="font-size-current" role="status" aria-live="polite"></div>
+        <div class="settings-option" role="menuitem" data-action="increaseFontSize">
+          {{icon:aArrowUp:13}} {{t:fontIncrease}}
+        </div>
+        <div class="settings-option" role="menuitem" data-action="decreaseFontSize">
+          {{icon:aArrowDown:13}} {{t:fontDecrease}}
+        </div>
+        <div class="settings-option" role="menuitem" data-action="resetFontSize">
+          {{icon:rotateCcw:13}} {{t:fontReset}}
+        </div>
+      </div>
     </div>
     <div class="toolbar-sep hidden" id="toolbar-sep-font-oc" aria-hidden="true"></div>
     <button
@@ -110,9 +114,6 @@
         {{icon:settings}}
       </button>
       <div class="settings-dropdown hidden" id="dropdown-settings" role="menu">
-        <div class="settings-option" role="menuitem" data-action="resetFontSize">
-          {{icon:rotateCcw:13}} {{t:fontReset}}
-        </div>
         <div class="settings-option hidden" role="menuitem" data-action="checkOpenCodeUpdate" id="menu-oc-update-check">
           {{icon:refresh:13}} {{t:checkOpenCodeUpdates}}
         </div>

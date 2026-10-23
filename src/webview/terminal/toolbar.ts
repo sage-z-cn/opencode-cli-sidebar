@@ -8,6 +8,7 @@ const titleL10nMap: Record<string, string> = {
   fontDecrease: l10n.t("Decrease Font Size"),
   fontIncrease: l10n.t("Increase Font Size"),
   fontReset: l10n.t("Reset Font Size"),
+  fontSize: l10n.t("Font Size"),
   settings: l10n.t("Settings"),
   extensionSettings: l10n.t("Extension Settings"),
   keybindSettings: l10n.t("Keyboard Shortcut Settings"),

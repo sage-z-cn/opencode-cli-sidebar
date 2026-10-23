@@ -10,7 +10,6 @@ import { notifyOpenCodeUpdateCheckRequested } from "../update";
 const MIN_FONT_SIZE = 6;
 const MAX_FONT_SIZE = 25;
 const DEFAULT_FONT_SIZE = 12;
-const FONT_SIZE_TOOLTIP_MS = 3000;
 
 // ── Toolbar buttons ──
 
@@ -43,11 +42,9 @@ export function applyFontSize(
   }
   scheduleRefresh(() => terminal.refresh(0, terminal.rows - 1));
   postMessage({ type: "updateFontSize", fontSize: clamped });
-  showFontSizeTooltip(clamped);
+  renderFontSizeCurrent(getTerminal);
   return true;
 }
-
-let fontSizeTooltipTimer: ReturnType<typeof setTimeout> | null = null;
 
 function formatFontSizeLabel(size: number): string {
   if (size === DEFAULT_FONT_SIZE) {
@@ -60,57 +57,84 @@ function formatFontSizeLabel(size: number): string {
   return `${size}px`;
 }
 
-export function showFontSizeTooltip(size: number): void {
-  const tooltip = document.getElementById("font-size-tooltip");
-  if (!tooltip) {
+function renderFontSizeCurrent(getTerminal: () => Terminal | null): void {
+  const label = document.getElementById("font-size-current");
+  if (!label) {
     return;
   }
-
-  tooltip.textContent = formatFontSizeLabel(size);
-  tooltip.classList.remove("hidden");
-
-  if (fontSizeTooltipTimer !== null) {
-    clearTimeout(fontSizeTooltipTimer);
-  }
-  fontSizeTooltipTimer = setTimeout(() => {
-    tooltip.classList.add("hidden");
-    fontSizeTooltipTimer = null;
-  }, FONT_SIZE_TOOLTIP_MS);
+  const size = getTerminal()?.options.fontSize ?? DEFAULT_FONT_SIZE;
+  label.textContent = formatFontSizeLabel(size);
 }
 
-export function disposeFontSizeTooltip(): void {
-  if (fontSizeTooltipTimer !== null) {
-    clearTimeout(fontSizeTooltipTimer);
-    fontSizeTooltipTimer = null;
-  }
-  document.getElementById("font-size-tooltip")?.classList.add("hidden");
-}
-
-export function setupFontSizeButtons(
+export function setupFontSizeMenu(
   getTerminal: () => Terminal | null,
   getFitAddon: () => FitAddon | null,
 ): void {
+  const btn = document.getElementById("btn-font-size");
+  const dropdown = document.getElementById("dropdown-font-size");
+  if (!btn || !dropdown) {
+    return;
+  }
+
+  const setOpen = (open: boolean): void => {
+    dropdown.classList.toggle("hidden", !open);
+    btn.setAttribute("aria-expanded", String(open));
+    if (open) {
+      closeSettingsDropdown?.();
+      renderFontSizeCurrent(getTerminal);
+    }
+  };
+  const close = (): void => setOpen(false);
+
+  registerDropdownClose("fontSize", close);
+
+  btn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setOpen(dropdown.classList.contains("hidden"));
+  });
+  // The menu stays open across item clicks so sizes can be stepped repeatedly.
+  dropdown.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
   const applyDelta = (delta: number): void => {
     const terminal = getTerminal();
     if (!terminal) {
       return;
     }
-
     const current = terminal.options.fontSize ?? DEFAULT_FONT_SIZE;
-    if (applyFontSize(current + delta, getTerminal, getFitAddon)) {
-      return;
-    }
-    // Already at min/max: still surface the current size so the user
-    // gets feedback that the click registered.
-    showFontSizeTooltip(current);
+    applyFontSize(current + delta, getTerminal, getFitAddon);
+    renderFontSizeCurrent(getTerminal);
   };
 
-  document.getElementById("btn-font-increase")?.addEventListener("click", () => {
-    applyDelta(1);
+  const reset = (): void => {
+    const terminal = getTerminal();
+    if (!terminal) {
+      return;
+    }
+    if ((terminal.options.fontSize ?? DEFAULT_FONT_SIZE) !== DEFAULT_FONT_SIZE) {
+      applyFontSize(DEFAULT_FONT_SIZE, getTerminal, getFitAddon);
+    } else {
+      postMessage({ type: "updateFontSize", fontSize: DEFAULT_FONT_SIZE });
+    }
+    renderFontSizeCurrent(getTerminal);
+  };
+
+  dropdown.querySelectorAll<HTMLElement>(".settings-option").forEach((item) => {
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const action = item.dataset.action;
+      if (action === "increaseFontSize") {
+        applyDelta(1);
+      } else if (action === "decreaseFontSize") {
+        applyDelta(-1);
+      } else if (action === "resetFontSize") {
+        reset();
+      }
+    });
   });
-  document.getElementById("btn-font-decrease")?.addEventListener("click", () => {
-    applyDelta(-1);
-  });
+
+  renderFontSizeCurrent(getTerminal);
 }
 
 export function updateEditorAttachmentIcon(isEditorTab: boolean): void {
@@ -136,24 +160,35 @@ export function updateEditorAttachmentIcon(isEditorTab: boolean): void {
 /** Delay in ms before auto-closing settings dropdown on mouse leave. */
 const SETTINGS_CLOSE_DELAY_MS = 200;
 
-// Document-level click listener: closes the settings dropdown when a
-// click lands anywhere outside it (its own button and items stop propagation).
+// Document-level listeners close open toolbar dropdowns when a click lands
+// anywhere outside them (their own buttons and items stop propagation).
 let closeSettingsDropdown: (() => void) | null = null;
-let outsideClickListenerAttached = false;
+let closeFontSizeDropdown: (() => void) | null = null;
+let dropdownCloseListenersAttached = false;
 
-function registerSettingsDropdownClose(close: () => void): void {
-  closeSettingsDropdown = close;
-  if (outsideClickListenerAttached) return;
-  outsideClickListenerAttached = true;
+function registerDropdownClose(
+  target: "settings" | "fontSize",
+  close: () => void,
+): void {
+  if (target === "settings") {
+    closeSettingsDropdown = close;
+  } else {
+    closeFontSizeDropdown = close;
+  }
+  if (dropdownCloseListenersAttached) return;
+  dropdownCloseListenersAttached = true;
   document.addEventListener("click", () => {
     closeSettingsDropdown?.();
+    closeFontSizeDropdown?.();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeFontSizeDropdown?.();
+    }
   });
 }
 
-export function setupSettingsButton(options?: {
-  getTerminal?: () => Terminal | null;
-  getFitAddon?: () => FitAddon | null;
-}): void {
+export function setupSettingsButton(): void {
   const btn = document.getElementById("btn-settings");
   const dropdown = document.getElementById("dropdown-settings");
   const host = document.querySelector(".settings-host");
@@ -175,13 +210,14 @@ export function setupSettingsButton(options?: {
     leaveTimer = setTimeout(() => closeDropdown(), SETTINGS_CLOSE_DELAY_MS);
   }
 
-  registerSettingsDropdownClose(() => closeDropdown());
+  registerDropdownClose("settings", () => closeDropdown());
 
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
     if (!dropdown.classList.contains("hidden")) {
       closeDropdown();
     } else {
+      closeFontSizeDropdown?.();
       dropdown.classList.remove("hidden");
     }
   });
@@ -201,17 +237,7 @@ export function setupSettingsButton(options?: {
     item.addEventListener("click", (e) => {
       e.stopPropagation();
       const action = (item as HTMLElement).dataset.action;
-      if (action === "resetFontSize") {
-        const getTerminal = options?.getTerminal ?? (() => null);
-        const getFitAddon = options?.getFitAddon ?? (() => null);
-        const terminal = getTerminal();
-        if (terminal && (terminal.options.fontSize ?? DEFAULT_FONT_SIZE) !== DEFAULT_FONT_SIZE) {
-          applyFontSize(DEFAULT_FONT_SIZE, getTerminal, getFitAddon);
-        } else {
-          postMessage({ type: "updateFontSize", fontSize: DEFAULT_FONT_SIZE });
-          showFontSizeTooltip(DEFAULT_FONT_SIZE);
-        }
-      } else if (action === "toggleEditor") {
+      if (action === "toggleEditor") {
         postMessage({ type: "toggleEditorAttachment" });
       } else if (action === "checkOpenCodeUpdate") {
         const item = document.getElementById("menu-oc-update-check");

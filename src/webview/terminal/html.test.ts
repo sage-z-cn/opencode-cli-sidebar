@@ -17,8 +17,9 @@ describe("renderTerminalHtml", () => {
 
     expect(html).toContain('id="toolbar"');
     expect(html).toContain('id="pill-ai-tool"');
-    expect(html).toContain('id="btn-font-decrease"');
-    expect(html).toContain('id="btn-font-increase"');
+    expect(html).toContain('id="btn-font-size"');
+    expect(html).toContain('id="dropdown-font-size"');
+    expect(html).toContain('id="font-size-current"');
     expect(html).toContain('id="terminal-container"');
     expect(html).not.toContain('id="ai-selector"');
   });
