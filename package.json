@@ -2,7 +2,7 @@
   "name": "opencode-cli-sidebar",
   "displayName": "%extension.displayName%",
   "description": "%extension.description%",
-  "version": "5.6.0",
+  "version": "5.6.1",
   "publisher": "sagez",
   "icon": "icon.png",
   "l10n": "./l10n",

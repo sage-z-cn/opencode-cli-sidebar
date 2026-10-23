@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **UI**: Merge the font increase, decrease, and reset actions into one toolbar dropdown.
 - **UI**: Use cloud icons for sync conflict and credential states; drop count badges from the toolbar status.
 
+#### 5.6.1
+**New Features**
+- **Sync**: Show the sync status directly on the toolbar button instead of a separate status icon.
+
+**Bug Fixes**
+- **Sync**: Keep sync status consistent across all VS Code windows via a shared status store.
+
+**Improvements**
+- **Toolbar**: Merge the font size actions into a single dropdown.
+- **UI**: Replace hand-drawn icons with Lucide icons.
+- **Update**: Show update progress as step counts instead of a percentage.
+
 #### 5.6.0
 **New Features**
 - **Sync**: Add cross-window process lock for auto-sync leadership.
