@@ -382,12 +382,34 @@ function updateMenuGate(): void {
 
 // ── Toolbar progress line ──
 
-/** Percent complete for the updating flow, from history vs. current step. */
-function progressPercent(): number {
-  const history = status?.history ?? [];
+/** Canonical step order per flow, for the step-count progress readout. */
+const UPDATE_STEP_ORDER = [
+  "prepare-target",
+  "prepare-local",
+  "execute",
+  "reshim",
+  "verify",
+];
+const INSTALL_STEP_ORDER = ["installing", "reshim", "verify"];
+
+/**
+ * Step-count progress ("3/5") for the updating flow: the current step's
+ * position in the flow's canonical order. Recovery steps occupy the
+ * reshim slot, so skipped conditional steps keep the denominator stable.
+ */
+function progressStepCount(): string {
   const stepId = status?.step ?? "";
-  const total = history.length + (stepId ? 1 : 0);
-  return total > 0 ? Math.round((history.length / total) * 100) : 100;
+  if (!stepId) return "";
+  const history = status?.history ?? [];
+  const fromInstall =
+    stepId === "installing" || history[0]?.step === "installing";
+  const order = fromInstall ? INSTALL_STEP_ORDER : UPDATE_STEP_ORDER;
+  let index = order.indexOf(stepId);
+  if (index < 0) {
+    // remediate-trust / remediate-reshim run in place of reshim.
+    index = Math.max(order.indexOf("reshim"), 1);
+  }
+  return `${index + 1}/${order.length}`;
 }
 
 function progressStepText(): string {
@@ -410,12 +432,14 @@ function renderProgressLine(): void {
   }
   const inRemediation =
     st.step === "remediate-trust" || st.step === "remediate-reshim";
+  const stepText = progressStepText();
+  const countText = progressStepCount();
   progressLine.innerHTML =
     '<span class="ocu-progress-spin" aria-hidden="true">' +
     ICONS.sync +
     "</span>" +
     '<span class="ocu-progress-text">' +
-    escapeHtml(progressStepText() + " " + progressPercent() + "%") +
+    escapeHtml(countText ? stepText + " " + countText : stepText) +
     "</span>" +
     (inRemediation
       ? '<button type="button" class="ocu-progress-x" data-ocu-act="abandon" aria-label="' +

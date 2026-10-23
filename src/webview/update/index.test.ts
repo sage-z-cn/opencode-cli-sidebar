@@ -255,7 +255,7 @@ describe("OpenCode update UI (webview)", () => {
 
     const line = document.getElementById("ocu-progress");
     expect(line?.classList.contains("hidden")).toBe(false);
-    expect(line?.textContent).toContain("Downloading and installing 67%");
+    expect(line?.textContent).toContain("Downloading and installing 3/5");
     // The spinner sits between the version pill and the step text.
     expect(line?.querySelector(".ocu-progress-spin")).not.toBeNull();
     expect(line?.querySelector('[data-ocu-act="abandon"]')).toBeNull();
