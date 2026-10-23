@@ -1,6 +1,6 @@
 /**
- * One-line status content shared by the toolbar icon hover tooltip and
- * the panel header. Pure: no DOM access, so it stays testable.
+ * One-line status content for the toolbar button hover tooltip.
+ * Pure: no DOM access, so it stays testable.
  */
 import { SYNC_ICONS } from "./icons";
 import { statusIconFor, type SyncUiState } from "./state";

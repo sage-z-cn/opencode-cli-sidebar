@@ -53,7 +53,7 @@
   "configuration.opencode-cli-sidebar.sync.pollIntervalMinutes.description": "远端变化检查的间隔分钟数。最小 1。",
   "configuration.opencode-cli-sidebar.sync.rateLimitMaxRequests.description": "每个限流窗口内允许的最大 WebDAV 请求数。0 表示不限制，默认 600。",
   "configuration.opencode-cli-sidebar.sync.rateLimitWindowMinutes.description": "限流窗口的时长，单位为分钟。最小为 1。",
-  "configuration.opencode-cli-sidebar.sync.showStatusIcon.description": "在侧边栏显示同步状态图标。",
+  "configuration.opencode-cli-sidebar.sync.showStatusIcon.description": "在配置同步工具栏按钮上显示同步状态。",
   "configuration.opencode-cli-sidebar.sync.customItems.description": "OpenCode 配置目录内需要同步的额外文件或文件夹。",
   "configuration.opencode-cli-sidebar.sync.disabledItems.description": "当前已关闭的同步项路径。",
   "configuration.opencode-cli-sidebar.sync.excludedPaths.description": "OpenCode 配置目录内永不同步的文件或文件夹，即使被同步项覆盖。",

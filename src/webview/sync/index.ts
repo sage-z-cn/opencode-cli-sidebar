@@ -2,8 +2,8 @@
  * WebDAV config sync UI (webview side).
  *
  * Browser-only; all host I/O goes through WebviewMessage. Layers:
- * L0 toolbar status icon + cloud entry button, L1 hover status tooltip,
- * L2 full panel (km-modal pattern) with
+ * L0 toolbar config button carrying the sync status, L1 hover status
+ * tooltip, L2 full panel (km-modal pattern) with
  * server/items/conflicts/history/log.
  */
 import { postMessage } from "../shared/vscode-api";
@@ -22,7 +22,6 @@ import {
 } from "./state";
 import { st } from "./strings";
 import { closeSyncTooltip, initSyncTooltip, updateSyncTooltip } from "./tooltip";
-import type { SyncPaneName } from "./panel";
 import { clearServerPassword, isServerFormDirty } from "./panes";
 import {
   applySnapshotToPanel,
@@ -87,12 +86,19 @@ function showAddItemError(
   }, NOTICE_TTL_MS);
 }
 
-// ── Toolbar status icon (L0) ──
+// ── Toolbar sync entry button (L0) ──
 
-/** Dismissed icon kind (tooltip ✕ or icon click): pure webview-side gating,
- *  in-memory only. The icon stays hidden while syncIconInfo keeps returning
- *  the same kind; a different kind or a cleared status resets it. */
+/** Acknowledged status kind (tooltip ✕ or button click): pure webview-side
+ *  gating, in-memory only. The button keeps its plain entry glyph while
+ *  syncIconInfo returns the same kind; a different kind or a cleared
+ *  status resets it. */
 let dismissedIconKind: SyncIconKind | null = null;
+
+/** Plain entry glyph and labels captured on first render, restored whenever
+ *  the button carries no status. */
+let entryGlyphHtml: string | null = null;
+let entryLabel: string | null = null;
+let entryTitle: string | null = null;
 
 const ICON_KIND_STATE: Record<string, string> = {
   conflict: "conflict",
@@ -120,13 +126,9 @@ function iconLabel(info: NonNullable<ReturnType<typeof syncIconInfo>>): string {
   }
 }
 
-function hideStatusIcon(btn: HTMLElement): void {
-  btn.classList.add("hidden");
-  closeSyncTooltip();
-}
-
-/** Acknowledge the current status: hide the icon until its kind changes
- *  or the status clears. Used by both the icon click and the tooltip ✕. */
+/** Acknowledge the current status so the button drops its status glyph
+ *  until the kind changes or the status clears. Used by both the button
+ *  click and the tooltip ✕. */
 function dismissStatusIcon(): void {
   const info = syncIconInfo(state);
   if (!info) {
@@ -136,26 +138,49 @@ function dismissStatusIcon(): void {
   render();
 }
 
+/** True when the toolbar button currently carries the status. */
+function statusShown(): boolean {
+  const info = syncIconInfo(state);
+  return info !== null && dismissedIconKind !== info.kind;
+}
+
 function renderIcon(): void {
-  const btn = document.getElementById("btn-dav-sync-status");
-  if (!btn) {
+  const btn = document.getElementById("btn-dav-sync-panel");
+  const glyph = document.getElementById("dav-sync-glyph");
+  const count = document.getElementById("dav-sync-count");
+  if (!btn || !glyph || !count) {
     return;
   }
+  entryGlyphHtml ??= glyph.innerHTML;
+  entryLabel ??= btn.getAttribute("aria-label") ?? "";
+  entryTitle ??= btn.getAttribute("title");
   const info = syncIconInfo(state);
   if (!info) {
     // Status cleared: any dismissal is forgotten.
     dismissedIconKind = null;
-    hideStatusIcon(btn);
-    return;
   }
-  if (dismissedIconKind === info.kind) {
-    hideStatusIcon(btn);
+  if (!info || dismissedIconKind === info.kind) {
+    btn.removeAttribute("data-state");
+    btn.setAttribute("aria-label", entryLabel);
+    if (entryTitle === null) {
+      btn.removeAttribute("title");
+    } else {
+      btn.setAttribute("title", entryTitle);
+    }
+    glyph.innerHTML = entryGlyphHtml;
+    count.textContent = "";
+    count.classList.add("hidden");
+    closeSyncTooltip();
     return;
   }
   dismissedIconKind = null;
-  btn.classList.remove("hidden");
   btn.dataset.state = ICON_KIND_STATE[info.kind] ?? "error";
-  const glyph = el("dav-sync-glyph");
+  // The hover tooltip replaces the native title while a status is shown.
+  btn.removeAttribute("title");
+  btn.setAttribute(
+    "aria-label",
+    entryLabel ? `${entryLabel}: ${iconLabel(info)}` : iconLabel(info),
+  );
   const iconHtml =
     info.kind === "syncing"
       ? SYNC_ICONS.cloudSync
@@ -170,12 +195,9 @@ function renderIcon(): void {
     info.kind === "syncing"
       ? `<span class="dav-blink">${iconHtml}</span>`
       : iconHtml;
-  const count = el("dav-sync-count");
   const n = info.count ?? 0;
   count.textContent = String(n);
   count.classList.toggle("hidden", n <= 0);
-  // Native title replaced by the hover tooltip; aria-label stays for AT.
-  btn.setAttribute("aria-label", iconLabel(info));
 }
 
 // ── Notice / inline errors ──
@@ -301,24 +323,24 @@ function classifyInput(value: string): "path" | "regex" | "invalid" {
     : "invalid";
 }
 
-/** Entry default pane is always General; unconfigured guidance is handled
- *  by the banner inside the general pane. */
-function defaultPanelPane(): SyncPaneName {
-  return "general";
-}
-
 export function initSyncUi(): void {
   if (initialized) {
     return;
   }
   initialized = true;
 
-  // Status icon click goes straight to the panel section that matches the
-  // current status, and acknowledges the status so the icon hides until
-  // the kind changes or clears.
-  document.getElementById("btn-dav-sync-status")?.addEventListener("click", () => {
-    dismissStatusIcon();
-    openSyncPanel(paneForStatus(state));
+  // One button carries the status and opens the panel: a shown status is
+  // acknowledged and lands on its matching section, a plain entry click
+  // opens General.
+  const panelBtn = document.getElementById("btn-dav-sync-panel");
+  // The button ships hidden in toolbar.html; reveal it once the sync UI owns it.
+  panelBtn?.classList.remove("hidden");
+  panelBtn?.addEventListener("click", () => {
+    const jumpToStatus = statusShown();
+    if (jumpToStatus) {
+      dismissStatusIcon();
+    }
+    openSyncPanel(jumpToStatus ? paneForStatus(state) : "general");
   });
 
   initSyncTooltip({ onDismiss: dismissStatusIcon });
@@ -375,10 +397,6 @@ export function initSyncUi(): void {
     onClearHistory: () => postMessage({ type: "clearWebdavHistory" }),
   });
 
-  const cloudBtn = document.getElementById("btn-dav-sync-panel");
-  // The button ships hidden in toolbar.html; reveal it once the sync UI owns it.
-  cloudBtn?.classList.remove("hidden");
-  cloudBtn?.addEventListener("click", () => openSyncPanel(defaultPanelPane()));
   document
     .getElementById("dav-open-config-dir")
     ?.addEventListener("click", () =>

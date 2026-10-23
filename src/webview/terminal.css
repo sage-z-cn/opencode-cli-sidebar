@@ -1965,19 +1965,17 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 
 /* ─────────── WebDAV config sync (dav-*) ─────────── */
 
-/* L0: status icon next to the version pill */
-.dav-sync-dot {
+/* L0: status shown on the config sync button next to the keymap button */
+.dav-sync-entry {
   display: inline-flex; align-items: center; gap: 2px;
-  background: none; border: none; padding: 2px 3px; border-radius: 3px;
-  font-size: 11px; font-family: var(--vscode-font-family); cursor: pointer; line-height: 1;
-  color: var(--vscode-foreground, #d4d4d4);
 }
-.dav-sync-dot:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.12)); }
-.dav-sync-dot:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); }
-.dav-sync-dot[data-state="syncing"] { color: var(--vscode-focusBorder, #007fd4); }
-.dav-sync-dot[data-state="pending"], .dav-sync-dot[data-state="auth"] { color: var(--vscode-editorWarning-foreground, #cca700); }
-.dav-sync-dot[data-state="conflict"], .dav-sync-dot[data-state="error"] { color: var(--vscode-errorForeground, #f87171); }
-.dav-sync-dot.hidden { display: none; }
+.dav-sync-entry:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); }
+/* A carried status is always fully visible, not dimmed like idle buttons. */
+.dav-sync-entry[data-state] { opacity: 1; }
+.dav-sync-entry[data-state="syncing"] { color: var(--vscode-focusBorder, #007fd4); }
+.dav-sync-entry[data-state="pending"], .dav-sync-entry[data-state="auth"] { color: var(--vscode-editorWarning-foreground, #cca700); }
+.dav-sync-entry[data-state="conflict"], .dav-sync-entry[data-state="error"] { color: var(--vscode-errorForeground, #f87171); }
+.dav-sync-glyph { display: inline-flex; }
 .dav-sync-count { font-size: 10px; font-weight: 600; }
 .dav-sync-count.hidden { display: none; }
 .dav-blink { animation: dav-blink 1.2s ease-in-out infinite; display: inline-flex; }

@@ -68,7 +68,7 @@ function snapshot(overrides: Partial<WebDavSyncSnapshot> = {}): WebDavSyncSnapsh
 }
 
 const SHELL: SyncShellStrings = {
-  tipDismiss: "Hide the status icon for now",
+  tipDismiss: "Hide the sync status for now",
   actSyncNow: "Sync now",
   panelTitle: "OpenCode config sync",
   panelAria: "OpenCode config sync",
@@ -130,8 +130,8 @@ const SHELL: SyncShellStrings = {
   histClear: "Clear history",
 };
 
-function icon(): HTMLElement {
-  return document.getElementById("btn-dav-sync-status") as HTMLElement;
+function syncButton(): HTMLElement {
+  return document.getElementById("btn-dav-sync-panel") as HTMLElement;
 }
 
 function overlay(): HTMLElement {
@@ -186,10 +186,10 @@ describe("sync UI (webview)", () => {
   beforeAll(() => {
     document.body.innerHTML = `
       <div class="toolbar">
-        <button type="button" id="btn-dav-sync-status" class="dav-sync-dot hidden" aria-haspopup="dialog">
-          <span id="dav-sync-glyph"></span><span class="dav-sync-count hidden" id="dav-sync-count"></span>
+        <button type="button" id="btn-dav-sync-panel" class="toolbar-btn dav-sync-entry hidden" aria-haspopup="dialog" aria-label="OpenCode config sync" title="OpenCode config sync">
+          <span class="dav-sync-glyph" id="dav-sync-glyph"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 2h10v10H2z"/></svg></span>
+          <span class="dav-sync-count hidden" id="dav-sync-count"></span>
         </button>
-        <button type="button" id="btn-dav-sync-panel" class="toolbar-btn hidden"></button>
       </div>
       ${renderSyncShell(SHELL)}`;
     initSyncUi();
@@ -216,36 +216,50 @@ describe("sync UI (webview)", () => {
     });
   });
 
-  describe("status icon visibility matrix", () => {
-    it("hides for unconfigured and idle", () => {
+  describe("status indication matrix", () => {
+    it("keeps the plain entry glyph for unconfigured and idle", () => {
       applyWebdavSyncData(snapshot({ state: "unconfigured", settings: syncSettings({ url: "" }) }));
-      expect(icon().classList.contains("hidden")).toBe(true);
+      expect(syncButton().classList.contains("hidden")).toBe(false);
+      expect(syncButton().dataset.state).toBeUndefined();
       applyWebdavSyncData(snapshot());
-      expect(icon().classList.contains("hidden")).toBe(true);
+      expect(syncButton().classList.contains("hidden")).toBe(false);
+      expect(syncButton().dataset.state).toBeUndefined();
+      expect(document.getElementById("dav-sync-glyph")?.innerHTML).toContain(
+        "M2 2h10v10H2z",
+      );
+      expect(syncButton().getAttribute("aria-label")).toBe("OpenCode config sync");
+      expect(syncButton().getAttribute("title")).toBe("OpenCode config sync");
     });
 
     it("shows with count for pending / conflict, plain for syncing / error / paused", () => {
       applyWebdavSyncData(snapshot({ pendingCount: 2 }));
-      expect(icon().classList.contains("hidden")).toBe(false);
-      expect(icon().dataset.state).toBe("pending");
+      expect(syncButton().classList.contains("hidden")).toBe(false);
+      expect(syncButton().dataset.state).toBe("pending");
       expect(document.getElementById("dav-sync-count")?.textContent).toBe("2");
+      expect(document.getElementById("dav-sync-glyph")?.innerHTML).not.toContain(
+        "M2 2h10v10H2z",
+      );
+      expect(syncButton().getAttribute("aria-label")).toBe(
+        "OpenCode config sync: 2 file(s) pending upload",
+      );
+      expect(syncButton().getAttribute("title")).toBeNull();
 
       applyWebdavSyncData(snapshot({ conflictCount: 1, pendingCount: 0 }));
-      expect(icon().dataset.state).toBe("conflict");
+      expect(syncButton().dataset.state).toBe("conflict");
       expect(document.getElementById("dav-sync-count")?.textContent).toBe("1");
 
       applyWebdavSyncData(snapshot({ state: "syncing", conflictCount: 0 }));
-      expect(icon().dataset.state).toBe("syncing");
+      expect(syncButton().dataset.state).toBe("syncing");
       expect(document.getElementById("dav-sync-count")?.classList.contains("hidden")).toBe(true);
 
       applyWebdavSyncData(snapshot({ state: "error" }));
-      expect(icon().dataset.state).toBe("error");
+      expect(syncButton().dataset.state).toBe("error");
 
       applyWebdavSyncData(snapshot({ autoSyncPaused: true }));
-      expect(icon().dataset.state).toBe("error");
+      expect(syncButton().dataset.state).toBe("error");
 
       applyWebdavSyncData(snapshot({ state: "needsAuth" }));
-      expect(icon().dataset.state).toBe("auth");
+      expect(syncButton().dataset.state).toBe("auth");
       expect(
         document.getElementById("dav-sync-count")?.classList.contains("hidden"),
       ).toBe(true);
@@ -255,32 +269,46 @@ describe("sync UI (webview)", () => {
       applyWebdavSyncData(
         snapshot({ pendingCount: 3, settings: syncSettings({ showStatusIcon: false }) }),
       );
-      expect(icon().classList.contains("hidden")).toBe(true);
+      expect(syncButton().classList.contains("hidden")).toBe(false);
+      expect(syncButton().dataset.state).toBeUndefined();
       applyWebdavSyncData(snapshot({ pendingCount: 3 }));
-      expect(icon().classList.contains("hidden")).toBe(false);
+      expect(syncButton().dataset.state).toBe("pending");
     });
   });
 
-  describe("status icon tooltip", () => {
-    /** Hover the icon and fast-forward the open delay. */
+  describe("status tooltip", () => {
+    /** Hover the button and fast-forward the open delay. */
     function hoverOpen(): void {
-      icon().dispatchEvent(new MouseEvent("mouseenter"));
+      syncButton().dispatchEvent(new MouseEvent("mouseenter"));
       vi.advanceTimersByTime(400);
     }
+
+    it("stays quiet while the button carries no status", () => {
+      vi.useFakeTimers();
+      try {
+        applyWebdavSyncData(snapshot());
+        const tip = document.getElementById("dav-sync-tip") as HTMLElement;
+        syncButton().dispatchEvent(new MouseEvent("mouseenter"));
+        vi.advanceTimersByTime(400);
+        expect(tip.classList.contains("hidden")).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
 
     it("shows the current status text after the hover delay", () => {
       vi.useFakeTimers();
       try {
         applyWebdavSyncData(snapshot({ conflictCount: 2 }));
         const tip = document.getElementById("dav-sync-tip") as HTMLElement;
-        icon().dispatchEvent(new MouseEvent("mouseenter"));
+        syncButton().dispatchEvent(new MouseEvent("mouseenter"));
         expect(tip.classList.contains("hidden")).toBe(true);
         vi.advanceTimersByTime(400);
         expect(tip.classList.contains("hidden")).toBe(false);
         expect(
           document.getElementById("dav-sync-tip-text")?.textContent,
         ).toBe("2 file(s) need conflict resolution");
-        expect(icon().getAttribute("aria-describedby")).toBe("dav-sync-tip");
+        expect(syncButton().getAttribute("aria-describedby")).toBe("dav-sync-tip");
         document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
         expect(tip.classList.contains("hidden")).toBe(true);
       } finally {
@@ -295,8 +323,8 @@ describe("sync UI (webview)", () => {
         const tip = document.getElementById("dav-sync-tip") as HTMLElement;
         hoverOpen();
         expect(tip.classList.contains("hidden")).toBe(false);
-        // Pointer leaves the icon toward the tooltip: grace period starts.
-        icon().dispatchEvent(new MouseEvent("mouseleave"));
+        // Pointer leaves the button toward the tooltip: grace period starts.
+        syncButton().dispatchEvent(new MouseEvent("mouseleave"));
         // Pointer reaches the tooltip before the grace expires: stays open.
         tip.dispatchEvent(new MouseEvent("mouseenter"));
         vi.advanceTimersByTime(300);
@@ -310,14 +338,14 @@ describe("sync UI (webview)", () => {
       }
     });
 
-    it("closes on icon click and opens the matching panel section", () => {
+    it("closes on button click and opens the matching panel section", () => {
       vi.useFakeTimers();
       try {
         applyWebdavSyncData(snapshot({ conflictCount: 1 }));
         const tip = document.getElementById("dav-sync-tip") as HTMLElement;
         hoverOpen();
         expect(tip.classList.contains("hidden")).toBe(false);
-        icon().click();
+        syncButton().click();
         expect(tip.classList.contains("hidden")).toBe(true);
         expect(overlay().classList.contains("hidden")).toBe(false);
         expect(
@@ -325,8 +353,9 @@ describe("sync UI (webview)", () => {
             .querySelector('.dav-pane[data-pane="conflict"]')
             ?.classList.contains("is-on"),
         ).toBe(true);
-        // The click acknowledges the status: the icon hides for now.
-        expect(icon().classList.contains("hidden")).toBe(true);
+        // The click acknowledges the status: the button drops it for now.
+        expect(syncButton().classList.contains("hidden")).toBe(false);
+        expect(syncButton().dataset.state).toBeUndefined();
         document.getElementById("dav-modal-close")?.click();
         // A cleared status resets the dismissal.
         applyWebdavSyncData(snapshot());
@@ -335,19 +364,20 @@ describe("sync UI (webview)", () => {
       }
     });
 
-    it("hides the icon on dismiss and keeps same-kind statuses hidden", () => {
+    it("drops the status on dismiss and keeps same-kind statuses hidden", () => {
       vi.useFakeTimers();
       try {
         applyWebdavSyncData(snapshot({ conflictCount: 2 }));
         hoverOpen();
         document.getElementById("dav-sync-tip-close")?.click();
-        expect(icon().classList.contains("hidden")).toBe(true);
+        expect(syncButton().classList.contains("hidden")).toBe(false);
+        expect(syncButton().dataset.state).toBeUndefined();
         expect(
           document.getElementById("dav-sync-tip")?.classList.contains("hidden"),
         ).toBe(true);
         // Same kind with a grown count: dismissal still applies.
         applyWebdavSyncData(snapshot({ conflictCount: 5 }));
-        expect(icon().classList.contains("hidden")).toBe(true);
+        expect(syncButton().dataset.state).toBeUndefined();
       } finally {
         // Normalize: an idle snapshot clears the dismissal.
         applyWebdavSyncData(snapshot());
@@ -355,22 +385,21 @@ describe("sync UI (webview)", () => {
       }
     });
 
-    it("un-hides for a different kind and after the status clears", () => {
+    it("returns for a different kind and after the status clears", () => {
       vi.useFakeTimers();
       try {
         applyWebdavSyncData(snapshot({ conflictCount: 2 }));
         hoverOpen();
         document.getElementById("dav-sync-tip-close")?.click();
-        expect(icon().classList.contains("hidden")).toBe(true);
-        // Different kind: dismissal clears, the icon returns.
+        expect(syncButton().dataset.state).toBeUndefined();
+        // Different kind: dismissal clears, the status returns.
         applyWebdavSyncData(snapshot({ conflictCount: 0, pendingCount: 4 }));
-        expect(icon().classList.contains("hidden")).toBe(false);
-        expect(icon().dataset.state).toBe("pending");
+        expect(syncButton().dataset.state).toBe("pending");
         // Status fully clears, then a later new conflict shows again.
         applyWebdavSyncData(snapshot());
-        expect(icon().classList.contains("hidden")).toBe(true);
+        expect(syncButton().dataset.state).toBeUndefined();
         applyWebdavSyncData(snapshot({ conflictCount: 1 }));
-        expect(icon().classList.contains("hidden")).toBe(false);
+        expect(syncButton().dataset.state).toBe("conflict");
       } finally {
         applyWebdavSyncData(snapshot());
         vi.useRealTimers();
@@ -378,7 +407,7 @@ describe("sync UI (webview)", () => {
     });
   });
 
-  describe("status icon and tooltip jump to the matching section", () => {
+  describe("status and tooltip jump to the matching section", () => {
     /** Active pane after the last open action. */
     function activePane(): string | undefined {
       return document
@@ -397,42 +426,42 @@ describe("sync UI (webview)", () => {
       ];
       for (const [patch, pane] of cases) {
         applyWebdavSyncData(snapshot(patch));
-        expect(icon().classList.contains("hidden")).toBe(false);
-        icon().click();
+        expect(syncButton().dataset.state).toBeDefined();
+        syncButton().click();
         expect(overlay().classList.contains("hidden")).toBe(false);
         expect(activePane()).toBe(pane);
-        expect(icon().classList.contains("hidden")).toBe(true);
+        expect(syncButton().dataset.state).toBeUndefined();
         document.getElementById("dav-modal-close")?.click();
       }
       // Reset the dismissal left by the last kind.
       applyWebdavSyncData(snapshot());
     });
 
-    it("keeps the icon hidden for the same kind after a jump", () => {
+    it("keeps the status suppressed for the same kind after a jump", () => {
       applyWebdavSyncData(snapshot({ conflictCount: 1 }));
-      icon().click();
+      syncButton().click();
       document.getElementById("dav-modal-close")?.click();
-      expect(icon().classList.contains("hidden")).toBe(true);
+      expect(syncButton().dataset.state).toBeUndefined();
       // Same kind, grown count: still acknowledged.
       applyWebdavSyncData(snapshot({ conflictCount: 4 }));
-      expect(icon().classList.contains("hidden")).toBe(true);
-      // A different kind brings the icon back.
+      expect(syncButton().dataset.state).toBeUndefined();
+      // A different kind brings the status back.
       applyWebdavSyncData(snapshot({ pendingCount: 2 }));
-      expect(icon().classList.contains("hidden")).toBe(false);
+      expect(syncButton().dataset.state).toBe("pending");
       applyWebdavSyncData(snapshot());
     });
 
-    it("opens the section from the icon itself, with no tooltip jump button", () => {
+    it("opens the section from the button itself, with no tooltip jump button", () => {
       vi.useFakeTimers();
       try {
         applyWebdavSyncData(snapshot({ conflictCount: 1 }));
         const tip = document.getElementById("dav-sync-tip") as HTMLElement;
-        icon().dispatchEvent(new MouseEvent("mouseenter"));
+        syncButton().dispatchEvent(new MouseEvent("mouseenter"));
         vi.advanceTimersByTime(400);
         expect(tip.classList.contains("hidden")).toBe(false);
         expect(document.getElementById("dav-sync-tip-go")).toBeNull();
 
-        icon().click();
+        syncButton().click();
         expect(tip.classList.contains("hidden")).toBe(true);
         expect(overlay().classList.contains("hidden")).toBe(false);
         expect(activePane()).toBe("conflict");
@@ -463,7 +492,7 @@ describe("sync UI (webview)", () => {
 
     it("closes on Escape", () => {
       applyWebdavSyncData(snapshot());
-      icon().click();
+      syncButton().click();
       expect(overlay().classList.contains("hidden")).toBe(false);
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
       expect(overlay().classList.contains("hidden")).toBe(true);

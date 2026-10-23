@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Bug Fixes**
 - **Sync**: Keep conflict and status state consistent across all VS Code windows.
 
+**Improvements**
+- **Sync**: Carry the sync status on the config sync toolbar button instead of a separate status icon.
+
 #### 5.6.0
 **New Features**
 - **Sync**: Add cross-window process lock for auto-sync leadership.

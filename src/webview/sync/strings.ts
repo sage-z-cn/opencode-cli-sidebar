@@ -30,7 +30,7 @@ function fmt(template: string, ...values: unknown[]): string {
   });
 }
 
-// ── Toolbar icon / aria ──
+// ── Toolbar status / aria ──
 export const st = {
   iconSyncing: syncT("iconSyncing", "Syncing configuration"),
   iconPending: (n: number) =>

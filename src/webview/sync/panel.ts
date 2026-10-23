@@ -35,8 +35,8 @@ function el<T extends HTMLElement>(id: string): T {
 
 export type SyncPaneName = "general" | "server" | "items" | "conflict" | "history" | "log";
 
-/** Section a status icon points at, so a click on the icon or on the
- *  tooltip action lands where the fix or the detail lives. */
+/** Section the toolbar sync button points at while carrying a status, so
+ *  a click lands where the fix or the detail lives. */
 export function paneForStatus(state: SyncUiState): SyncPaneName {
   if (state.state === "unconfigured") {
     return "general";

@@ -90,7 +90,7 @@ export function mergeDelta(
   };
 }
 
-/** Visual variant of the toolbar status icon. */
+/** Visual variant of the toolbar sync button's status. */
 export type SyncIconKind =
   | "conflict"
   | "error"
@@ -108,7 +108,7 @@ export interface SyncIconInfo {
 /**
  * Status kind by priority, ignoring the `showStatusIcon` master switch and
  * the unconfigured state: the status line and the panel jump still need a
- * target when the toolbar icon itself is hidden.
+ * target when the toolbar button carries no status indication.
  */
 export function statusIconFor(s: SyncUiState): SyncIconInfo | null {
   // A missing or rejected password blocks every sync path; surfacing it
@@ -135,10 +135,11 @@ export function statusIconFor(s: SyncUiState): SyncIconInfo | null {
 }
 
 /**
- * Visibility: syncing / error / paused states, or a non-zero pending /
- * conflict count (which may arrive while state stays "idle").
- * Unconfigured and plain idle never show. The `showStatusIcon` server
- * setting is the master switch.
+ * Status to paint on the toolbar sync button: syncing / error / paused
+ * states, or a non-zero pending / conflict count (which may arrive while
+ * state stays "idle"). Unconfigured and plain idle show none. The
+ * `showStatusIcon` server setting is the master switch for the status
+ * indication only; the button itself stays visible.
  */
 export function syncIconInfo(s: SyncUiState): SyncIconInfo | null {
   if (!s.settings?.showStatusIcon) {

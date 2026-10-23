@@ -1,11 +1,11 @@
 /**
- * Toolbar status-icon hover tooltip: a quiet one-line status preview
- * anchored under the icon, with a dismiss action that hides the status
- * icon until its kind changes.
+ * Hover tooltip on the toolbar sync button: a quiet one-line status preview
+ * anchored under the button, with a dismiss action that drops the status
+ * indication until its kind changes.
  *
- * Opens after a short hover delay, bridges the anchor gap so the pointer
- * can reach the dismiss action, and closes on a grace-period mouseleave,
- * Escape, or when the panel opens.
+ * Opens after a short hover delay while the button carries a status,
+ * bridges the anchor gap so the pointer can reach the dismiss action, and
+ * closes on a grace-period mouseleave, Escape, or when the panel opens.
  */
 import type { SyncUiState } from "./state";
 import { syncStatusLine } from "./status";
@@ -35,19 +35,30 @@ function cancelCloseTimer(): void {
   }
 }
 
-/** Fixed-position anchor under the icon; the shell renders outside the
+/** Fixed-position anchor under the button; the shell renders outside the
  *  toolbar, so a CSS-anchored popup cannot be reused here. */
 function openTip(): void {
-  const anchor = document.getElementById("btn-dav-sync-status");
+  const anchor = document.getElementById("btn-dav-sync-panel");
   const tip = document.getElementById("dav-sync-tip");
-  if (!anchor || !tip || anchor.classList.contains("hidden")) {
+  if (
+    !anchor ||
+    !tip ||
+    anchor.classList.contains("hidden") ||
+    !anchor.dataset.state
+  ) {
     return;
   }
   cancelCloseTimer();
   const rect = anchor.getBoundingClientRect();
-  tip.style.left = `${Math.max(6, Math.round(rect.left))}px`;
-  tip.style.top = `${Math.round(rect.bottom + 6)}px`;
   tip.classList.remove("hidden");
+  // The button lives at the right edge of the toolbar, so clamp the tip
+  // into the viewport instead of letting it overflow.
+  const left = Math.max(
+    6,
+    Math.min(Math.round(rect.left), window.innerWidth - tip.offsetWidth - 6),
+  );
+  tip.style.left = `${left}px`;
+  tip.style.top = `${Math.round(rect.bottom + 6)}px`;
   anchor.setAttribute("aria-describedby", "dav-sync-tip");
   tipOpen = true;
 }
@@ -60,7 +71,7 @@ export function closeSyncTooltip(): void {
     tip.classList.add("hidden");
   }
   document
-    .getElementById("btn-dav-sync-status")
+    .getElementById("btn-dav-sync-panel")
     ?.removeAttribute("aria-describedby");
   tipOpen = false;
 }
@@ -83,12 +94,13 @@ export function updateSyncTooltip(state: SyncUiState): void {
 export function initSyncTooltip(handlers: {
   onDismiss: () => void;
 }): void {
-  const anchor = el("btn-dav-sync-status");
+  const anchor = el("btn-dav-sync-panel");
   const tip = el("dav-sync-tip");
 
   const scheduleOpen = (): void => {
     cancelCloseTimer();
-    if (tipOpen || openTimer) {
+    // The button is always present; only its status indication is optional.
+    if (tipOpen || openTimer || !anchor.dataset.state) {
       return;
     }
     openTimer = setTimeout(() => {
@@ -113,7 +125,7 @@ export function initSyncTooltip(handlers: {
   // the pointer can travel the gap to the actions.
   tip.addEventListener("mouseenter", cancelCloseTimer);
   tip.addEventListener("mouseleave", scheduleClose);
-  // Clicking the icon opens the panel: the tooltip must never compete.
+  // Clicking the button opens the panel: the tooltip must never compete.
   anchor.addEventListener("click", closeSyncTooltip);
 
   el("dav-sync-tip-close").addEventListener("click", (event) => {

@@ -53,7 +53,7 @@
   "configuration.opencode-cli-sidebar.sync.pollIntervalMinutes.description": "Minutes between remote change checks. Minimum 1.",
   "configuration.opencode-cli-sidebar.sync.rateLimitMaxRequests.description": "Maximum WebDAV requests allowed per rate limit window. Use 0 for no limit; default 600.",
   "configuration.opencode-cli-sidebar.sync.rateLimitWindowMinutes.description": "Length of the rate limit window in minutes. Minimum 1.",
-  "configuration.opencode-cli-sidebar.sync.showStatusIcon.description": "Show the sync status icon in the sidebar.",
+  "configuration.opencode-cli-sidebar.sync.showStatusIcon.description": "Show sync status on the config sync toolbar button.",
   "configuration.opencode-cli-sidebar.sync.customItems.description": "Additional files or folders inside the OpenCode config folder to sync.",
   "configuration.opencode-cli-sidebar.sync.disabledItems.description": "Sync item paths that are currently turned off.",
   "configuration.opencode-cli-sidebar.sync.excludedPaths.description": "Files or folders inside the OpenCode config folder that are never synced, even when a sync item covers them.",

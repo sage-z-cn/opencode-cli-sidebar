@@ -16,7 +16,6 @@ const titleL10nMap: Record<string, string> = {
   openCodeGlobalConfig: l10n.t("OpenCode Config"),
   openCodeUpdate: l10n.t('Install OpenCode'),
   checkOpenCodeUpdates: l10n.t('Check for OpenCode Updates'),
-  davSyncStatus: l10n.t('Config sync status'),
   davOpenPanel: l10n.t('OpenCode config sync'),
 };
 

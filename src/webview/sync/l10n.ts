@@ -13,7 +13,7 @@ import { l10n } from "../../i18n";
 import type { SyncShellStrings } from "./shell";
 
 export const syncL10nStrings: Record<string, string> = {
-  // Toolbar icon aria
+  // Toolbar status aria
   iconSyncing: l10n.t("Syncing configuration"),
   iconPending: l10n.t("{0} file(s) pending upload"),
   iconConflict: l10n.t("{0} conflict(s) to resolve"),
@@ -123,7 +123,7 @@ export const syncL10nStrings: Record<string, string> = {
 };
 
 export const syncShellStrings: SyncShellStrings = {
-  tipDismiss: l10n.t("Hide the status icon for now"),
+  tipDismiss: l10n.t("Hide the sync status for now"),
   actSyncNow: l10n.t("Sync now"),
   panelTitle: l10n.t("OpenCode config sync"),
   panelIntro: l10n.t(
@@ -158,9 +158,9 @@ export const syncShellStrings: SyncShellStrings = {
   fHttpHint: l10n.t("Enable only on trusted networks"),
   fSelfSigned: l10n.t("Accept self-signed certificates"),
   fSelfSignedHint: l10n.t("Skips certificate chain validation"),
-  fShowIcon: l10n.t("Show sync status icon"),
+  fShowIcon: l10n.t("Show sync status on the toolbar button"),
   fShowIconHint: l10n.t(
-    "Small icon next to the version badge; appears for syncing, pending, conflicts and errors only",
+    "Shown on the config sync toolbar button; appears for syncing, pending, conflicts and errors only",
   ),
   autoSync: l10n.t("Auto sync"),
   chevTitle: l10n.t("Collapse or expand trigger sources"),

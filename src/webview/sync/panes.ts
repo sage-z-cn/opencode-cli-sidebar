@@ -92,7 +92,7 @@ export function collectServerConfig(): {
   return { config, password: password ? password : undefined };
 }
 
-/** Read the immediate-apply options (auto sync group + status icon). */
+/** Read the immediate-apply options (auto sync group + status indication). */
 export function collectSyncOptions(): WebDavSyncOptions {
   return {
     autoSync: {

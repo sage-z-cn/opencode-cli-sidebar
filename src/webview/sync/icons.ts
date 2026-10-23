@@ -18,7 +18,7 @@ const CLOUD =
   '<path d="M17.5 19H7a4 4 0 0 1-1.33-7.76"/>';
 
 export const SYNC_ICONS = {
-  /** Idle / configured marker (kept for the status line; the toolbar icon is hidden when idle). */
+  /** Idle / configured marker for the status line; the toolbar button shows its plain entry glyph when idle. */
   cloudCheck: svg(CLOUD + '<path d="m9 15 2 2 4-4"/>'),
   /** Syncing: cloud with circular arrows; blinks while a sync runs. */
   cloudSync: svg(
