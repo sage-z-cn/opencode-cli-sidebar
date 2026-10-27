@@ -14,7 +14,6 @@ import {
   ArrowUp,
   ArrowUpLeft,
   ArrowUpRight,
-  Bot,
   Check,
   ChevronDown,
   CircleX,
@@ -26,6 +25,7 @@ import {
   CloudUpload,
   Copy,
   FileJson,
+  FileText,
   Info,
   Keyboard,
   LoaderCircle,
@@ -41,6 +41,17 @@ import {
   type IconNode,
 } from "lucide";
 
+/**
+ * Document outline with a corner fold, carrying a letter `A` instead of text
+ * lines. Marks the global AGENTS.md file, so it shares `FileText`'s frame and
+ * keeps the same 24px grid and stroke weight as the Lucide set.
+ */
+const FileLetterA: IconNode = [
+  ...FileText.slice(0, 2),
+  ["path", { d: "M9.1 18 11.4 12h1.2l2.3 6" }],
+  ["path", { d: "M9.9 16h4.2" }],
+];
+
 export const ICONS = {
   aArrowDown: AArrowDown,
   aArrowUp: AArrowUp,
@@ -48,7 +59,6 @@ export const ICONS = {
   arrowUp: ArrowUp,
   arrowUpLeft: ArrowUpLeft,
   arrowUpRight: ArrowUpRight,
-  bot: Bot,
   check: Check,
   chevronDown: ChevronDown,
   circleX: CircleX,
@@ -60,6 +70,7 @@ export const ICONS = {
   cloudUpload: CloudUpload,
   copy: Copy,
   fileJson: FileJson,
+  fileLetterA: FileLetterA,
   info: Info,
   keyboard: Keyboard,
   loader: LoaderCircle,
