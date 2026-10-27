@@ -1050,6 +1050,13 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .occs-plugin-actions {
   display: flex; align-items: center; gap: 2px; flex-shrink: 0;
 }
+.occs-plugin-remove-confirm {
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.occs-plugin-remove-confirm .occs-plugin-remove-label {
+  font-size: 11px; white-space: nowrap;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
 .occs-plugin-actions .occs-icon-btn {
   width: 24px; height: 24px;
 }
@@ -1082,6 +1089,24 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   background: var(--vscode-button-hoverBackground, #1177bb);
 }
 .occs-btn.is-busy { opacity: 0.7; cursor: default; }
+/* Small-size modifier for inline row actions. */
+.occs-btn-compact {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+/* Destructive row action; follows the theme error colors. */
+.occs-btn.occs-btn-danger {
+  background: var(--vscode-inputValidation-errorBackground, rgba(220, 60, 60, 0.18));
+  color: var(--vscode-errorForeground, #f87171);
+  border: 1px solid var(--vscode-inputValidation-errorBorder, rgba(220, 60, 60, 0.5));
+}
+.occs-btn.occs-btn-danger:hover {
+  /* Same themed error background, darkened with an overlay so light and
+     dark themes both keep the destructive look. */
+  background: var(--vscode-inputValidation-errorBackground, rgba(220, 60, 60, 0.18));
+  background-image: linear-gradient(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.12));
+  border-color: var(--vscode-inputValidation-errorBorder, rgba(220, 60, 60, 0.7));
+}
 
 /*
  * Theme preview: drop the dimmer, hide every modal chrome except the

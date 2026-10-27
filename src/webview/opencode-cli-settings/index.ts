@@ -59,6 +59,26 @@ const state: SettingsState = {
 
 let pluginAddFormOpen = false;
 let pluginCheckPending = false;
+/** Row index awaiting inline remove confirmation; null when no row is armed. */
+let pendingRemoveIndex: number | null = null;
+
+/**
+ * Last plugin-list mutation applied optimistically and not yet confirmed by
+ * the host. A failed save reverts exactly this one entry, using the recorded
+ * position rather than a value lookup so duplicate package names stay safe.
+ */
+type OptimisticPluginMutation =
+  | { kind: "add"; index: number; value: unknown }
+  | {
+      kind: "remove";
+      index: number;
+      value: unknown;
+      name: string;
+      restartVersion: string | undefined;
+      updateInfo: OpenCodeCliPluginUpdateInfo | undefined;
+    };
+
+let pendingOptimisticPlugin: OptimisticPluginMutation | null = null;
 /** Plugin name → new version, for rows that need a restart after update. */
 const pluginRestartPending = new Map<string, string>();
 
@@ -85,6 +105,7 @@ let settingsOpen = false;
 let settingsLoaded = false;
 let syncingNav = false;
 let pendingRerender = false;
+let pendingRerenderTimer: ReturnType<typeof setTimeout> | null = null;
 let navScrollTarget: number | null = null;
 let navScrollUnlockTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -238,6 +259,8 @@ function closeThemePicker(options?: { restore?: boolean }): void {
   }
   themePicker.open = false;
   themePicker.activeValue = "";
+  // A deferred settings re-render was blocked by the open picker.
+  flushPendingRerender();
 }
 
 function commitThemeChoice(value: string): void {
@@ -468,13 +491,25 @@ function pluginVersionHint(name: string): string {
   return "";
 }
 
-function pluginActionsHtml(name: string): string {
-  const index = state.plugins.findIndex((p) => pluginNameOf(p) === name);
+/**
+ * Row actions for one plugin entry. `index` is the real array position handed
+ * down by `pluginsSectionHtml`, not a name lookup, so duplicate package names
+ * cannot target the wrong row.
+ */
+function pluginActionsHtml(name: string, index: number): string {
+  if (index === pendingRemoveIndex) {
+    // Inline confirmation replaces the update/remove icons for this row only.
+    return `<div class="occs-plugin-actions">
+    <div class="occs-plugin-remove-confirm">
+      <span class="occs-plugin-remove-label">${escapeHtml(t("confirmRemovePlugin", "Remove this plugin?"))}</span>
+      <button type="button" class="occs-btn occs-btn-compact occs-btn-danger" data-oc-plugin-remove-confirm="${index}">${escapeHtml(t("remove", "Remove"))}</button>
+      <button type="button" class="occs-btn occs-btn-compact" data-oc-plugin-remove-cancel="1">${escapeHtml(t("cancel", "Cancel"))}</button>
+    </div>
+  </div>`;
+  }
   const info = pluginUpdateInfoOf(name);
   const canUpdate =
-    index >= 0 &&
-    !pluginRestartPending.has(name) &&
-    Boolean(info?.hasUpdate && info?.latest);
+    !pluginRestartPending.has(name) && Boolean(info?.hasUpdate && info?.latest);
   const updateBtn = canUpdate
     ? `<button type="button" class="occs-icon-btn" data-oc-plugin-update="${index}" data-oc-plugin-version="${escapeHtml(info?.latest ?? "")}" title="${escapeHtml(t("updateVersion", "Update"))}" aria-label="${escapeHtml(t("updateVersion", "Update"))}">
         ${icon(ICONS.upload, 12)}
@@ -508,7 +543,7 @@ function pluginsSectionHtml(): string {
           <span class="occs-plugin-name">${escapeHtml(name)}</span>
           ${hint}
         </div>
-        ${pluginActionsHtml(name)}
+        ${pluginActionsHtml(name, index)}
       </div>`;
     })
     .join("");
@@ -604,13 +639,133 @@ function isFocusInList(): boolean {
   );
 }
 
+/** Focused element accepts free text; re-rendering it would drop typing. */
+function isTextEntryFocused(): boolean {
+  if (!isFocusInList()) return false;
+  const el = document.activeElement;
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.isContentEditable) return true;
+  if (el instanceof HTMLTextAreaElement) return true;
+  if (el instanceof HTMLSelectElement) return true;
+  if (el instanceof HTMLInputElement) {
+    // Buttons/checkbox/radio keep no draft text, so they may re-render.
+    const type = el.type;
+    return type !== "checkbox" && type !== "radio" && type !== "button";
+  }
+  return false;
+}
+
+type FocusSnapshot = {
+  id: string;
+  attrs: Array<[string, string]>;
+  /** Nearest row-level ancestor, used to scope the attribute fallback. */
+  anchor: { attr: string; value: string } | null;
+};
+
+/**
+ * Row-level markers that identify the container a focused control lives in.
+ * There is no data-oc-group in the rendered markup: groups carry ids only, so
+ * data-oc-cli-row is the nearest row container for plain setting rows.
+ */
+const FOCUS_ANCHOR_ATTRS = [
+  "data-oc-plugin-index",
+  "data-oc-cli-row",
+  "data-oc-cli-set",
+];
+
+/** Remember where focus was so a re-render can put it back on the same control. */
+function captureFocusSnapshot(): FocusSnapshot | null {
+  const el = document.activeElement;
+  if (!(el instanceof HTMLElement)) return null;
+  const list = listEl();
+  if (!list || !list.contains(el)) return null;
+  const attrs: Array<[string, string]> = [];
+  for (const [key, value] of Object.entries(el.dataset)) {
+    if (value === undefined) continue;
+    const attr = `data-${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
+    attrs.push([attr, value]);
+  }
+  let anchor: { attr: string; value: string } | null = null;
+  for (const attr of FOCUS_ANCHOR_ATTRS) {
+    const holder = el.closest<HTMLElement>(`[${attr}]`);
+    if (!holder || !list.contains(holder)) continue;
+    const value = holder.getAttribute(attr);
+    if (value !== null) {
+      anchor = { attr, value };
+      break;
+    }
+  }
+  return { id: el.id, attrs, anchor };
+}
+
+/** Best-effort focus restore by id, then by identical data attributes. */
+function restoreFocusSnapshot(snapshot: FocusSnapshot | null): void {
+  if (!snapshot) return;
+  const list = listEl();
+  if (!list) return;
+  if (snapshot.id) {
+    const byId = document.getElementById(snapshot.id);
+    if (byId instanceof HTMLElement && list.contains(byId)) {
+      byId.focus();
+      return;
+    }
+  }
+  if (!snapshot.attrs.length) return;
+  const matches = (root: ParentNode): HTMLElement | undefined => {
+    const self = root instanceof HTMLElement ? root : null;
+    if (
+      self &&
+      snapshot.attrs.every(([attr, value]) => self.getAttribute(attr) === value)
+    ) {
+      return self;
+    }
+    return Array.from(root.querySelectorAll<HTMLElement>("*")).find((el) =>
+      snapshot.attrs.every(([attr, value]) => el.getAttribute(attr) === value),
+    );
+  };
+  // Row-scoped search first: per-row markers such as data-oc-plugin-remove-cancel="1"
+  // repeat on every row, so a global scan would land on the first row.
+  const anchor = snapshot.anchor;
+  if (anchor) {
+    const scopes = Array.from(
+      list.querySelectorAll<HTMLElement>(`[${anchor.attr}]`),
+    ).filter((el) => el.getAttribute(anchor.attr) === anchor.value);
+    for (const scope of scopes) {
+      const hit = matches(scope);
+      if (hit) {
+        hit.focus();
+        return;
+      }
+    }
+  }
+  matches(list)?.focus();
+}
+
 function flushPendingRerender(): void {
   if (!pendingRerender) return;
   if (navScrollTarget !== null) return;
-  if (isFocusInList()) return;
+  if (themePicker.open) return;
+  if (pendingRerenderTimer !== null) {
+    clearTimeout(pendingRerenderTimer);
+    pendingRerenderTimer = null;
+  }
+  // A text control holds an uncommitted draft; the focusout handler flushes
+  // once the user leaves it. Everything else may re-render right away.
+  if (isTextEntryFocused()) return;
   pendingRerender = false;
+  const focus = captureFocusSnapshot();
   renderNav();
   renderList();
+  restoreFocusSnapshot(focus);
+}
+
+/** Safety net: a deferred re-render must still land without a later flush trigger. */
+function schedulePendingRerenderFlush(): void {
+  if (pendingRerenderTimer !== null) return;
+  pendingRerenderTimer = setTimeout(() => {
+    pendingRerenderTimer = null;
+    flushPendingRerender();
+  }, 0);
 }
 
 function scrollToGroup(groupId: string): void {
@@ -751,7 +906,13 @@ export function applyOpenCodeCliSettingsData(
   state.configPath = message.configPath ?? "";
   state.themeOptions = message.themeOptions ?? [];
   state.plugins = message.plugins ?? [];
+  // Authoritative data supersedes any unconfirmed optimistic mutation.
+  pendingOptimisticPlugin = null;
   state.pluginUpdates = reconcilePluginUpdates(state.pluginUpdates, state.plugins);
+  if (pendingRemoveIndex !== null && pendingRemoveIndex >= state.plugins.length) {
+    // Authoritative list shrank underneath the inline confirm row.
+    pendingRemoveIndex = null;
+  }
   settingsLoaded = true;
   $("#occs-reload")?.classList.remove("is-spinning");
   updateConfigPathUi();
@@ -777,6 +938,7 @@ export function applyOpenCodeCliSettingsData(
     // nav jump animation is still in flight; otherwise the innerHTML swap
     // would cancel the smooth scroll mid-flight.
     pendingRerender = true;
+    schedulePendingRerenderFlush();
     return;
   }
   renderNav();
@@ -789,6 +951,11 @@ export function handleOpenCodeCliSettingsSaveResult(
   if (!message.ok) {
     pluginUpdateAllQueue = [];
     if (message.path === "plugins") {
+      // Version writes report their failure through this same result; only an
+      // add/remove mutation changed the list, so only that needs a rollback.
+      if (pendingPluginUpdate === null) {
+        rollbackPendingOptimisticPlugin();
+      }
       pendingPluginUpdate = null;
     }
     renderList();
@@ -796,6 +963,10 @@ export function handleOpenCodeCliSettingsSaveResult(
       message.error || t("saveFailed", "Failed to save. Your config file was not changed."),
     );
     return;
+  }
+  if (message.path === "plugins") {
+    // The write landed; the host's next data push is authoritative.
+    pendingOptimisticPlugin = null;
   }
   // Plugin version writes land via this result; mark the row for restart.
   if (message.path === "plugins" && pendingPluginUpdate) {
@@ -805,6 +976,42 @@ export function handleOpenCodeCliSettingsSaveResult(
     renderList();
     if (pluginUpdateAllQueue.length) {
       updateNextPluginInQueue();
+    }
+  }
+}
+
+/** Revert the single optimistic plugin mutation that a failed save left behind. */
+function rollbackPendingOptimisticPlugin(): void {
+  const mutation = pendingOptimisticPlugin;
+  pendingOptimisticPlugin = null;
+  if (!mutation) return;
+  if (mutation.kind === "add") {
+    // The pushed entry must still sit exactly where it was inserted; if the
+    // list was rewritten meanwhile, leave it alone rather than delete a
+    // different plugin that happens to share the same package name.
+    if (
+      mutation.index < state.plugins.length &&
+      state.plugins[mutation.index] === mutation.value
+    ) {
+      state.plugins.splice(mutation.index, 1);
+    }
+    return;
+  }
+  // Reinsert at the original position; a shrunken list appends instead.
+  if (mutation.index >= state.plugins.length) {
+    state.plugins.push(mutation.value);
+  } else {
+    state.plugins.splice(mutation.index, 0, mutation.value);
+  }
+  // Restore the row's side state that the optimistic delete cleared.
+  if (mutation.restartVersion !== undefined) {
+    pluginRestartPending.set(mutation.name, mutation.restartVersion);
+  }
+  const info = mutation.updateInfo;
+  if (info) {
+    const existing = state.pluginUpdates ?? [];
+    if (!existing.some((entry) => entry.name === info.name)) {
+      state.pluginUpdates = [...existing, info];
     }
   }
 }
@@ -859,13 +1066,53 @@ function confirmPluginAdd(): void {
     input?.focus();
     return;
   }
+  // Reject a duplicate package name locally for instant feedback; the host
+  // re-checks authoritatively and still refuses its own duplicate writes.
+  const name = splitPluginLabel(value).name;
+  if (state.plugins.some((plugin) => pluginNameOf(plugin) === name)) {
+    showSettingsError(t("pluginAlreadyAdded", "This plugin is already added."));
+    input?.focus();
+    return;
+  }
+  // Optimistic local insert: the host round-trip would otherwise leave the
+  // form and its text on screen with no visible reaction. The authoritative
+  // list from the host replaces `state.plugins` wholesale afterwards.
+  const insertIndex = state.plugins.length;
+  pendingOptimisticPlugin = { kind: "add", index: insertIndex, value };
+  state.plugins.push(value);
   pluginAddFormOpen = false;
+  renderList();
   postMessage({ type: "addOpenCodeCliPlugin", packageName: value });
 }
 
 function removePluginAt(index: number): void {
-  const label = pluginLabel(state.plugins[index]);
-  pluginRestartPending.delete(splitPluginLabel(label).name);
+  pendingRemoveIndex = null;
+  const removed = state.plugins[index];
+  if (removed === undefined) {
+    renderList();
+    return;
+  }
+  const name = splitPluginLabel(pluginLabel(removed)).name;
+  // Capture the row's side state first: the optimistic delete clears it below,
+  // and a failed save must be able to put it back exactly as it was.
+  const restartVersion = pluginRestartPending.get(name);
+  const updateInfo = state.pluginUpdates?.find((info) => info.name === name);
+  pendingOptimisticPlugin = {
+    kind: "remove",
+    index,
+    value: removed,
+    name,
+    restartVersion,
+    updateInfo,
+  };
+  // Optimistic local removal keeps the list in sync before the host reply.
+  state.plugins.splice(index, 1);
+  pluginRestartPending.delete(name);
+  if (state.pluginUpdates) {
+    const kept = state.pluginUpdates.filter((info) => info.name !== name);
+    state.pluginUpdates = kept.length ? kept : null;
+  }
+  renderList();
   postMessage({ type: "removeOpenCodeCliPlugin", index });
 }
 
@@ -942,6 +1189,11 @@ export function openOpenCodeCliSettingsModal(): void {
 export function closeOpenCodeCliSettingsModal(): void {
   settingsOpen = false;
   pendingRerender = false;
+  pendingRemoveIndex = null;
+  if (pendingRerenderTimer !== null) {
+    clearTimeout(pendingRerenderTimer);
+    pendingRerenderTimer = null;
+  }
   if (navScrollUnlockTimer !== null) {
     clearTimeout(navScrollUnlockTimer);
     navScrollUnlockTimer = null;
@@ -1014,11 +1266,10 @@ export function initOpenCodeCliSettingsUi(): void {
         pendingRerender = false;
         return;
       }
-      // Focus moved elsewhere within the list; keep waiting.
-      if (list.contains(document.activeElement)) return;
-      pendingRerender = false;
-      renderNav();
-      renderList();
+      // A focused text control keeps its node; everything else may re-render
+      // now, with focus restored to the equivalent new node.
+      if (isTextEntryFocused()) return;
+      flushPendingRerender();
     }, 0);
   });
 
@@ -1085,12 +1336,47 @@ export function initOpenCodeCliSettingsUi(): void {
     );
     if (removeBtn) {
       e.preventDefault();
+      // renderList() is a no-op while the theme picker is open, so arming the
+      // confirm row here would leak a row state that cannot be rendered.
+      if (themePicker.open) return;
       const index = Number(
         (removeBtn as HTMLElement).dataset.ocPluginRemove ?? "-1",
       );
       if (Number.isInteger(index) && index >= 0) {
-        removePluginAt(index);
+        // Arm the row's inline confirmation instead of removing immediately.
+        pendingRemoveIndex = index;
+        renderList();
+        listEl()
+          ?.querySelector<HTMLElement>("[data-oc-plugin-remove-confirm]")
+          ?.focus();
       }
+      return;
+    }
+
+    const removeConfirm = (e.target as HTMLElement).closest(
+      "[data-oc-plugin-remove-confirm]",
+    );
+    if (removeConfirm) {
+      e.preventDefault();
+      const index = Number(
+        (removeConfirm as HTMLElement).dataset.ocPluginRemoveConfirm ?? "-1",
+      );
+      pendingRemoveIndex = null;
+      if (Number.isInteger(index) && index >= 0) {
+        removePluginAt(index);
+      } else {
+        renderList();
+      }
+      return;
+    }
+
+    const removeCancel = (e.target as HTMLElement).closest(
+      "[data-oc-plugin-remove-cancel]",
+    );
+    if (removeCancel) {
+      e.preventDefault();
+      pendingRemoveIndex = null;
+      renderList();
       return;
     }
 
@@ -1159,6 +1445,15 @@ export function initOpenCodeCliSettingsUi(): void {
         e.stopPropagation();
         closePluginAddForm();
       }
+      return;
+    }
+
+    if (pendingRemoveIndex !== null && e.key === "Escape") {
+      // Cancel the row confirmation before the theme picker / modal handlers.
+      e.preventDefault();
+      e.stopPropagation();
+      pendingRemoveIndex = null;
+      renderList();
       return;
     }
 

@@ -107,8 +107,20 @@ export class OpenCodeCliSettingsService {
     if (!spec) {
       throw new Error("Plugin package name is required");
     }
+    const incoming = parsePluginSpec(spec);
+    if (!incoming) {
+      throw new Error(`Invalid plugin package: "${spec}"`);
+    }
     await this.mutateDoc((doc) => {
       const existing = Array.isArray(doc.plugins) ? (doc.plugins as unknown[]) : [];
+      // Same package name is a duplicate regardless of the version spec, so
+      // compare canonical names and ignore unusable entries.
+      const duplicate = existing.some(
+        (entry) => parsePluginSpec(entry)?.name === incoming.name,
+      );
+      if (duplicate) {
+        throw new Error(`Plugin "${incoming.name}" is already added.`);
+      }
       doc.plugins = [...existing, spec];
     });
   }

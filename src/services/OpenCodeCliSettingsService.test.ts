@@ -228,6 +228,64 @@ describe("OpenCodeCliSettingsService", () => {
     expect(doc.plugins).toEqual(["pkg"]);
   });
 
+  it("addPlugin rejects the same package with a different version", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["foo@1.0.0"] }),
+      "utf8",
+    );
+    await expect(service.addPlugin("foo@2.0.0")).rejects.toThrow(
+      /already added/,
+    );
+  });
+
+  it("addPlugin rejects a versioned spec when the bare package exists", async () => {
+    fs.writeFileSync(configPath, JSON.stringify({ plugins: ["foo"] }), "utf8");
+    await expect(service.addPlugin("foo@1.0.0")).rejects.toThrow(
+      /already added/,
+    );
+  });
+
+  it("addPlugin treats scoped names as the same package across versions", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["@scope/name@1.0.0"] }),
+      "utf8",
+    );
+    await expect(service.addPlugin("@scope/name")).rejects.toThrow(
+      /already added/,
+    );
+  });
+
+  it("addPlugin allows distinct scoped packages sharing a prefix", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["@scope/name"] }),
+      "utf8",
+    );
+    await service.addPlugin("@scope/name-extra");
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    expect(doc.plugins).toEqual(["@scope/name", "@scope/name-extra"]);
+  });
+
+  it("addPlugin compares against object-form entries", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: [{ package: "foo", version: "1.0.0" }] }),
+      "utf8",
+    );
+    await expect(service.addPlugin("foo")).rejects.toThrow(/already added/);
+  });
+
+  it("addPlugin leaves cli.json untouched when it rejects a duplicate", async () => {
+    const original = JSON.stringify({ plugins: ["foo@1.0.0"], animations: true });
+    fs.writeFileSync(configPath, original, "utf8");
+    await expect(service.addPlugin("foo")).rejects.toThrow(/already added/);
+    expect(fs.readFileSync(configPath, "utf8")).toBe(original);
+  });
+
   it("removePlugin deletes by index", async () => {
     fs.writeFileSync(
       configPath,
