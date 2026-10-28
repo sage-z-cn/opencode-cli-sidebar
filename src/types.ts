@@ -65,18 +65,14 @@ export type WebviewMessage =
   | { type: "removeOpenCodeCliPlugin"; index: number }
   | { type: "checkOpenCodeCliPluginUpdates" }
   | { type: "updateOpenCodeCliPlugin"; index: number; version: string }
-  /** Toggle update tracking by rewriting the plugin's `package` spec. */
-  | {
-      type: "setOpenCodeCliPluginAutoUpdate";
-      index: number;
-      autoUpdate: boolean;
-    }
   /** Replace a plugin entry's whole `options` object. */
   | {
       type: "setOpenCodeCliPluginOptions";
       index: number;
       options: Record<string, unknown>;
     }
+  /** Delete a stale plugin cache directory so OpenCode reinstalls it on restart. */
+  | { type: "clearOpenCodeCliPluginCache"; name: string }
   /** Webview boot: ask the host for the current OpenCode self-update status. */
   | { type: "requestOpenCodeUpdateStatus" }
   /** Method popover confirmation; while blocked on nvm it means "fix and continue". */
@@ -263,6 +259,8 @@ export type HostMessage =
       plugins: unknown[];
       /** Installed plugin versions from OpenCode's npm cache, keyed by package name. */
       installedPluginVersions?: Record<string, string>;
+      /** npm latest version for plugins that follow latest, keyed by package name. */
+      pluginLatestVersions?: Record<string, string>;
     }
   | {
       type: "openCodeCliSettingsSaveResult";

@@ -154,10 +154,10 @@ export class TerminalProvider
       resetOpenCodeCliSetting: (path) => this.resetOpenCodeCliSetting(path),
       addOpenCodeCliPlugin: (packageName) => this.addOpenCodeCliPlugin(packageName),
       removeOpenCodeCliPlugin: (index) => this.removeOpenCodeCliPlugin(index),
-      setOpenCodeCliPluginAutoUpdate: (index, autoUpdate) =>
-        this.setOpenCodeCliPluginAutoUpdate(index, autoUpdate),
       setOpenCodeCliPluginOptions: (index, options) =>
         this.setOpenCodeCliPluginOptions(index, options),
+      clearOpenCodeCliPluginCache: (name) =>
+        this.clearOpenCodeCliPluginCache(name),
       checkOpenCodeCliPluginUpdates: () => this.checkOpenCodeCliPluginUpdates(),
       updateOpenCodeCliPlugin: (index, version) =>
         this.updateOpenCodeCliPlugin(index, version),
@@ -519,6 +519,7 @@ export class TerminalProvider
         themeOptions: payload.themeOptions,
         plugins: payload.plugins,
         installedPluginVersions: payload.installedPluginVersions,
+        pluginLatestVersions: payload.pluginLatestVersions,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -568,32 +569,6 @@ export class TerminalProvider
     await this.requestOpenCodeCliSettingsData();
   }
 
-  public async setOpenCodeCliPluginAutoUpdate(
-    index: number,
-    autoUpdate: boolean,
-  ): Promise<void> {
-    try {
-      await this.openCodeCliSettingsService.setPluginAutoUpdate(index, autoUpdate);
-      this.postWebviewMessage({
-        type: "openCodeCliSettingsSaveResult",
-        ok: true,
-        path: "plugins",
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(
-        `[TerminalProvider] openCode plugin auto-update change failed: ${message}`,
-      );
-      this.postWebviewMessage({
-        type: "openCodeCliSettingsSaveResult",
-        ok: false,
-        path: "plugins",
-        error: message,
-      });
-    }
-    await this.requestOpenCodeCliSettingsData();
-  }
-
   public async setOpenCodeCliPluginOptions(
     index: number,
     options: Record<string, unknown>,
@@ -609,6 +584,33 @@ export class TerminalProvider
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(
         `[TerminalProvider] openCode plugin options change failed: ${message}`,
+      );
+      this.postWebviewMessage({
+        type: "openCodeCliSettingsSaveResult",
+        ok: false,
+        path: "plugins",
+        error: message,
+      });
+    }
+    await this.requestOpenCodeCliSettingsData();
+  }
+
+  /**
+   * Drop the stale `<name>@latest` cache directory. The plugin reuses the cache
+   * until it is gone, so removing it is the only way to pick up npm latest.
+   */
+  public async clearOpenCodeCliPluginCache(name: string): Promise<void> {
+    try {
+      await this.openCodeCliSettingsService.clearPluginCache(name);
+      this.postWebviewMessage({
+        type: "openCodeCliSettingsSaveResult",
+        ok: true,
+        path: "plugins",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `[TerminalProvider] openCode plugin cache clear failed for ${name}: ${message}`,
       );
       this.postWebviewMessage({
         type: "openCodeCliSettingsSaveResult",

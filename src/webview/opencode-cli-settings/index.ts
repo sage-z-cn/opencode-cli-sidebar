@@ -46,6 +46,8 @@ type SettingsState = {
   pluginUpdates: OpenCodeCliPluginUpdateInfo[] | null;
   /** Actually installed versions keyed by package name, from OpenCode's cache. */
   installedPluginVersions: Record<string, string>;
+  /** npm latest for follow-latest entries, keyed by package name. */
+  pluginLatestVersions: Record<string, string>;
 };
 
 const state: SettingsState = {
@@ -58,21 +60,22 @@ const state: SettingsState = {
   plugins: [],
   pluginUpdates: null,
   installedPluginVersions: {},
+  pluginLatestVersions: {},
 };
 
 let pluginAddFormOpen = false;
 let pluginCheckPending = false;
+/**
+ * Plugin names whose cache clear is in flight, or succeeded but is not yet
+ * confirmed by a fresh settings push. The row hides its button meanwhile so a
+ * second click cannot race the directory removal.
+ */
+const pluginCacheClearPending = new Set<string>();
 /** Row index awaiting inline remove confirmation; null when no row is armed. */
 let pendingRemoveIndex: number | null = null;
 /** Rows whose detail panel is expanded, keyed by package name. */
 const expandedPlugins = new Set<string>();
-/**
- * Optimistic auto-update intent per package name. It stays out of
- * `state.plugins` because the webview must not guess the exact spec the host
- * writes when pinning or unpinning; the next host push clears the map.
- */
-const pluginAutoUpdateOverrides = new Map<string, boolean>();
-/** Optimistic options per package name, same lifecycle as the auto-update map. */
+/** Optimistic options per package name; the next host push clears the map. */
 const pluginOptionsOverrides = new Map<string, Record<string, unknown>>();
 
 /** Options JSON editor, open for at most one plugin row at a time. */
@@ -98,14 +101,6 @@ type OptimisticPluginMutation =
       name: string;
       restartVersion: string | undefined;
       updateInfo: OpenCodeCliPluginUpdateInfo | undefined;
-    }
-  | {
-      kind: "autoUpdate";
-      index: number;
-      name: string;
-      autoUpdate: boolean;
-      /** Override active before this write; null when the row had none. */
-      previous: boolean | null;
     }
   | {
       kind: "options";
@@ -134,13 +129,14 @@ function resetLoadedState(): void {
   state.plugins = [];
   state.pluginUpdates = null;
   state.installedPluginVersions = {};
+  state.pluginLatestVersions = {};
   pluginAddFormOpen = false;
   pluginCheckPending = false;
+  pluginCacheClearPending.clear();
   pendingRemoveIndex = null;
   pendingOptimisticPlugin = null;
   pluginOptionsEditor = null;
   expandedPlugins.clear();
-  pluginAutoUpdateOverrides.clear();
   pluginOptionsOverrides.clear();
   pluginRestartPending.clear();
 }
@@ -563,11 +559,6 @@ function pluginFollowsLatest(plugin: unknown): boolean {
   return !version || !isExactVersion(version);
 }
 
-/** Effective auto-update state, honouring an in-flight optimistic toggle. */
-function pluginFollowsLatestState(plugin: unknown, name: string): boolean {
-  return pluginAutoUpdateOverrides.get(name) ?? pluginFollowsLatest(plugin);
-}
-
 /** `options` of an object entry, null when the entry carries none. */
 function pluginOptionsOf(plugin: unknown): Record<string, unknown> | null {
   if (plugin && typeof plugin === "object" && !Array.isArray(plugin)) {
@@ -607,24 +598,31 @@ function pluginVersionHtml(plugin: unknown, name: string): string {
   return `<span class="occs-plugin-ver" title="${escapeHtml(title)}">${escapeHtml(installed)}</span>`;
 }
 
-/** Follow-latest switch. Its label is constant; the switch carries the state. */
-function pluginAutoUpdateHtml(index: number, follows: boolean): string {
-  const id = `occs-plugin-auto-${index}`;
-  const label = escapeHtml(t("followLatest", "Auto update"));
-  // The 24h caveat lives in the tooltip so the row keeps a single line.
-  const tip = escapeHtml(
-    t(
-      "followLatestHint",
-      "Turning this on makes OpenCode check for updates and install the latest version on its next start.",
-    ),
-  );
-  return `<div class="occs-plugin-auto" title="${tip}">
-    <label class="occs-toggle">
-      <input type="checkbox" id="${id}" data-oc-plugin-autoupdate="${index}" aria-label="${label}"${follows ? " checked" : ""} />
-      <span class="slider"></span>
-    </label>
-    <label class="occs-plugin-auto-label" for="${id}">${label}</label>
-  </div>`;
+/**
+ * A cached install that does not match npm `latest` for a follow-latest entry.
+ * OpenCode reuses an existing cache directory without asking the registry, so a
+ * bare name can stay on an old version indefinitely.
+ *
+ * Any difference counts as stale: npm `latest` is by definition the version the
+ * cache should hold, and the webview has no semver comparison. A version newer
+ * than the tag is only possible via a manual install, which is equally worth
+ * refreshing.
+ *
+ * Only entries whose cache directory is `<name>@latest` qualify. A range such as
+ * `^1.2.0` caches under its own key, and the refresh action never deletes those,
+ * so a hint there could not be acted on.
+ */
+function pluginCacheStale(
+  name: string,
+): { installed: string; latest: string } | null {
+  const plugin = state.plugins.find((entry) => pluginNameOf(entry) === name);
+  if (!plugin || !pluginFollowsLatest(plugin)) return null;
+  const spec = pluginPinnedVersion(plugin);
+  if (spec !== null && spec !== "latest") return null;
+  const installed = state.installedPluginVersions[name];
+  const latest = state.pluginLatestVersions[name];
+  if (!installed || !latest || installed === latest) return null;
+  return { installed, latest };
 }
 
 /** Right side of the meta line: restart, update availability, or nothing yet. */
@@ -635,6 +633,24 @@ function pluginStatusHtml(
   if (pluginRestartPending.has(name)) {
     return `<span class="occs-plugin-status is-restart">${escapeHtml(t("restartRequired", "Restart required"))}</span>
       <button type="button" class="occs-plugin-link" data-oc-plugin-restart="1" title="${escapeHtml(t("restartToTakeEffect", "Restart OpenCode to take effect"))}">${escapeHtml(t("restartOpenCode", "Restart OpenCode"))}</button>`;
+  }
+  const stale = pluginCacheStale(name);
+  if (stale) {
+    const label = formatMessage(
+      t("cacheStale", "Local cache is behind npm {0}"),
+      stale.latest,
+    );
+    const hint = formatMessage(
+      t("cacheStaleHint", "Installed {0}, npm has {1}"),
+      stale.installed,
+      stale.latest,
+    );
+    // The button disappears while the clear is in flight or unconfirmed, so a
+    // double click cannot race the directory removal.
+    const action = pluginCacheClearPending.has(name)
+      ? `<span class="occs-plugin-status">${escapeHtml(t("refreshingCache", "Refreshing…"))}</span>`
+      : `<button type="button" class="occs-plugin-link" data-oc-plugin-clear-cache="${escapeHtml(name)}" title="${escapeHtml(hint)}">${escapeHtml(t("refreshCache", "Refresh cache"))}</button>`;
+    return `<span class="occs-plugin-status is-update" title="${escapeHtml(hint)}">${escapeHtml(label)}</span>${action}`;
   }
   if (!info) return "";
   if (info.error) {
@@ -763,7 +779,6 @@ function pluginItemHtml(plugin: unknown, index: number): string {
   const name = pluginNameOf(plugin);
   const open = expandedPlugins.has(name);
   const armed = index === pendingRemoveIndex;
-  const follows = pluginFollowsLatestState(plugin, name);
   const info = pluginUpdateInfoOf(name);
   const detail =
     open && !armed ? pluginDetailHtml(plugin, index, name) : "";
@@ -771,7 +786,7 @@ function pluginItemHtml(plugin: unknown, index: number): string {
   // the options panel is expanded.
   const meta = armed
     ? pluginRemoveConfirmHtml(index)
-    : `${pluginVersionHtml(plugin, name)}${pluginAutoUpdateHtml(index, follows)}${pluginStatusHtml(name, info)}`;
+    : `${pluginVersionHtml(plugin, name)}${pluginStatusHtml(name, info)}`;
   return `<div class="occs-plugin-item${open ? " is-open" : ""}" data-oc-plugin-index="${index}">
     <div class="occs-plugin-head">
       <button type="button" class="occs-plugin-toggle" data-oc-plugin-expand="${index}" aria-expanded="${open}"${open ? ` aria-controls="occs-plugin-detail-${index}"` : ""} title="${escapeHtml(name)}">
@@ -1173,9 +1188,12 @@ export function applyOpenCodeCliSettingsData(
   state.themeOptions = message.themeOptions ?? [];
   state.plugins = message.plugins ?? [];
   state.installedPluginVersions = message.installedPluginVersions ?? {};
+  state.pluginLatestVersions = message.pluginLatestVersions ?? {};
   // Authoritative data supersedes any unconfirmed optimistic mutation.
   pendingOptimisticPlugin = null;
-  pluginAutoUpdateOverrides.clear();
+  // A fresh installed-version map decides whether the cache hint is still true,
+  // so pending clear markers have served their purpose.
+  pluginCacheClearPending.clear();
   pluginOptionsOverrides.clear();
   prunePluginUiState(state.plugins);
   state.pluginUpdates = reconcilePluginUpdates(state.pluginUpdates, state.plugins);
@@ -1227,6 +1245,8 @@ export function handleOpenCodeCliSettingsSaveResult(
   if (!message.ok) {
     pluginUpdateAllQueue = [];
     if (message.path === "plugins") {
+      // A failed cache clear must re-arm the row so the user can retry.
+      pluginCacheClearPending.clear();
       // Version writes report their failure through this same result; only an
       // add/remove mutation changed the list, so only that needs a rollback.
       if (pendingPluginUpdate === null) {
@@ -1288,10 +1308,6 @@ function rollbackPendingOptimisticPlugin(): void {
     ) {
       state.plugins.splice(mutation.index, 1);
     }
-    return;
-  }
-  if (mutation.kind === "autoUpdate") {
-    restorePluginOverride(pluginAutoUpdateOverrides, mutation.name, mutation.previous);
     return;
   }
   if (mutation.kind === "options") {
@@ -1409,7 +1425,6 @@ function removePluginAt(index: number): void {
   // Optimistic local removal keeps the list in sync before the host reply.
   state.plugins.splice(index, 1);
   pluginRestartPending.delete(name);
-  pluginAutoUpdateOverrides.delete(name);
   pluginOptionsOverrides.delete(name);
   expandedPlugins.delete(name);
   if (pluginOptionsEditor?.name === name) pluginOptionsEditor = null;
@@ -1439,21 +1454,18 @@ function updatePluginVersion(
   postMessage({ type: "updateOpenCodeCliPlugin", index, version });
 }
 
-/** Flip update tracking. The host rewrites `package` and keeps `options`. */
-function commitPluginAutoUpdate(index: number, autoUpdate: boolean): void {
-  const plugin = state.plugins[index];
-  if (!plugin) return;
-  const name = pluginNameOf(plugin);
-  const previous = pluginAutoUpdateOverrides.get(name) ?? null;
-  pluginAutoUpdateOverrides.set(name, autoUpdate);
-  pendingOptimisticPlugin = {
-    kind: "autoUpdate",
-    index,
-    name,
-    autoUpdate,
-    previous,
-  };
-  postMessage({ type: "setOpenCodeCliPluginAutoUpdate", index, autoUpdate });
+/**
+ * Ask the host to drop the `<name>@latest` cache directory. The name is the
+ * payload: a list reordered between render and click cannot redirect the
+ * deletion to another plugin.
+ */
+function clearPluginCache(name: string): void {
+  if (!name || pluginCacheClearPending.has(name)) return;
+  pluginCacheClearPending.add(name);
+  // Mark the row busy right away; the host round-trip is a filesystem delete
+  // followed by a full settings reload.
+  renderList();
+  postMessage({ type: "clearOpenCodeCliPluginCache", name });
 }
 
 /** Replace one entry's whole options object; `options` is stored verbatim. */
@@ -1584,15 +1596,6 @@ function savePluginOptions(): void {
   }
   commitPluginOptions(index, parsed as Record<string, unknown>);
   renderList();
-}
-
-function onPluginAutoUpdateChange(target: HTMLElement): void {
-  const index = Number(target.dataset.ocPluginAutoupdate ?? "-1");
-  if (!Number.isInteger(index) || index < 0) return;
-  commitPluginAutoUpdate(index, (target as HTMLInputElement).checked);
-  const focus = captureFocusSnapshot();
-  renderList();
-  restoreFocusSnapshot(focus);
 }
 
 function onPluginOptionChange(target: HTMLElement): void {
@@ -1759,10 +1762,6 @@ export function initOpenCodeCliSettingsUi(): void {
   $("#occs-list")?.addEventListener("change", (e) => {
     const target = e.target as HTMLElement;
     if (!target) return;
-    if (target.dataset.ocPluginAutoupdate) {
-      onPluginAutoUpdateChange(target);
-      return;
-    }
     if (target.dataset.ocPluginOpt) {
       onPluginOptionChange(target);
       return;
@@ -1977,6 +1976,15 @@ export function initOpenCodeCliSettingsUi(): void {
       e.preventDefault();
       closeOpenCodeCliSettingsModal();
       postMessage({ type: "requestRestart" });
+      return;
+    }
+
+    const clearCacheBtn = (e.target as HTMLElement).closest(
+      "[data-oc-plugin-clear-cache]",
+    );
+    if (clearCacheBtn) {
+      e.preventDefault();
+      clearPluginCache((clearCacheBtn as HTMLElement).dataset.ocPluginClearCache ?? "");
       return;
     }
 

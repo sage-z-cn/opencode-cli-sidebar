@@ -43,13 +43,33 @@ export interface OpenCodeCliSettingsPayload {
   plugins: unknown[];
   /** Installed versions from OpenCode's npm cache, keyed by package name. */
   installedPluginVersions: Record<string, string>;
+  /**
+   * npm latest version for plugins that follow latest, keyed by package name.
+   * `checkPluginUpdates` skips those entries, so the staleness hint needs its
+   * own registry data. Lookup failures are omitted rather than reported.
+   */
+  pluginLatestVersions: Record<string, string>;
 }
+
+/** How long a registry `latest` answer is reused across settings loads. */
+const PLUGIN_LATEST_CACHE_TTL_MS = 60_000;
 
 /**
  * Reads/writes OpenCode cli.json settings other than `keybinds`.
  * Writing a value equal to the default removes the key.
  */
 export class OpenCodeCliSettingsService {
+  /**
+   * Registry answers reused for `PLUGIN_LATEST_CACHE_TTL_MS`. `load()` runs
+   * after every settings action, so without this each push would cost one
+   * request per follow-latest plugin. The TTL keeps a fresh publish visible
+   * within a minute.
+   */
+  private readonly latestVersionCache = new Map<
+    string,
+    { version: string; fetchedAt: number }
+  >();
+
   public constructor(
     private readonly logger: Pick<
       OutputChannelService,
@@ -82,6 +102,13 @@ export class OpenCodeCliSettingsService {
     const pluginsRaw = doc.plugins;
     const plugins = Array.isArray(pluginsRaw) ? pluginsRaw : [];
 
+    // Both sources are independent I/O; one settings load must not serialize
+    // disk reads behind registry calls.
+    const [installedPluginVersions, pluginLatestVersions] = await Promise.all([
+      this.loadInstalledPluginVersions(plugins),
+      this.loadPluginLatestVersions(plugins),
+    ]);
+
     return {
       values,
       overrides,
@@ -93,7 +120,8 @@ export class OpenCodeCliSettingsService {
         projectDir,
       ),
       plugins,
-      installedPluginVersions: await this.loadInstalledPluginVersions(plugins),
+      installedPluginVersions,
+      pluginLatestVersions,
     };
   }
 
@@ -185,6 +213,110 @@ export class OpenCodeCliSettingsService {
         `[OpenCodeCliSettingsService] Cannot read plugin manifest ${manifestPath}: ${errorText(error)}`,
       );
       return undefined;
+    }
+  }
+
+  /**
+   * npm `latest` for the entries that follow latest, keyed by package name.
+   * `checkPluginUpdates` deliberately skips those entries, so this is the only
+   * registry data that can prove a cached install is behind npm. A failed or
+   * unknown lookup is dropped instead of reported: the hint is optional and an
+   * error row would duplicate the update-check surface.
+   */
+  public async loadPluginLatestVersions(
+    plugins: readonly unknown[],
+  ): Promise<Record<string, string>> {
+    const names = new Set<string>();
+    for (const plugin of plugins) {
+      const parsed = parsePluginSpec(plugin);
+      // Same rule as `checkPluginUpdates`: exact pins are checked elsewhere and
+      // must not cost a second request here.
+      if (!parsed || !followsLatest(parsed.version)) continue;
+      names.add(parsed.name);
+    }
+    const entries = await Promise.all(
+      [...names].map(async (name): Promise<[string, string] | null> => {
+        const version = await this.lookupLatestVersion(name);
+        return version ? [name, version] : null;
+      }),
+    );
+    const versions: Record<string, string> = {};
+    for (const entry of entries) {
+      if (entry) versions[entry[0]] = entry[1];
+    }
+    return versions;
+  }
+
+  /**
+   * Cached registry lookup. Only successes are cached so a transient network
+   * failure cannot hide the hint for the whole TTL.
+   */
+  private async lookupLatestVersion(name: string): Promise<string | null> {
+    const cached = this.latestVersionCache.get(name);
+    if (cached && Date.now() - cached.fetchedAt < PLUGIN_LATEST_CACHE_TTL_MS) {
+      return cached.version;
+    }
+    try {
+      const version = await fetchNpmLatestVersion(name);
+      this.latestVersionCache.set(name, { version, fetchedAt: Date.now() });
+      return version;
+    } catch (error) {
+      this.latestVersionCache.delete(name);
+      this.logger.debug(
+        `[OpenCodeCliSettingsService] npm latest lookup failed for ${name}: ${errorText(error)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Delete the `<name>@latest` cache directory so the next OpenCode start
+   * reinstalls the plugin instead of reusing the stale install. Other specs,
+   * including exact pins, are never touched.
+   */
+  public async clearPluginCache(name: string): Promise<void> {
+    const pkg = name.trim();
+    if (!pkg) {
+      throw new Error("Plugin package name is required");
+    }
+    const cacheDir = path.resolve(resolveOpenCodePluginCacheDir());
+    const key = pluginCacheKey(pkg, "latest");
+    const target = path.resolve(cacheDir, key);
+    const relative = path.relative(cacheDir, target);
+    // The key must stay a plain relative path inside the cache root: a `..`
+    // segment, a drive change or an empty key could reach another directory.
+    const plainSegments = key
+      .split(/[\\/]/)
+      .every((segment) => segment !== "" && segment !== "." && segment !== "..");
+    const insideCacheRoot =
+      relative !== "" &&
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative);
+    if (!plainSegments || !insideCacheRoot) {
+      this.logger.warn(
+        `[OpenCodeCliSettingsService] Refusing to clear plugin cache for ${JSON.stringify(pkg)}: target ${target} is outside ${cacheDir}`,
+      );
+      throw new Error(
+        l10n.t("This plugin cannot be refreshed from here."),
+      );
+    }
+    if (!fs.existsSync(target)) {
+      // Already clean: the click is idempotent and must not report a failure.
+      return;
+    }
+    try {
+      await fs.promises.rm(target, { recursive: true, force: true });
+      this.latestVersionCache.delete(pkg);
+    } catch (error) {
+      this.logger.error(
+        `[OpenCodeCliSettingsService] Cannot delete plugin cache ${target}: ${errorText(error)}`,
+      );
+      throw new Error(
+        l10n.t(
+          "Cannot delete the cached plugin files. Close any program that uses them and try again.",
+        ),
+      );
     }
   }
 
@@ -309,59 +441,6 @@ export class OpenCodeCliSettingsService {
   }
 
   /**
-   * Turn update tracking on or off for one entry. On: the version is removed
-   * from `package` so OpenCode resolves the registry. Off: the entry is pinned
-   * to its current exact version, or to the registry latest when it had none.
-   * `options` and other fields are preserved.
-   *
-   * Like `updatePluginVersion`, the index only selects the entry; the write
-   * finds it by package name after the registry lookup.
-   */
-  public async setPluginAutoUpdate(
-    index: number,
-    autoUpdate: boolean,
-  ): Promise<void> {
-    if (!Number.isInteger(index) || index < 0) {
-      throw new Error(`Invalid plugin index: ${index}`);
-    }
-    try {
-      const targetName = this.pluginNameAtIndex(index);
-      let pinVersion = "";
-      if (!autoUpdate) {
-        pinVersion = await this.resolvePinVersion(targetName);
-      }
-      await this.mutateDoc((doc) => {
-        const existing = Array.isArray(doc.plugins)
-          ? (doc.plugins as unknown[])
-          : [];
-        const target = existing.findIndex(
-          (plugin) => parsePluginSpec(plugin)?.name === targetName,
-        );
-        if (target < 0) {
-          throw new Error(`Plugin "${targetName}" is no longer configured.`);
-        }
-        doc.plugins = existing.map((plugin, i) => {
-          if (i !== target) return plugin;
-          return autoUpdate
-            ? applyPluginFollowLatest(plugin)
-            : applyPluginVersion(plugin, pinVersion);
-        });
-      });
-    } catch (error) {
-      if (error instanceof ConfigUnreadableError) {
-        throw new ConfigUnreadableError(
-          l10n.t(
-            "Cannot change the update setting because the OpenCode CLI config file cannot be read. Fix {0} and try again.",
-            path.resolve(this.resolveConfigPath()),
-          ),
-          error,
-        );
-      }
-      throw error;
-    }
-  }
-
-  /**
    * Replace one entry's `options`. A string entry is promoted to
    * `{ package, options }` so the package and its version survive; an empty
    * object removes the field instead of writing `options: {}`.
@@ -401,34 +480,6 @@ export class OpenCodeCliSettingsService {
       throw new Error("This plugin entry cannot be updated.");
     }
     return parsed.name;
-  }
-
-  /**
-   * Resolve the exact version to pin when update tracking is turned off: the
-   * entry's own exact version when it has one, the registry latest otherwise.
-   * The entry is looked up by package name, since the list may have changed
-   * since the caller picked the index.
-   */
-  private async resolvePinVersion(name: string): Promise<string> {
-    const configPath = this.resolveConfigPath();
-    const doc = this.readDoc(configPath);
-    const plugins = Array.isArray(doc.plugins) ? (doc.plugins as unknown[]) : [];
-    const plugin = plugins.find((entry) => parsePluginSpec(entry)?.name === name);
-    const parsed = plugin === undefined ? null : parsePluginSpec(plugin);
-    if (parsed?.version && isExactVersion(parsed.version)) {
-      return parsed.version;
-    }
-    try {
-      return await fetchNpmLatestVersion(name);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(
-        `[OpenCodeCliSettingsService] npm latest lookup failed for ${name}: ${message}`,
-      );
-      throw new Error(
-        "Could not resolve the latest published version for this plugin.",
-      );
-    }
   }
 
   /**

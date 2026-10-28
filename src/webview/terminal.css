@@ -1084,19 +1084,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   font-size: 10.5px; font-variant-numeric: tabular-nums;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.occs-plugin-auto { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
-.occs-plugin-auto .occs-toggle { width: 28px; height: 16px; }
-.occs-plugin-auto .occs-toggle .slider::before {
-  width: 10px; height: 10px; left: 2px; top: 2px;
-}
-.occs-plugin-auto .occs-toggle input:checked + .slider::before {
-  transform: translateX(12px);
-}
-.occs-plugin-auto-label {
-  font-size: 10.5px; cursor: pointer; user-select: none;
-  color: var(--vscode-descriptionForeground, #8a8a8a);
-}
-.occs-plugin-auto-label:hover { color: var(--vscode-foreground, #d4d4d4); }
 .occs-plugin-status {
   flex-shrink: 1; min-width: 0;
   font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

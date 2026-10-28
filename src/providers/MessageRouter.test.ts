@@ -133,10 +133,10 @@ describe("MessageRouter", () => {
       resetOpenCodeCliSetting: vi.fn(async () => undefined),
       addOpenCodeCliPlugin: vi.fn(async () => undefined),
       removeOpenCodeCliPlugin: vi.fn(async () => undefined),
-      setOpenCodeCliPluginAutoUpdate: vi.fn(async () => undefined),
       setOpenCodeCliPluginOptions: vi.fn(async () => undefined),
       checkOpenCodeCliPluginUpdates: vi.fn(async () => undefined),
       updateOpenCodeCliPlugin: vi.fn(async () => undefined),
+      clearOpenCodeCliPluginCache: vi.fn(async () => undefined),
       resendActiveSession: vi.fn(),
       requestOpenCodeUpdateStatus: vi.fn(async () => undefined),
       startOpenCodeUpdate: vi.fn(async () => undefined),
@@ -363,6 +363,10 @@ describe("MessageRouter", () => {
       index: 0,
       version: "2.0.0",
     });
+    await router.handleMessage({
+      type: "clearOpenCodeCliPluginCache",
+      name: "demo-pkg",
+    });
 
     expect(provider.addOpenCodeCliPlugin).toHaveBeenCalledWith("@scope/plugin");
     expect(provider.removeOpenCodeCliPlugin).toHaveBeenCalledWith(1);
@@ -370,6 +374,9 @@ describe("MessageRouter", () => {
     expect(provider.updateOpenCodeCliPlugin).toHaveBeenCalledWith(
       0,
       "2.0.0",
+    );
+    expect(provider.clearOpenCodeCliPluginCache).toHaveBeenCalledWith(
+      "demo-pkg",
     );
   });
 
@@ -1319,10 +1326,10 @@ describe("MessageRouter WebDAV sync branches", () => {
       resetOpenCodeCliSetting: vi.fn(async () => undefined),
       addOpenCodeCliPlugin: vi.fn(async () => undefined),
       removeOpenCodeCliPlugin: vi.fn(async () => undefined),
-      setOpenCodeCliPluginAutoUpdate: vi.fn(async () => undefined),
       setOpenCodeCliPluginOptions: vi.fn(async () => undefined),
       checkOpenCodeCliPluginUpdates: vi.fn(async () => undefined),
       updateOpenCodeCliPlugin: vi.fn(async () => undefined),
+      clearOpenCodeCliPluginCache: vi.fn(async () => undefined),
       requestOpenCodeUpdateStatus: vi.fn(async () => undefined),
       startOpenCodeUpdate: vi.fn(async () => undefined),
       checkOpenCodeUpdates: vi.fn(async () => undefined),

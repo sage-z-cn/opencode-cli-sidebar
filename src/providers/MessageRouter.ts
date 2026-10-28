@@ -61,11 +61,11 @@ export interface MessageRouterProviderBridge {
   resetOpenCodeCliSetting(path: string): Promise<void>;
   addOpenCodeCliPlugin(packageName: string): Promise<void>;
   removeOpenCodeCliPlugin(index: number): Promise<void>;
-  setOpenCodeCliPluginAutoUpdate(index: number, autoUpdate: boolean): Promise<void>;
   setOpenCodeCliPluginOptions(
     index: number,
     options: Record<string, unknown>,
   ): Promise<void>;
+  clearOpenCodeCliPluginCache(name: string): Promise<void>;
   checkOpenCodeCliPluginUpdates(): Promise<void>;
   updateOpenCodeCliPlugin(index: number, version: string): Promise<void>;
   requestOpenCodeUpdateStatus(): Promise<void>;
@@ -221,17 +221,6 @@ export class MessageRouter {
           );
         }
         break;
-      case "setOpenCodeCliPluginAutoUpdate":
-        if (
-          typeof message.index === "number" &&
-          typeof message.autoUpdate === "boolean"
-        ) {
-          await this.provider.setOpenCodeCliPluginAutoUpdate(
-            message.index,
-            message.autoUpdate,
-          );
-        }
-        break;
       case "setOpenCodeCliPluginOptions":
         if (
           typeof message.index === "number" &&
@@ -242,6 +231,11 @@ export class MessageRouter {
             message.index,
             message.options,
           );
+        }
+        break;
+      case "clearOpenCodeCliPluginCache":
+        if (typeof message.name === "string") {
+          await this.provider.clearOpenCodeCliPluginCache(message.name);
         }
         break;
       case "requestOpenCodeUpdateStatus":
