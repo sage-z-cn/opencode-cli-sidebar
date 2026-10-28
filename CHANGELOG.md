@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **UI**: Merge the font increase, decrease, and reset actions into one toolbar dropdown.
 - **UI**: Use cloud icons for sync conflict and credential states; drop count badges from the toolbar status.
 
+#### 5.6.2
+**New Features**
+- **CLI Settings**: Add plugin auto-update support and editing of plugin options.
+- **UI**: Add a custom FileLetterA icon for the global AGENTS.md toolbar button.
+- **L10n**: Rename toolbar tooltips for opening global AGENTS.md and config files.
+
+**Bug Fixes**
+- **Webview**: Refresh the plugin list after adding or removing a plugin and confirm before deleting.
+
 #### 5.6.1
 **New Features**
 - **Sync**: Show the sync status directly on the toolbar button instead of a separate status icon.
