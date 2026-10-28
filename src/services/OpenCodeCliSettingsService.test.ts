@@ -2,7 +2,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { OpenCodeCliSettingsService } from "./OpenCodeCliSettingsService";
+import {
+  ConfigUnreadableError,
+  OpenCodeCliSettingsService,
+} from "./OpenCodeCliSettingsService";
 
 const logger = {
   info: vi.fn(),
@@ -14,14 +17,20 @@ const logger = {
 describe("OpenCodeCliSettingsService", () => {
   let dir: string;
   let configPath: string;
+  let cacheRoot: string;
   let service: OpenCodeCliSettingsService;
   let prevConfigDir: string | undefined;
+  let prevCacheHome: string | undefined;
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-settings-"));
     configPath = path.join(dir, "cli.json");
+    // Keep the plugin cache lookup inside the temp dir instead of the real one.
+    cacheRoot = path.join(dir, "cache", "opencode", "npm");
     prevConfigDir = process.env.OPENCODE_CONFIG_DIR;
+    prevCacheHome = process.env.XDG_CACHE_HOME;
     process.env.OPENCODE_CONFIG_DIR = dir;
+    process.env.XDG_CACHE_HOME = path.join(dir, "cache");
     service = new OpenCodeCliSettingsService(logger);
   });
 
@@ -31,8 +40,29 @@ describe("OpenCodeCliSettingsService", () => {
     } else {
       process.env.OPENCODE_CONFIG_DIR = prevConfigDir;
     }
+    if (prevCacheHome === undefined) {
+      delete process.env.XDG_CACHE_HOME;
+    } else {
+      process.env.XDG_CACHE_HOME = prevCacheHome;
+    }
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  /** Lay out one cached plugin generation the way OpenCode installs it. */
+  function writeCachedPlugin(
+    cacheKey: string,
+    generation: string,
+    name: string,
+    version: string,
+  ): void {
+    const pluginDir = path.join(cacheRoot, cacheKey, generation, "node_modules", name);
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginDir, "package.json"),
+      JSON.stringify({ name, version }),
+      "utf8",
+    );
+  }
 
   it("returns defaults when file is missing", async () => {
     const payload = await service.load();
@@ -145,6 +175,69 @@ describe("OpenCodeCliSettingsService", () => {
       /not valid JSON/,
     );
     expect(fs.readFileSync(configPath, "utf8")).toBe(original);
+  });
+
+  it("rejects load when cli.json is not valid JSON and names the file", async () => {
+    const original = '{"plugins": ["foo"]';
+    fs.writeFileSync(configPath, original, "utf8");
+    const error: unknown = await service.load().catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toContain(configPath);
+    expect(message).toContain("Fix the JSON syntax");
+    // The parser detail stays in the log and never reaches the user text.
+    expect(message).not.toMatch(/Unexpected|end of JSON input/i);
+    expect(logger.error).toHaveBeenCalled();
+    expect(fs.readFileSync(configPath, "utf8")).toBe(original);
+  });
+
+  it("rejects load when the top-level JSON value is not an object", async () => {
+    fs.writeFileSync(configPath, JSON.stringify(["plugins"]), "utf8");
+    const error: unknown = await service.load().catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(configPath);
+    expect((error as Error).message).toContain("JSON object");
+  });
+
+  it("rejects every write on a broken config without touching the file", async () => {
+    fs.writeFileSync(configPath, '{"plugins": ["foo@1.0.0"]', "utf8");
+    const originalBytes = fs.readFileSync(configPath);
+    await expect(service.addPlugin("bar")).rejects.toThrow(/not valid JSON/);
+    await expect(service.removePlugin(0)).rejects.toThrow(/not valid JSON/);
+    await expect(service.updatePluginVersion(0, "2.0.0")).rejects.toThrow(
+      /plugin version because the OpenCode CLI config file cannot be read/,
+    );
+    await expect(service.setPluginOptions(0, { a: 1 })).rejects.toThrow(
+      /not valid JSON/,
+    );
+    await expect(service.save("session.thinking", "hide")).rejects.toThrow(
+      /not valid JSON/,
+    );
+    await expect(service.reset("session.thinking")).rejects.toThrow(
+      /not valid JSON/,
+    );
+    // Pinning resolves the plugin list first, so the read error surfaces here.
+    const pinError: unknown = await service
+      .setPluginAutoUpdate(0, false)
+      .catch((err: unknown) => err);
+    expect(pinError).toBeInstanceOf(Error);
+    expect((pinError as Error).message).toContain(configPath);
+    expect(fs.readFileSync(configPath).equals(originalBytes)).toBe(true);
+  });
+
+  it("checkPluginUpdates rejects on a broken config instead of reporting none", async () => {
+    fs.writeFileSync(configPath, "{not json", "utf8");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    try {
+      const error: unknown = await service
+        .checkPluginUpdates()
+        .catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(configPath);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   it("reset removes nested keys and prunes empty parents", async () => {
@@ -273,7 +366,7 @@ describe("OpenCodeCliSettingsService", () => {
   it("addPlugin compares against object-form entries", async () => {
     fs.writeFileSync(
       configPath,
-      JSON.stringify({ plugins: [{ package: "foo", version: "1.0.0" }] }),
+      JSON.stringify({ plugins: [{ package: "foo@1.0.0", options: { a: 1 } }] }),
       "utf8",
     );
     await expect(service.addPlugin("foo")).rejects.toThrow(/already added/);
@@ -312,7 +405,7 @@ describe("OpenCodeCliSettingsService", () => {
     fs.writeFileSync(
       configPath,
       JSON.stringify({
-        plugins: ["demo-pkg@1.0.0", { package: "other-pkg", version: "2.0.0" }],
+        plugins: ["demo-pkg@1.0.0", { package: "other-pkg@2.0.0" }],
       }),
       "utf8",
     );
@@ -357,7 +450,7 @@ describe("OpenCodeCliSettingsService", () => {
   it("checkPluginUpdates marks errors without failing the batch", async () => {
     fs.writeFileSync(
       configPath,
-      JSON.stringify({ plugins: ["missing-pkg"] }),
+      JSON.stringify({ plugins: ["missing-pkg@1.0.0"] }),
       "utf8",
     );
     const fetchMock = vi
@@ -365,12 +458,175 @@ describe("OpenCodeCliSettingsService", () => {
       .mockResolvedValue({ ok: false, status: 404 } as Response);
     try {
       const results = await service.checkPluginUpdates();
+      expect(results).toHaveLength(1);
       expect(results[0]).toMatchObject({
         name: "missing-pkg",
+        current: "1.0.0",
         latest: null,
         hasUpdate: false,
       });
       expect(results[0]?.error).toBeTruthy();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("checkPluginUpdates ignores a legacy object version field", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: [{ package: "legacy-pkg@1.0.0", version: "9.9.9" }],
+      }),
+      "utf8",
+    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(
+        async () => ({ ok: true, json: async () => ({ version: "1.0.0" }) }) as Response,
+      );
+    try {
+      const results = await service.checkPluginUpdates();
+      expect(results[0]).toMatchObject({
+        name: "legacy-pkg",
+        current: "1.0.0",
+        latest: "1.0.0",
+        hasUpdate: false,
+      });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("checkPluginUpdates skips a bare package name", async () => {
+    fs.writeFileSync(configPath, JSON.stringify({ plugins: ["foo"] }), "utf8");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    try {
+      await expect(service.checkPluginUpdates()).resolves.toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("checkPluginUpdates skips range and dist-tag versions", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: ["foo@^1.2.0", "bar@~2.0.0", "baz@latest"],
+      }),
+      "utf8",
+    );
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    try {
+      await expect(service.checkPluginUpdates()).resolves.toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("checkPluginUpdates checks an exact version", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["foo@1.2.3"] }),
+      "utf8",
+    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(
+        async () => ({ ok: true, json: async () => ({ version: "1.3.0" }) }) as Response,
+      );
+    try {
+      const results = await service.checkPluginUpdates();
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        name: "foo",
+        current: "1.2.3",
+        latest: "1.3.0",
+        hasUpdate: true,
+      });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("checkPluginUpdates keeps the pinned entries in config order", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: [
+          "aa",
+          "bb@1.0.0",
+          { package: "cc@^2.0.0", options: {} },
+          { package: "dd@2.0.0" },
+          "ee@latest",
+        ],
+      }),
+      "utf8",
+    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url: unknown) => {
+        const version = String(url).includes("bb") ? "1.1.0" : "2.0.1";
+        return { ok: true, json: async () => ({ version }) } as Response;
+      });
+    try {
+      const results = await service.checkPluginUpdates();
+      expect(results.map((result) => result.name)).toEqual(["bb", "dd"]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("checkPluginUpdates still reports malformed entries", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: [{ options: {} }] }),
+      "utf8",
+    );
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    try {
+      const results = await service.checkPluginUpdates();
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        current: null,
+        latest: null,
+        hasUpdate: false,
+        error: "Unrecognized plugin entry",
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("checkPluginUpdates applies the skip rule to object entries", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: [
+          { package: "foo", options: { a: 1 } },
+          { package: "bar", version: "9.9.9" },
+          { package: "foo@1.2.3", options: { a: 1 } },
+        ],
+      }),
+      "utf8",
+    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(
+        async () => ({ ok: true, json: async () => ({ version: "1.2.3" }) }) as Response,
+      );
+    try {
+      const results = await service.checkPluginUpdates();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        name: "foo",
+        current: "1.2.3",
+        hasUpdate: false,
+      });
     } finally {
       fetchMock.mockRestore();
     }
@@ -390,11 +646,11 @@ describe("OpenCodeCliSettingsService", () => {
     expect(doc.plugins[1]).toBe("other");
   });
 
-  it("updatePluginVersion rewrites object entries and keeps extra fields", async () => {
+  it("updatePluginVersion writes the version into package for pinned object entries", async () => {
     fs.writeFileSync(
       configPath,
       JSON.stringify({
-        plugins: [{ package: "obj-pkg@0.9.0", version: "0.9.0", enabled: true }],
+        plugins: [{ package: "foo@1.0.0", options: { a: 1 } }],
       }),
       "utf8",
     );
@@ -402,11 +658,275 @@ describe("OpenCodeCliSettingsService", () => {
     const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
       plugins: Array<Record<string, unknown>>;
     };
-    expect(doc.plugins[0]).toMatchObject({
-      package: "obj-pkg",
-      version: "2.0.0",
-      enabled: true,
+    expect(doc.plugins[0]).toEqual({
+      package: "foo@2.0.0",
+      options: { a: 1 },
     });
+    expect(doc.plugins[0]).not.toHaveProperty("version");
+  });
+
+  it("updatePluginVersion drops a legacy object version field", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: [{ package: "foo@1.0.0", version: "1.0.0", options: {} }],
+      }),
+      "utf8",
+    );
+    await service.updatePluginVersion(0, "2.0.0");
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: Array<Record<string, unknown>>;
+    };
+    expect(doc.plugins[0]).toEqual({ package: "foo@2.0.0", options: {} });
+    expect(doc.plugins[0]).not.toHaveProperty("version");
+  });
+
+  it("updatePluginVersion keeps extra fields on object entries", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: [{ package: "obj-pkg@0.9.0", enabled: true }],
+      }),
+      "utf8",
+    );
+    await service.updatePluginVersion(0, "2.0.0");
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: Array<Record<string, unknown>>;
+    };
+    expect(doc.plugins[0]).toEqual({ package: "obj-pkg@2.0.0", enabled: true });
+  });
+
+  it("updatePluginVersion targets the package name when the list shifts before the write", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["demo-pkg@1.0.0", "other-pkg@1.0.0"] }),
+      "utf8",
+    );
+    // Rewrite cli.json after the index -> name read but before the write, so
+    // the index points at another plugin by the time the mutation runs.
+    class DriftingService extends OpenCodeCliSettingsService {
+      private calls = 0;
+
+      public override resolveConfigPath(): string {
+        this.calls += 1;
+        if (this.calls === 2) {
+          fs.writeFileSync(
+            configPath,
+            JSON.stringify({ plugins: ["other-pkg@1.0.0", "demo-pkg@1.0.0"] }),
+            "utf8",
+          );
+        }
+        return super.resolveConfigPath();
+      }
+    }
+    const drifting = new DriftingService(logger);
+    await drifting.updatePluginVersion(1, "2.0.0");
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    expect(doc.plugins).toEqual(["other-pkg@2.0.0", "demo-pkg@1.0.0"]);
+  });
+
+  it("updatePluginVersion leaves follow-latest entries unpinned", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: [
+          "demo-pkg",
+          "range-pkg@^1.0.0",
+          { package: "obj-pkg", options: { a: 1 } },
+        ],
+      }),
+      "utf8",
+    );
+    await service.updatePluginVersion(0, "1.2.0");
+    await service.updatePluginVersion(1, "1.2.0");
+    await service.updatePluginVersion(2, "1.2.0");
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    expect(doc.plugins[0]).toBe("demo-pkg");
+    expect(doc.plugins[1]).toBe("range-pkg");
+    expect(doc.plugins[2]).toEqual({ package: "obj-pkg", options: { a: 1 } });
+  });
+
+  it("setPluginAutoUpdate strips the version from string entries", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["foo@1.2.3"] }),
+      "utf8",
+    );
+    await service.setPluginAutoUpdate(0, true);
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    expect(doc.plugins).toEqual(["foo"]);
+  });
+
+  it("setPluginAutoUpdate keeps object fields when enabling updates", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: [{ package: "foo@1.2.3", options: { a: 1 } }],
+      }),
+      "utf8",
+    );
+    await service.setPluginAutoUpdate(0, true);
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: Array<Record<string, unknown>>;
+    };
+    expect(doc.plugins[0]).toEqual({ package: "foo", options: { a: 1 } });
+  });
+
+  it("setPluginAutoUpdate pins an unversioned entry to the registry latest", async () => {
+    fs.writeFileSync(configPath, JSON.stringify({ plugins: ["foo"] }), "utf8");
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(
+        async () =>
+          ({ ok: true, json: async () => ({ version: "2.5.0" }) }) as Response,
+      );
+    try {
+      await service.setPluginAutoUpdate(0, false);
+    } finally {
+      fetchMock.mockRestore();
+    }
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    expect(doc.plugins).toEqual(["foo@2.5.0"]);
+  });
+
+  it("setPluginAutoUpdate keeps an existing exact version when disabling", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: [{ package: "foo@1.2.3", options: {} }] }),
+      "utf8",
+    );
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    await service.setPluginAutoUpdate(0, false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockRestore();
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: Array<Record<string, unknown>>;
+    };
+    expect(doc.plugins[0]).toEqual({ package: "foo@1.2.3", options: {} });
+  });
+
+  it("setPluginAutoUpdate keeps targeting the same package when the list shifts during the lookup", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["demo-pkg@1.0.0", "other-pkg"] }),
+      "utf8",
+    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        // Another window reorders cli.json while the registry call is in flight.
+        fs.writeFileSync(
+          configPath,
+          JSON.stringify({ plugins: ["other-pkg", "demo-pkg@1.0.0"] }),
+          "utf8",
+        );
+        return { ok: true, json: async () => ({ version: "2.5.0" }) } as Response;
+      });
+    try {
+      await service.setPluginAutoUpdate(1, false);
+    } finally {
+      fetchMock.mockRestore();
+    }
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    // Index 1 held "other-pkg" when the operation started; it must be the entry
+    // that gets pinned, not "demo-pkg" which moved into that slot.
+    expect(doc.plugins).toEqual(["other-pkg@2.5.0", "demo-pkg@1.0.0"]);
+  });
+
+  it("setPluginAutoUpdate reports an unreadable config in update-setting terms", async () => {
+    fs.writeFileSync(configPath, "{not json", "utf8");
+    const error: unknown = await service
+      .setPluginAutoUpdate(0, false)
+      .catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(ConfigUnreadableError);
+    const message = (error as Error).message;
+    expect(message).toContain("update setting");
+    expect(message).toContain(configPath);
+    // The original file-oriented wording stays reachable as the cause.
+    const cause = (error as ConfigUnreadableError).cause;
+    expect((cause as Error).message).toContain("Fix the JSON syntax");
+  });
+
+  it("setPluginOptions promotes a string entry and keeps its version", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["foo@1.2.3"] }),
+      "utf8",
+    );
+    await service.setPluginOptions(0, { a: 1, b: "x" });
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: Array<Record<string, unknown>>;
+    };
+    expect(doc.plugins[0]).toEqual({
+      package: "foo@1.2.3",
+      options: { a: 1, b: "x" },
+    });
+  });
+
+  it("setPluginOptions removes the field for an empty options object", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: [{ package: "foo@1.2.3", options: { a: 1 } }],
+      }),
+      "utf8",
+    );
+    await service.setPluginOptions(0, {});
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: Array<Record<string, unknown>>;
+    };
+    expect(doc.plugins[0]).toEqual({ package: "foo@1.2.3" });
+    expect(doc.plugins[0]).not.toHaveProperty("options");
+  });
+
+  it("setPluginOptions replaces only the options of an object entry", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: [{ package: "foo@1.2.3", options: { a: 1 }, extra: true }],
+      }),
+      "utf8",
+    );
+    await service.setPluginOptions(0, { b: 2 });
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: Array<Record<string, unknown>>;
+    };
+    expect(doc.plugins[0]).toEqual({
+      package: "foo@1.2.3",
+      options: { b: 2 },
+      extra: true,
+    });
+  });
+
+  it("setPluginAutoUpdate and setPluginOptions reject out-of-range indices", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["foo"] }),
+      "utf8",
+    );
+    await expect(service.setPluginAutoUpdate(5, true)).rejects.toThrow(
+      /out of range/,
+    );
+    await expect(service.setPluginOptions(5, { a: 1 })).rejects.toThrow(
+      /out of range/,
+    );
+    await expect(service.setPluginAutoUpdate(-1, true)).rejects.toThrow(
+      /Invalid plugin index/,
+    );
+    const doc = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    expect(doc.plugins).toEqual(["foo"]);
   });
 
   it("updatePluginVersion rejects empty version and bad index", async () => {
@@ -425,5 +945,108 @@ describe("OpenCodeCliSettingsService", () => {
       plugins: unknown[];
     };
     expect(doc.plugins[0]).toBe("demo-pkg@1.0.0");
+  });
+
+  it("loadInstalledPluginVersions returns nothing when the cache is missing", async () => {
+    expect(await service.loadInstalledPluginVersions(["foo", "bar@1.0.0"])).toEqual({});
+  });
+
+  it("loadInstalledPluginVersions reads the cached manifest version", async () => {
+    writeCachedPlugin("foo@latest", "1700000000000", "foo", "1.4.2");
+    expect(await service.loadInstalledPluginVersions(["foo"])).toEqual({
+      foo: "1.4.2",
+    });
+  });
+
+  it("loadInstalledPluginVersions skips entries without a usable manifest", async () => {
+    // Generation exists but the plugin folder was never installed.
+    fs.mkdirSync(
+      path.join(cacheRoot, "foo@latest", "1700000000000", "node_modules"),
+      { recursive: true },
+    );
+    // Manifest exists but is not valid JSON.
+    const brokenDir = path.join(
+      cacheRoot,
+      "bar@latest",
+      "1700000000000",
+      "node_modules",
+      "bar",
+    );
+    fs.mkdirSync(brokenDir, { recursive: true });
+    fs.writeFileSync(path.join(brokenDir, "package.json"), "{oops", "utf8");
+    expect(await service.loadInstalledPluginVersions(["foo", "bar"])).toEqual({});
+  });
+
+  it("loadInstalledPluginVersions picks the highest generation numerically", async () => {
+    writeCachedPlugin("foo@latest", "9", "foo", "0.9.0");
+    writeCachedPlugin("foo@latest", "10", "foo", "1.0.0");
+    // 10 must win: generations sort by number, not as text.
+    expect(await service.loadInstalledPluginVersions(["foo"])).toEqual({
+      foo: "1.0.0",
+    });
+  });
+
+  it("loadInstalledPluginVersions uses the @latest cache for a bare name", async () => {
+    writeCachedPlugin("foo@latest", "1700000000000", "foo", "2.0.0");
+    writeCachedPlugin("foo@1.2.3", "1700000000000", "foo", "1.2.3");
+    expect(await service.loadInstalledPluginVersions(["foo"])).toEqual({
+      foo: "2.0.0",
+    });
+  });
+
+  it("loadInstalledPluginVersions uses the pinned spec cache for an exact version", async () => {
+    writeCachedPlugin("foo@latest", "1700000000000", "foo", "2.0.0");
+    writeCachedPlugin("foo@1.2.3", "1700000000000", "foo", "1.2.3");
+    expect(await service.loadInstalledPluginVersions(["foo@1.2.3"])).toEqual({
+      foo: "1.2.3",
+    });
+  });
+
+  it("loadInstalledPluginVersions uses the range cache key", async () => {
+    writeCachedPlugin("foo@^1.2.0", "1700000000000", "foo", "1.9.9");
+    writeCachedPlugin("foo@latest", "1700000000000", "foo", "2.0.0");
+    expect(await service.loadInstalledPluginVersions(["foo@^1.2.0"])).toEqual({
+      foo: "1.9.9",
+    });
+  });
+
+  it("loadInstalledPluginVersions falls back to the @latest cache", async () => {
+    writeCachedPlugin("foo@latest", "1700000000000", "foo", "2.0.0");
+    expect(await service.loadInstalledPluginVersions(["foo@1.2.3"])).toEqual({
+      foo: "2.0.0",
+    });
+  });
+
+  it("loadInstalledPluginVersions reads scoped and object entries", async () => {
+    writeCachedPlugin("@scope/name@latest", "1700000000000", "@scope/name", "0.2.0");
+    expect(
+      await service.loadInstalledPluginVersions([
+        "@scope/name",
+        { package: "@scope/name@latest", options: {} },
+        { options: {} },
+      ]),
+    ).toEqual({ "@scope/name": "0.2.0" });
+  });
+
+  it.runIf(process.platform === "win32")(
+    "loadInstalledPluginVersions mirrors OpenCode's cache-key sanitizing",
+    async () => {
+      // OpenCode replaces <>:"|?* with `_` on Windows, so `>=1.2.0` becomes `_=1.2.0`.
+      writeCachedPlugin("foo@_=1.2.0", "1700000000000", "foo", "1.5.0");
+      expect(await service.loadInstalledPluginVersions(["foo@>=1.2.0"])).toEqual({
+        foo: "1.5.0",
+      });
+    },
+  );
+
+  it("load() includes installed plugin versions", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["foo", "bar@1.0.0"] }),
+      "utf8",
+    );
+    writeCachedPlugin("foo@latest", "1700000000000", "foo", "1.4.2");
+    const payload = await service.load();
+    expect(payload.installedPluginVersions).toEqual({ foo: "1.4.2" });
   });
 });

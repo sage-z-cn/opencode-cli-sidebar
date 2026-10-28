@@ -44,6 +44,8 @@ type SettingsState = {
   plugins: unknown[];
   /** npm version check results, aligned with `plugins` by index. */
   pluginUpdates: OpenCodeCliPluginUpdateInfo[] | null;
+  /** Actually installed versions keyed by package name, from OpenCode's cache. */
+  installedPluginVersions: Record<string, string>;
 };
 
 const state: SettingsState = {
@@ -55,12 +57,32 @@ const state: SettingsState = {
   themeOptions: [],
   plugins: [],
   pluginUpdates: null,
+  installedPluginVersions: {},
 };
 
 let pluginAddFormOpen = false;
 let pluginCheckPending = false;
 /** Row index awaiting inline remove confirmation; null when no row is armed. */
 let pendingRemoveIndex: number | null = null;
+/** Rows whose detail panel is expanded, keyed by package name. */
+const expandedPlugins = new Set<string>();
+/**
+ * Optimistic auto-update intent per package name. It stays out of
+ * `state.plugins` because the webview must not guess the exact spec the host
+ * writes when pinning or unpinning; the next host push clears the map.
+ */
+const pluginAutoUpdateOverrides = new Map<string, boolean>();
+/** Optimistic options per package name, same lifecycle as the auto-update map. */
+const pluginOptionsOverrides = new Map<string, Record<string, unknown>>();
+
+/** Options JSON editor, open for at most one plugin row at a time. */
+type PluginOptionsEditor = {
+  name: string;
+  draft: string;
+  error: string | null;
+};
+
+let pluginOptionsEditor: PluginOptionsEditor | null = null;
 
 /**
  * Last plugin-list mutation applied optimistically and not yet confirmed by
@@ -76,11 +98,52 @@ type OptimisticPluginMutation =
       name: string;
       restartVersion: string | undefined;
       updateInfo: OpenCodeCliPluginUpdateInfo | undefined;
+    }
+  | {
+      kind: "autoUpdate";
+      index: number;
+      name: string;
+      autoUpdate: boolean;
+      /** Override active before this write; null when the row had none. */
+      previous: boolean | null;
+    }
+  | {
+      kind: "options";
+      index: number;
+      name: string;
+      options: Record<string, unknown>;
+      /** Override active before this write; null when the row had none. */
+      previous: Record<string, unknown> | null;
     };
 
 let pendingOptimisticPlugin: OptimisticPluginMutation | null = null;
 /** Plugin name → new version, for rows that need a restart after update. */
 const pluginRestartPending = new Map<string, string>();
+
+/**
+ * Drop loaded config state after a failed load. Keeping the previous values
+ * would show default settings as if they were the real configuration, and an
+ * empty plugin list would read as "nothing configured" instead of "cli.json
+ * cannot be read".
+ */
+function resetLoadedState(): void {
+  state.items = [];
+  state.groups = [];
+  state.values = {};
+  state.overrides = {};
+  state.plugins = [];
+  state.pluginUpdates = null;
+  state.installedPluginVersions = {};
+  pluginAddFormOpen = false;
+  pluginCheckPending = false;
+  pendingRemoveIndex = null;
+  pendingOptimisticPlugin = null;
+  pluginOptionsEditor = null;
+  expandedPlugins.clear();
+  pluginAutoUpdateOverrides.clear();
+  pluginOptionsOverrides.clear();
+  pluginRestartPending.clear();
+}
 
 const THEME_PREVIEW_DEBOUNCE_MS = 280;
 
@@ -103,6 +166,12 @@ let activeGroup = "appearance";
 let settingsOpen = false;
 /** True once the host has delivered settings data at least once this session. */
 let settingsLoaded = false;
+/**
+ * True after a failed host load. Nothing on screen is trustworthy then: the
+ * stored values may be stale and the plugin list would look empty even though
+ * cli.json exists and is only unparsable.
+ */
+let settingsLoadFailed = false;
 let syncingNav = false;
 let pendingRerender = false;
 let pendingRerenderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -401,7 +470,13 @@ function keybindsSectionHtml(): string {
   </div>`;
 }
 
-function pluginLabel(plugin: unknown): string {
+/**
+ * Display label for a plugin entry. Object entries keep the version inside
+ * `package` (OpenCode v2 ignores an object `version` field), so the raw package
+ * string is the label and `splitPluginLabel` can still split it.
+ * Exported for tests.
+ */
+export function pluginLabel(plugin: unknown): string {
   if (typeof plugin === "string") return plugin;
   if (plugin && typeof plugin === "object") {
     const pkg = (plugin as { package?: unknown }).package;
@@ -411,7 +486,7 @@ function pluginLabel(plugin: unknown): string {
 }
 
 /** Split `name@version` / `@scope/name@version` for display. */
-function splitPluginLabel(label: string): { name: string; version: string } {
+export function splitPluginLabel(label: string): { name: string; version: string } {
   const at = label.lastIndexOf("@");
   if (at > 0) {
     return { name: label.slice(0, at), version: label.slice(at) };
@@ -419,30 +494,37 @@ function splitPluginLabel(label: string): { name: string; version: string } {
   return { name: label, version: "" };
 }
 
-/** Canonical plugin name for matching host update-check results. */
-function pluginNameOf(plugin: unknown): string {
+/**
+ * Canonical plugin name for matching host update-check results. Object entries
+ * read `package` directly, so the name stays version-free even when the
+ * package string carries an `@version` suffix.
+ */
+export function pluginNameOf(plugin: unknown): string {
+  if (plugin && typeof plugin === "object") {
+    const pkg = (plugin as { package?: unknown }).package;
+    if (typeof pkg === "string" && pkg.trim()) {
+      return splitPluginLabel(pkg.trim()).name;
+    }
+  }
   return splitPluginLabel(pluginLabel(plugin)).name;
 }
 
-/** Version pinned in the entry itself (string spec or object field), null when unpinned. */
+/**
+ * Version pinned in the entry itself, null when unpinned. Only the `package`
+ * string is consulted: OpenCode v2 ignores an object `version` field, so
+ * trusting it would show a version the runtime never uses.
+ */
 function pluginPinnedVersion(plugin: unknown): string | null {
+  let spec = "";
   if (typeof plugin === "string") {
-    const spec = plugin.trim();
-    const at = spec.lastIndexOf("@");
-    if (at > 0) return spec.slice(at + 1) || null;
-    return null;
+    spec = plugin.trim();
+  } else if (plugin && typeof plugin === "object" && !Array.isArray(plugin)) {
+    const pkg = (plugin as { package?: unknown }).package;
+    if (typeof pkg === "string") spec = pkg.trim();
   }
-  if (plugin && typeof plugin === "object" && !Array.isArray(plugin)) {
-    const rec = plugin as { package?: unknown; version?: unknown };
-    if (typeof rec.version === "string" && rec.version.trim()) {
-      return rec.version.trim();
-    }
-    if (typeof rec.package === "string") {
-      const spec = rec.package.trim();
-      const at = spec.lastIndexOf("@");
-      if (at > 0) return spec.slice(at + 1) || null;
-    }
-  }
+  if (!spec) return null;
+  const at = spec.lastIndexOf("@");
+  if (at > 0) return spec.slice(at + 1) || null;
   return null;
 }
 
@@ -466,27 +548,103 @@ function reconcilePluginUpdates(
   return kept.length ? kept : null;
 }
 
-/** Inline version hint next to the package name (no second row). */
-function pluginVersionHint(name: string): string {
-  if (pluginRestartPending.has(name)) {
-    return "";
+/** Exact semver pin; anything else counts as a range or a dist-tag. */
+function isExactVersion(version: string): boolean {
+  return /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version);
+}
+
+/**
+ * Whether OpenCode keeps checking npm for this entry. A missing version, a
+ * range such as `^1.2.0` or a dist-tag such as `latest` stays on the update
+ * path; only a single exact version pins the entry and stops the checks.
+ */
+function pluginFollowsLatest(plugin: unknown): boolean {
+  const version = pluginPinnedVersion(plugin);
+  return !version || !isExactVersion(version);
+}
+
+/** Effective auto-update state, honouring an in-flight optimistic toggle. */
+function pluginFollowsLatestState(plugin: unknown, name: string): boolean {
+  return pluginAutoUpdateOverrides.get(name) ?? pluginFollowsLatest(plugin);
+}
+
+/** `options` of an object entry, null when the entry carries none. */
+function pluginOptionsOf(plugin: unknown): Record<string, unknown> | null {
+  if (plugin && typeof plugin === "object" && !Array.isArray(plugin)) {
+    const options = (plugin as { options?: unknown }).options;
+    if (options && typeof options === "object" && !Array.isArray(options)) {
+      return options as Record<string, unknown>;
+    }
   }
-  const info = pluginUpdateInfoOf(name);
+  return null;
+}
+
+/** Options as currently rendered, including an optimistic replacement. */
+function effectivePluginOptions(
+  plugin: unknown,
+  name: string,
+): Record<string, unknown> | null {
+  return pluginOptionsOverrides.get(name) ?? pluginOptionsOf(plugin);
+}
+
+/**
+ * Version chip. The version written in cli.json wins because the user put it
+ * there; when the entry follows latest it carries no version, so the version
+ * actually installed in OpenCode's cache is shown instead. Nothing renders when
+ * neither is known.
+ */
+function pluginVersionHtml(plugin: unknown, name: string): string {
+  const pinned = pluginPinnedVersion(plugin);
+  if (pinned) {
+    const title = isExactVersion(pinned)
+      ? t("currentVersion", "Current version")
+      : t("versionRange", "Version range");
+    return `<span class="occs-plugin-ver" title="${escapeHtml(title)}">${escapeHtml(pinned)}</span>`;
+  }
+  const installed = state.installedPluginVersions[name];
+  if (!installed) return "";
+  const title = t("installedVersion", "Installed version");
+  return `<span class="occs-plugin-ver" title="${escapeHtml(title)}">${escapeHtml(installed)}</span>`;
+}
+
+/** Follow-latest switch. Its label is constant; the switch carries the state. */
+function pluginAutoUpdateHtml(index: number, follows: boolean): string {
+  const id = `occs-plugin-auto-${index}`;
+  const label = escapeHtml(t("followLatest", "Auto update"));
+  // The 24h caveat lives in the tooltip so the row keeps a single line.
+  const tip = escapeHtml(
+    t(
+      "followLatestHint",
+      "Turning this on makes OpenCode check for updates and install the latest version on its next start.",
+    ),
+  );
+  return `<div class="occs-plugin-auto" title="${tip}">
+    <label class="occs-toggle">
+      <input type="checkbox" id="${id}" data-oc-plugin-autoupdate="${index}" aria-label="${label}"${follows ? " checked" : ""} />
+      <span class="slider"></span>
+    </label>
+    <label class="occs-plugin-auto-label" for="${id}">${label}</label>
+  </div>`;
+}
+
+/** Right side of the meta line: restart, update availability, or nothing yet. */
+function pluginStatusHtml(
+  name: string,
+  info: OpenCodeCliPluginUpdateInfo | undefined,
+): string {
+  if (pluginRestartPending.has(name)) {
+    return `<span class="occs-plugin-status is-restart">${escapeHtml(t("restartRequired", "Restart required"))}</span>
+      <button type="button" class="occs-plugin-link" data-oc-plugin-restart="1" title="${escapeHtml(t("restartToTakeEffect", "Restart OpenCode to take effect"))}">${escapeHtml(t("restartOpenCode", "Restart OpenCode"))}</button>`;
+  }
   if (!info) return "";
   if (info.error) {
-    return `<span class="occs-plugin-ver is-error" title="${escapeHtml(info.error)}">${escapeHtml(t("checkFailed", "Check failed"))}</span>`;
+    return `<span class="occs-plugin-status is-error" title="${escapeHtml(info.error)}">${escapeHtml(t("checkFailed", "Check failed"))}</span>`;
   }
-  if (info.hasUpdate && info.current && info.latest) {
-    // Current version is already shown beside the name; only append the target.
-    return `<span class="occs-plugin-ver is-update" title="${escapeHtml(t("updateAvailable", "Update available"))}">→ ${escapeHtml(info.latest)}</span>`;
-  }
-  if (info.latest && !info.current) {
-    // Unpinned package: report the registry latest instead of a status word.
-    return `<span class="occs-plugin-ver is-ok" title="${escapeHtml(t("upToDate", "Up to date"))}">${escapeHtml(formatMessage(t("latestLabel", "latest: {0}"), info.latest))}</span>`;
+  if (info.hasUpdate && info.latest) {
+    return `<span class="occs-plugin-status is-update">${escapeHtml(formatMessage(t("newVersion", "New version {0}"), info.latest))}</span>`;
   }
   if (info.latest) {
-    // Pinned and equal to latest.
-    return `<span class="occs-plugin-ver is-ok" title="${escapeHtml(t("upToDate", "Up to date"))}">${escapeHtml(t("upToDate", "Up to date"))}</span>`;
+    return `<span class="occs-plugin-status is-ok" title="${escapeHtml(formatMessage(t("latestLabel", "latest: {0}"), info.latest))}">${escapeHtml(t("upToDate", "Up to date"))}</span>`;
   }
   return "";
 }
@@ -497,64 +655,165 @@ function pluginVersionHint(name: string): string {
  * cannot target the wrong row.
  */
 function pluginActionsHtml(name: string, index: number): string {
-  if (index === pendingRemoveIndex) {
-    // Inline confirmation replaces the update/remove icons for this row only.
-    return `<div class="occs-plugin-actions">
-    <div class="occs-plugin-remove-confirm">
-      <span class="occs-plugin-remove-label">${escapeHtml(t("confirmRemovePlugin", "Remove this plugin?"))}</span>
-      <button type="button" class="occs-btn occs-btn-compact occs-btn-danger" data-oc-plugin-remove-confirm="${index}">${escapeHtml(t("remove", "Remove"))}</button>
-      <button type="button" class="occs-btn occs-btn-compact" data-oc-plugin-remove-cancel="1">${escapeHtml(t("cancel", "Cancel"))}</button>
-    </div>
-  </div>`;
-  }
   const info = pluginUpdateInfoOf(name);
   const canUpdate =
     !pluginRestartPending.has(name) && Boolean(info?.hasUpdate && info?.latest);
   const updateBtn = canUpdate
-    ? `<button type="button" class="occs-icon-btn" data-oc-plugin-update="${index}" data-oc-plugin-version="${escapeHtml(info?.latest ?? "")}" title="${escapeHtml(t("updateVersion", "Update"))}" aria-label="${escapeHtml(t("updateVersion", "Update"))}">
-        ${icon(ICONS.upload, 12)}
-      </button>`
+    ? `<button type="button" class="occs-btn occs-btn-compact occs-btn-accent" data-oc-plugin-update="${index}" data-oc-plugin-update-name="${escapeHtml(name)}" data-oc-plugin-version="${escapeHtml(info?.latest ?? "")}" title="${escapeHtml(formatMessage(t("newVersion", "New version {0}"), info?.latest ?? ""))}">${escapeHtml(t("updateVersion", "Update"))}</button>`
     : "";
   return `<div class="occs-plugin-actions">
     ${updateBtn}
-    <button type="button" class="occs-icon-btn" data-oc-plugin-remove="${index}" title="${escapeHtml(t("removePlugin", "Remove plugin"))}" aria-label="${escapeHtml(t("removePlugin", "Remove plugin"))}">${icon(ICONS.x, 12)}</button>
+    <button type="button" class="occs-icon-btn occs-plugin-remove" data-oc-plugin-remove="${index}" title="${escapeHtml(t("removePlugin", "Remove plugin"))}" aria-label="${escapeHtml(t("removePlugin", "Remove plugin"))}">${icon(ICONS.trash, 13)}</button>
   </div>`;
+}
+
+/** Inline remove confirmation, rendered in the meta line of the armed row. */
+function pluginRemoveConfirmHtml(index: number): string {
+  return `<div class="occs-plugin-confirm">
+    <span class="occs-plugin-remove-label">${escapeHtml(t("confirmRemovePlugin", "Remove this plugin?"))}</span>
+    <button type="button" class="occs-btn occs-btn-compact occs-btn-danger" data-oc-plugin-remove-confirm="${index}">${escapeHtml(t("remove", "Remove"))}</button>
+    <button type="button" class="occs-btn occs-btn-compact" data-oc-plugin-remove-cancel="1">${escapeHtml(t("cancel", "Cancel"))}</button>
+  </div>`;
+}
+
+function pluginOptionRowHtml(
+  index: number,
+  key: string,
+  value: unknown,
+): string {
+  const label = escapeHtml(key);
+  const attrs = `data-oc-plugin-opt="${index}" data-oc-opt-key="${label}"`;
+  let control: string;
+  if (typeof value === "boolean") {
+    control = `<label class="occs-toggle"><input type="checkbox" ${attrs} data-oc-opt-type="boolean" aria-label="${label}"${value ? " checked" : ""} /><span class="slider"></span></label>`;
+  } else if (typeof value === "number") {
+    control = `<input class="occs-input occs-plugin-opt-input" type="number" step="any" ${attrs} data-oc-opt-type="number" aria-label="${label}" value="${escapeHtml(String(value))}" />`;
+  } else if (typeof value === "string") {
+    control = `<input class="occs-input occs-plugin-opt-input" type="text" ${attrs} data-oc-opt-type="string" aria-label="${label}" value="${escapeHtml(value)}" />`;
+  } else if (value === null || value === undefined) {
+    control = `<input class="occs-input occs-plugin-opt-input" type="text" ${attrs} data-oc-opt-type="string" aria-label="${label}" placeholder="null" />`;
+  } else {
+    // Objects and arrays have no general purpose widget; the JSON editor keeps
+    // their shape intact instead of guessing a per-type form.
+    control = `<button type="button" class="occs-btn occs-btn-compact" data-oc-plugin-options-json="${index}">${escapeHtml(t("editAsJson", "Edit as JSON"))}</button>`;
+  }
+  return `<div class="occs-plugin-opt">
+    <span class="occs-plugin-opt-key" title="${label}">${label}</span>
+    <div class="occs-plugin-opt-control">${control}</div>
+  </div>`;
+}
+
+function pluginOptionsJsonHtml(editor: PluginOptionsEditor): string {
+  const error = editor.error
+    ? `<div class="occs-plugin-json-error" id="occs-plugin-options-error">${escapeHtml(editor.error)}</div>`
+    : `<div class="occs-plugin-json-error hidden" id="occs-plugin-options-error"></div>`;
+  return `<div class="occs-plugin-json">
+    <textarea class="occs-plugin-json-input" id="occs-plugin-options-json" data-oc-plugin-options-draft="1" rows="5" spellcheck="false" aria-label="${escapeHtml(t("pluginOptions", "Plugin options"))}">${escapeHtml(editor.draft)}</textarea>
+    ${error}
+    <div class="occs-plugin-json-hint">${escapeHtml(t("optionsJsonHint", "Saving replaces all options for this plugin."))}</div>
+    <div class="occs-plugin-json-actions">
+      <button type="button" class="occs-btn occs-btn-compact occs-btn-primary" data-oc-plugin-options-save="1">${escapeHtml(t("save", "Save"))}</button>
+      <button type="button" class="occs-btn occs-btn-compact" data-oc-plugin-options-cancel="1">${escapeHtml(t("cancel", "Cancel"))}</button>
+    </div>
+  </div>`;
+}
+
+/** Expanded panel: the plugin's own options, either as a roster or as JSON. */
+function pluginDetailHtml(
+  plugin: unknown,
+  index: number,
+  name: string,
+): string {
+  const options = effectivePluginOptions(plugin, name);
+  const keys = options ? Object.keys(options) : [];
+  const editor =
+    pluginOptionsEditor && pluginOptionsEditor.name === name
+      ? pluginOptionsEditor
+      : null;
+  let body: string;
+  if (editor) {
+    body = pluginOptionsJsonHtml(editor);
+  } else if (!options || !keys.length) {
+    body = `<div class="occs-plugin-options-empty">${escapeHtml(t("noOptions", "No options added yet."))}</div>`;
+  } else {
+    body = `<div class="occs-plugin-options-list">${keys
+      .map((key) => pluginOptionRowHtml(index, key, options[key]))
+      .join("")}</div>`;
+  }
+  const count = keys.length
+    ? `<span class="occs-plugin-options-count">${escapeHtml(formatMessage(t("optionsCount", "{0} options"), keys.length))}</span>`
+    : "";
+  // With no options yet the button opens the same JSON editor on `{}`.
+  const action = editor
+    ? ""
+    : `<div class="occs-plugin-options-actions">
+        <button type="button" class="occs-btn occs-btn-compact" data-oc-plugin-options-json="${index}">${escapeHtml(keys.length ? t("editAsJson", "Edit as JSON") : t("addOptions", "Add options"))}</button>
+      </div>`;
+  return `<div class="occs-plugin-detail" id="occs-plugin-detail-${index}">
+    <div class="occs-plugin-options-head">
+      <span class="occs-plugin-options-title">${escapeHtml(t("pluginOptions", "Plugin options"))}</span>
+      ${count}
+      ${action}
+    </div>
+    ${body}
+  </div>`;
+}
+
+function pluginItemHtml(plugin: unknown, index: number): string {
+  const name = pluginNameOf(plugin);
+  const open = expandedPlugins.has(name);
+  const armed = index === pendingRemoveIndex;
+  const follows = pluginFollowsLatestState(plugin, name);
+  const info = pluginUpdateInfoOf(name);
+  const detail =
+    open && !armed ? pluginDetailHtml(plugin, index, name) : "";
+  // The meta line lives on the name row, so the row stays one line tall until
+  // the options panel is expanded.
+  const meta = armed
+    ? pluginRemoveConfirmHtml(index)
+    : `${pluginVersionHtml(plugin, name)}${pluginAutoUpdateHtml(index, follows)}${pluginStatusHtml(name, info)}`;
+  return `<div class="occs-plugin-item${open ? " is-open" : ""}" data-oc-plugin-index="${index}">
+    <div class="occs-plugin-head">
+      <button type="button" class="occs-plugin-toggle" data-oc-plugin-expand="${index}" aria-expanded="${open}"${open ? ` aria-controls="occs-plugin-detail-${index}"` : ""} title="${escapeHtml(name)}">
+        <span class="occs-plugin-chevron" aria-hidden="true">${icon(ICONS.chevronDown, 12)}</span>
+        <span class="occs-plugin-name">${escapeHtml(name)}</span>
+      </button>
+      <div class="occs-plugin-meta">${meta}</div>
+      ${armed ? "" : pluginActionsHtml(name, index)}
+    </div>
+    ${detail}
+  </div>`;
+}
+
+/** Drop per-row UI state that points at plugins no longer in the list. */
+function prunePluginUiState(plugins: unknown[]): void {
+  if (!expandedPlugins.size && !pluginOptionsEditor) return;
+  const names = new Set(plugins.map((plugin) => pluginNameOf(plugin)));
+  for (const name of expandedPlugins) {
+    if (!names.has(name)) expandedPlugins.delete(name);
+  }
+  if (pluginOptionsEditor && !names.has(pluginOptionsEditor.name)) {
+    pluginOptionsEditor = null;
+  }
 }
 
 function pluginsSectionHtml(): string {
   const items = state.plugins
-    .map((plugin, index) => {
-      const label = pluginLabel(plugin);
-      const { name, version } = splitPluginLabel(label);
-      const restartVer = pluginRestartPending.get(name);
-      let hint: string;
-      if (restartVer !== undefined) {
-        hint = `<span class="occs-plugin-ver is-success">${escapeHtml(version || `@${restartVer}`)}</span>
-          <button type="button" class="occs-plugin-ver is-success occs-plugin-restart" data-oc-plugin-restart="1" title="${escapeHtml(t("restartToTakeEffect", "Restart OpenCode to take effect"))}">${escapeHtml(t("restartToTakeEffect", "Restart OpenCode to take effect"))}</button>`;
-      } else {
-        // Always show the pinned version; update check appends after it.
-        const verHtml = version
-          ? `<span class="occs-plugin-ver">${escapeHtml(version)}</span>`
-          : "";
-        hint = verHtml + pluginVersionHint(name);
-      }
-      return `<div class="occs-plugin-item" data-oc-plugin-index="${index}">
-        <div class="occs-plugin-main">
-          <span class="occs-plugin-name">${escapeHtml(name)}</span>
-          ${hint}
-        </div>
-        ${pluginActionsHtml(name, index)}
-      </div>`;
-    })
+    .map((plugin, index) => pluginItemHtml(plugin, index))
     .join("");
   const empty = state.plugins.length
     ? ""
-    : `<div class="occs-plugin-empty">${escapeHtml(t("noPlugins", "No plugins configured"))}</div>`;
+    : `<div class="occs-plugin-empty">
+        <span class="occs-plugin-empty-title">${escapeHtml(t("noPlugins", "No plugins configured"))}</span>
+        <span>${escapeHtml(t("pluginsEmptyHint", "Plugins extend OpenCode. Add an npm package name to install one."))}</span>
+      </div>`;
   const addForm = pluginAddFormOpen
     ? `<div class="occs-plugin-add-form">
-        <input class="occs-input occs-plugin-add-input" id="occs-plugin-add-input" type="text" placeholder="${escapeHtml(t("pluginPackagePlaceholder", "npm package name, e.g. @scope/plugin"))}" />
-        <button type="button" class="occs-btn occs-btn-primary" id="occs-plugin-add-confirm">${escapeHtml(t("addPlugin", "Add plugin"))}</button>
-        <button type="button" class="occs-btn" id="occs-plugin-add-cancel">${escapeHtml(t("cancel", "Cancel"))}</button>
+        <input class="occs-input occs-plugin-add-input" id="occs-plugin-add-input" type="text" placeholder="${escapeHtml(t("pluginPackagePlaceholder", "npm package name, e.g. @scope/plugin"))}" aria-label="${escapeHtml(t("addPlugin", "Add plugin"))}" />
+        <div class="occs-plugin-add-actions">
+          <button type="button" class="occs-btn occs-btn-primary occs-btn-compact" id="occs-plugin-add-confirm">${escapeHtml(t("addPlugin", "Add plugin"))}</button>
+          <button type="button" class="occs-btn occs-btn-compact" id="occs-plugin-add-cancel">${escapeHtml(t("cancel", "Cancel"))}</button>
+        </div>
       </div>`
     : "";
   const updatableCount = pluginUpdateAllQueue.length > 0
@@ -563,10 +822,10 @@ function pluginsSectionHtml(): string {
   const updateAllBtn = updatableCount > 0
     ? `<button type="button" class="occs-btn${pluginUpdateAllQueue.length ? " is-busy" : ""}" id="occs-plugin-update-all"${pluginUpdateAllQueue.length ? " disabled" : ""}>${escapeHtml(t("updateAll", "Update all"))}</button>`
     : "";
-  return `<div class="occs-section">
+  return `<div class="occs-section occs-plugin-section">
     <div class="group-label" id="occs-group-plugins">${escapeHtml(groupTitle("plugins"))}</div>
     <div class="occs-plugin-toolbar">
-      <button type="button" class="occs-btn" id="occs-plugin-add">${escapeHtml(t("addPlugin", "Add plugin"))}</button>
+      <button type="button" class="occs-btn occs-btn-primary" id="occs-plugin-add">${escapeHtml(t("addPlugin", "Add plugin"))}</button>
       <button type="button" class="occs-btn${pluginCheckPending ? " is-busy" : ""}" id="occs-plugin-check"${pluginCheckPending ? " disabled" : ""}>${escapeHtml(pluginCheckPending ? t("checkingUpdates", "Checking…") : t("checkUpdates", "Check updates"))}</button>
       ${updateAllBtn}
     </div>
@@ -595,6 +854,13 @@ function renderList(): void {
   if (!list) return;
   if (themePicker.open) {
     // Don't tear down an in-progress theme preview.
+    return;
+  }
+  if (settingsLoadFailed) {
+    // No data to render: the error banner above the list carries the message.
+    // An empty body must not degrade into the "no plugins configured" state.
+    list.innerHTML = "";
+    setLoadingVisible(false);
     return;
   }
   if (!settingsLoaded) {
@@ -906,14 +1172,24 @@ export function applyOpenCodeCliSettingsData(
   state.configPath = message.configPath ?? "";
   state.themeOptions = message.themeOptions ?? [];
   state.plugins = message.plugins ?? [];
+  state.installedPluginVersions = message.installedPluginVersions ?? {};
   // Authoritative data supersedes any unconfirmed optimistic mutation.
   pendingOptimisticPlugin = null;
+  pluginAutoUpdateOverrides.clear();
+  pluginOptionsOverrides.clear();
+  prunePluginUiState(state.plugins);
   state.pluginUpdates = reconcilePluginUpdates(state.pluginUpdates, state.plugins);
   if (pendingRemoveIndex !== null && pendingRemoveIndex >= state.plugins.length) {
     // Authoritative list shrank underneath the inline confirm row.
     pendingRemoveIndex = null;
   }
   settingsLoaded = true;
+  if (settingsLoadFailed) {
+    // A successful load supersedes the previous load error; save errors are
+    // tracked separately and stay visible.
+    settingsLoadFailed = false;
+    hideSettingsError();
+  }
   $("#occs-reload")?.classList.remove("is-spinning");
   updateConfigPathUi();
   if (!settingsOpen) {
@@ -972,11 +1248,28 @@ export function handleOpenCodeCliSettingsSaveResult(
   if (message.path === "plugins" && pendingPluginUpdate) {
     const { name, version } = pendingPluginUpdate;
     pendingPluginUpdate = null;
-    pluginRestartPending.set(name, version);
+    // The list may have changed while the write was in flight. Skip the restart
+    // badge for an entry that is gone: nothing would ever clear it.
+    if (state.plugins.some((plugin) => pluginNameOf(plugin) === name)) {
+      pluginRestartPending.set(name, version);
+    }
     renderList();
     if (pluginUpdateAllQueue.length) {
       updateNextPluginInQueue();
     }
+  }
+}
+
+/** Put a per-plugin override back to its pre-write value. */
+function restorePluginOverride<T>(
+  map: Map<string, T>,
+  name: string,
+  value: T | null,
+): void {
+  if (value === null) {
+    map.delete(name);
+  } else {
+    map.set(name, value);
   }
 }
 
@@ -995,6 +1288,14 @@ function rollbackPendingOptimisticPlugin(): void {
     ) {
       state.plugins.splice(mutation.index, 1);
     }
+    return;
+  }
+  if (mutation.kind === "autoUpdate") {
+    restorePluginOverride(pluginAutoUpdateOverrides, mutation.name, mutation.previous);
+    return;
+  }
+  if (mutation.kind === "options") {
+    restorePluginOverride(pluginOptionsOverrides, mutation.name, mutation.previous);
     return;
   }
   // Reinsert at the original position; a shrunken list appends instead.
@@ -1092,7 +1393,7 @@ function removePluginAt(index: number): void {
     renderList();
     return;
   }
-  const name = splitPluginLabel(pluginLabel(removed)).name;
+  const name = pluginNameOf(removed);
   // Capture the row's side state first: the optimistic delete clears it below,
   // and a failed save must be able to put it back exactly as it was.
   const restartVersion = pluginRestartPending.get(name);
@@ -1108,6 +1409,10 @@ function removePluginAt(index: number): void {
   // Optimistic local removal keeps the list in sync before the host reply.
   state.plugins.splice(index, 1);
   pluginRestartPending.delete(name);
+  pluginAutoUpdateOverrides.delete(name);
+  pluginOptionsOverrides.delete(name);
+  expandedPlugins.delete(name);
+  if (pluginOptionsEditor?.name === name) pluginOptionsEditor = null;
   if (state.pluginUpdates) {
     const kept = state.pluginUpdates.filter((info) => info.name !== name);
     state.pluginUpdates = kept.length ? kept : null;
@@ -1116,10 +1421,205 @@ function removePluginAt(index: number): void {
   postMessage({ type: "removeOpenCodeCliPlugin", index });
 }
 
-function updatePluginVersion(index: number, version: string): void {
-  const label = pluginLabel(state.plugins[index]);
-  pendingPluginUpdate = { name: splitPluginLabel(label).name, version };
+/**
+ * Write one pinned version. `name` is the package the rendered row belonged to;
+ * the send is dropped when that index no longer holds it, so a list changed
+ * underneath the click cannot update a different plugin.
+ */
+function updatePluginVersion(
+  index: number,
+  version: string,
+  name: string,
+): void {
+  if (!name || pluginNameOf(state.plugins[index]) !== name) {
+    pendingPluginUpdate = null;
+    return;
+  }
+  pendingPluginUpdate = { name, version };
   postMessage({ type: "updateOpenCodeCliPlugin", index, version });
+}
+
+/** Flip update tracking. The host rewrites `package` and keeps `options`. */
+function commitPluginAutoUpdate(index: number, autoUpdate: boolean): void {
+  const plugin = state.plugins[index];
+  if (!plugin) return;
+  const name = pluginNameOf(plugin);
+  const previous = pluginAutoUpdateOverrides.get(name) ?? null;
+  pluginAutoUpdateOverrides.set(name, autoUpdate);
+  pendingOptimisticPlugin = {
+    kind: "autoUpdate",
+    index,
+    name,
+    autoUpdate,
+    previous,
+  };
+  postMessage({ type: "setOpenCodeCliPluginAutoUpdate", index, autoUpdate });
+}
+
+/** Replace one entry's whole options object; `options` is stored verbatim. */
+function commitPluginOptions(
+  index: number,
+  options: Record<string, unknown>,
+): void {
+  const plugin = state.plugins[index];
+  if (!plugin) return;
+  const name = pluginNameOf(plugin);
+  const previous = pluginOptionsOverrides.get(name) ?? null;
+  pluginOptionsOverrides.set(name, options);
+  pendingOptimisticPlugin = {
+    kind: "options",
+    index,
+    name,
+    options,
+    previous,
+  };
+  postMessage({ type: "setOpenCodeCliPluginOptions", index, options });
+}
+
+function togglePluginDetail(index: number): void {
+  // renderList() is a no-op while a theme preview is open; toggling here would
+  // record state the user cannot see yet.
+  if (themePicker.open) return;
+  const plugin = state.plugins[index];
+  if (!plugin) return;
+  const name = pluginNameOf(plugin);
+  if (expandedPlugins.has(name)) {
+    expandedPlugins.delete(name);
+    if (pluginOptionsEditor?.name === name) pluginOptionsEditor = null;
+  } else {
+    expandedPlugins.add(name);
+  }
+  const focus = captureFocusSnapshot();
+  renderList();
+  restoreFocusSnapshot(focus);
+}
+
+function focusPluginOptionsJson(): void {
+  const input = document.getElementById("occs-plugin-options-json");
+  if (!(input instanceof HTMLTextAreaElement)) return;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+function openPluginOptionsEditor(index: number): void {
+  if (themePicker.open) return;
+  const plugin = state.plugins[index];
+  if (!plugin) return;
+  const name = pluginNameOf(plugin);
+  const options = effectivePluginOptions(plugin, name) ?? {};
+  pluginOptionsEditor = {
+    name,
+    draft: JSON.stringify(options, null, 2),
+    error: null,
+  };
+  expandedPlugins.add(name);
+  renderList();
+  focusPluginOptionsJson();
+}
+
+function closePluginOptionsEditor(): void {
+  if (!pluginOptionsEditor) return;
+  pluginOptionsEditor = null;
+  renderList();
+}
+
+/** Keep the draft in state so a re-render cannot drop typed JSON. */
+function syncPluginOptionsDraft(textarea: HTMLTextAreaElement): void {
+  if (!pluginOptionsEditor) return;
+  pluginOptionsEditor.draft = textarea.value;
+  if (!pluginOptionsEditor.error) return;
+  pluginOptionsEditor.error = null;
+  const box = document.getElementById("occs-plugin-options-error");
+  if (box) {
+    box.textContent = "";
+    box.classList.add("hidden");
+  }
+}
+
+/**
+ * Report a JSON problem without leaving the editor: patching the existing
+ * error node keeps the textarea, its caret and its scroll position intact.
+ */
+function showPluginOptionsError(message: string): void {
+  if (pluginOptionsEditor) pluginOptionsEditor.error = message;
+  const box = document.getElementById("occs-plugin-options-error");
+  if (box) {
+    box.textContent = message;
+    box.classList.remove("hidden");
+  }
+}
+
+function savePluginOptions(): void {
+  const editor = pluginOptionsEditor;
+  if (!editor) return;
+  // The live textarea wins over the tracked draft: a value set without an
+  // input event would otherwise save stale JSON.
+  const textarea = document.getElementById("occs-plugin-options-json");
+  const draft =
+    textarea instanceof HTMLTextAreaElement ? textarea.value : editor.draft;
+  editor.draft = draft;
+  const raw = draft.trim();
+  let parsed: unknown = {};
+  if (raw) {
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      showPluginOptionsError(t("optionsInvalidJson", "Options are not valid JSON."));
+      return;
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    showPluginOptionsError(
+      t("optionsNotObject", "Options must be a JSON object."),
+    );
+    return;
+  }
+  const index = state.plugins.findIndex(
+    (plugin) => pluginNameOf(plugin) === editor.name,
+  );
+  pluginOptionsEditor = null;
+  if (index < 0) {
+    renderList();
+    return;
+  }
+  commitPluginOptions(index, parsed as Record<string, unknown>);
+  renderList();
+}
+
+function onPluginAutoUpdateChange(target: HTMLElement): void {
+  const index = Number(target.dataset.ocPluginAutoupdate ?? "-1");
+  if (!Number.isInteger(index) || index < 0) return;
+  commitPluginAutoUpdate(index, (target as HTMLInputElement).checked);
+  const focus = captureFocusSnapshot();
+  renderList();
+  restoreFocusSnapshot(focus);
+}
+
+function onPluginOptionChange(target: HTMLElement): void {
+  const index = Number(target.dataset.ocPluginOpt ?? "-1");
+  const key = target.dataset.ocOptKey ?? "";
+  const type = target.dataset.ocOptType ?? "";
+  if (!Number.isInteger(index) || index < 0 || !key) return;
+  const plugin = state.plugins[index];
+  if (!plugin) return;
+  const current = effectivePluginOptions(plugin, pluginNameOf(plugin)) ?? {};
+  const next: Record<string, unknown> = { ...current };
+  if (type === "boolean") {
+    next[key] = (target as HTMLInputElement).checked;
+  } else if (type === "number") {
+    const input = target as HTMLInputElement;
+    const num = Number(input.value);
+    if (input.value.trim() === "" || Number.isNaN(num)) {
+      // Never coerce an empty field into 0; put the stored value back.
+      const stored = current[key];
+      input.value = typeof stored === "number" ? String(stored) : "";
+      return;
+    }
+    next[key] = num;
+  } else {
+    next[key] = (target as HTMLInputElement).value;
+  }
+  commitPluginOptions(index, next);
 }
 
 function updatablePluginNames(): string[] {
@@ -1164,7 +1664,19 @@ function checkPluginUpdates(): void {
 }
 
 export function showOpenCodeCliSettingsError(error: string): void {
-  showSettingsError(error || t("loadFailed", "Failed to load OpenCode CLI settings."));
+  // The host could not read cli.json. Drop everything loaded so far instead of
+  // leaving stale or default-filled values on screen, then render the message.
+  settingsLoadFailed = true;
+  settingsLoaded = false;
+  // renderList() keeps an open theme picker mounted, so close it first; its
+  // rows belong to data that is no longer trustworthy.
+  closeThemePicker();
+  resetLoadedState();
+  renderNav();
+  renderList();
+  showSettingsError(
+    error || t("loadFailed", "Failed to load OpenCode CLI settings."),
+  );
 }
 
 export function openOpenCodeCliSettingsModal(): void {
@@ -1246,14 +1758,31 @@ export function initOpenCodeCliSettingsUi(): void {
 
   $("#occs-list")?.addEventListener("change", (e) => {
     const target = e.target as HTMLElement;
-    if (target && target.dataset && target.dataset.ocCliSet) {
+    if (!target) return;
+    if (target.dataset.ocPluginAutoupdate) {
+      onPluginAutoUpdateChange(target);
+      return;
+    }
+    if (target.dataset.ocPluginOpt) {
+      onPluginOptionChange(target);
+      return;
+    }
+    if (target.dataset.ocCliSet) {
       onControlChange(target);
     }
   });
 
   $("#occs-list")?.addEventListener("input", (e) => {
     const target = e.target as HTMLElement;
-    if (target && target.dataset && target.dataset.ocCliSet) {
+    if (!target) return;
+    if (
+      target instanceof HTMLTextAreaElement &&
+      target.dataset.ocPluginOptionsDraft
+    ) {
+      syncPluginOptionsDraft(target);
+      return;
+    }
+    if (target.dataset.ocCliSet) {
       onControlInput(target);
     }
   });
@@ -1314,6 +1843,52 @@ export function initOpenCodeCliSettingsUi(): void {
     if (addCancel) {
       e.preventDefault();
       closePluginAddForm();
+      return;
+    }
+
+    const expandBtn = (e.target as HTMLElement).closest(
+      "[data-oc-plugin-expand]",
+    );
+    if (expandBtn) {
+      e.preventDefault();
+      const index = Number(
+        (expandBtn as HTMLElement).dataset.ocPluginExpand ?? "-1",
+      );
+      if (Number.isInteger(index) && index >= 0) {
+        togglePluginDetail(index);
+      }
+      return;
+    }
+
+    const optionsJsonBtn = (e.target as HTMLElement).closest(
+      "[data-oc-plugin-options-json]",
+    );
+    if (optionsJsonBtn) {
+      e.preventDefault();
+      const index = Number(
+        (optionsJsonBtn as HTMLElement).dataset.ocPluginOptionsJson ?? "-1",
+      );
+      if (Number.isInteger(index) && index >= 0) {
+        openPluginOptionsEditor(index);
+      }
+      return;
+    }
+
+    const optionsSave = (e.target as HTMLElement).closest(
+      "[data-oc-plugin-options-save]",
+    );
+    if (optionsSave) {
+      e.preventDefault();
+      savePluginOptions();
+      return;
+    }
+
+    const optionsCancel = (e.target as HTMLElement).closest(
+      "[data-oc-plugin-options-cancel]",
+    );
+    if (optionsCancel) {
+      e.preventDefault();
+      closePluginOptionsEditor();
       return;
     }
 
@@ -1388,8 +1963,9 @@ export function initOpenCodeCliSettingsUi(): void {
       const el = updateBtn as HTMLElement;
       const index = Number(el.dataset.ocPluginUpdate ?? "-1");
       const version = el.dataset.ocPluginVersion ?? "";
+      const name = el.dataset.ocPluginUpdateName ?? "";
       if (Number.isInteger(index) && index >= 0 && version) {
-        updatePluginVersion(index, version);
+        updatePluginVersion(index, version, name);
       }
       return;
     }
@@ -1454,6 +2030,17 @@ export function initOpenCodeCliSettingsUi(): void {
       e.stopPropagation();
       pendingRemoveIndex = null;
       renderList();
+      return;
+    }
+
+    const optionsJson = (e.target as HTMLElement).closest(
+      "#occs-plugin-options-json",
+    );
+    if (optionsJson && e.key === "Escape") {
+      // Leave the JSON editor without discarding the rest of the settings.
+      e.preventDefault();
+      e.stopPropagation();
+      closePluginOptionsEditor();
       return;
     }
 

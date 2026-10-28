@@ -1005,60 +1005,190 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .occs-jump-link:hover {
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
 }
-.occs-plugin-list { display: flex; flex-direction: column; gap: 6px; padding: 6px 12px 12px; }
+/* ── Plugin list ──
+   Rows keep the settings-row language: separators, no card chrome. Only the
+   expanded detail panel gets a faint tinted surface so it reads as nested. */
 .occs-plugin-toolbar {
-  display: flex; align-items: center; gap: 8px; padding: 8px 12px 0;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 12px 0;
 }
 .occs-plugin-add-form {
-  display: flex; align-items: center; gap: 8px; padding: 8px 12px 0; flex-wrap: wrap;
-}
-.occs-plugin-add-form .occs-plugin-add-input { flex: 1; min-width: 160px; }
-.occs-plugin-empty {
-  padding: 10px 4px; font-size: 12px; color: var(--vscode-descriptionForeground, #8a8a8a);
-}
-.occs-plugin-item {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 6px 8px 6px 10px; border: 1px solid var(--vscode-panel-border, #2e2e2e); border-radius: 6px;
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 8px 12px 0; padding: 8px 10px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, #2e2e2e));
+  border-radius: 6px;
   background: var(--vscode-input-background, #2a2a2a);
-  font-size: 12px; min-width: 0;
 }
-.occs-plugin-main {
-  min-width: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+.occs-plugin-add-form .occs-plugin-add-input { width: 100%; }
+.occs-plugin-add-actions {
+  display: flex; align-items: center; gap: 8px; justify-content: flex-end;
 }
-.occs-plugin-name {
-  font-family: var(--vscode-editor-font-family, monospace);
-  overflow-wrap: anywhere;
-}
-.occs-plugin-ver {
-  font-family: var(--vscode-font-family); font-size: 11px; flex-shrink: 0;
-  color: var(--vscode-descriptionForeground);
-}
-.occs-plugin-ver.is-update { color: var(--vscode-charts-green, #23a123); }
-.occs-plugin-ver.is-ok { color: var(--vscode-charts-green, #23a123); opacity: 0.85; }
-.occs-plugin-ver.is-success {
-  color: var(--vscode-testing-iconPassed, #23a123);
-}
-.occs-plugin-restart {
-  background: none; border: none; padding: 0; cursor: pointer;
-  font: inherit; font-family: var(--vscode-font-family); font-size: 11px;
-  text-decoration: underline; text-underline-offset: 2px;
-}
-.occs-plugin-restart:hover {
-  opacity: 0.8;
-}
-.occs-plugin-ver.is-error { color: var(--vscode-errorForeground, #f87171); }
-.occs-plugin-actions {
-  display: flex; align-items: center; gap: 2px; flex-shrink: 0;
-}
-.occs-plugin-remove-confirm {
-  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
-}
-.occs-plugin-remove-confirm .occs-plugin-remove-label {
-  font-size: 11px; white-space: nowrap;
+.occs-plugin-empty {
+  margin: 10px 12px 2px; padding: 14px 12px;
+  border: 1px dashed var(--vscode-panel-border, #2e2e2e); border-radius: 6px;
+  text-align: center; font-size: 11px; line-height: 1.6;
   color: var(--vscode-descriptionForeground, #8a8a8a);
 }
+.occs-plugin-empty-title {
+  display: block; margin-bottom: 3px;
+  font-size: 12px; color: var(--vscode-foreground, #d4d4d4);
+}
+.occs-plugin-list { display: flex; flex-direction: column; padding: 4px 0 10px; }
+.occs-plugin-item {
+  padding: 7px 12px 8px; min-width: 0;
+  border-bottom: 1px solid var(--vscode-panel-border, #2e2e2e);
+  font-size: 12px;
+}
+.occs-plugin-item:last-child { border-bottom: none; }
+.occs-plugin-item:hover,
+.occs-plugin-item.is-open { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08)); }
+.occs-plugin-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.occs-plugin-toggle {
+  display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0;
+  margin: 0; padding: 0; border: none; background: none;
+  color: var(--vscode-foreground, #d4d4d4); font: inherit;
+  text-align: left; cursor: pointer;
+}
+.occs-plugin-toggle:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: 2px; border-radius: 3px;
+}
+.occs-plugin-chevron {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0; width: 14px; height: 14px;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+  transform: rotate(-90deg);
+  transition: transform 120ms ease;
+}
+.occs-plugin-item.is-open .occs-plugin-chevron { transform: rotate(0deg); }
+.occs-plugin-name {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11.5px; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Expanded rows reveal the whole package name instead of truncating it. */
+.occs-plugin-item.is-open .occs-plugin-name { white-space: normal; overflow-wrap: anywhere; }
+/* Sits on the name row right after the package name. It keeps its content
+   width; the auto margin absorbs the leftover space so the action buttons
+   still land hard right. */
+.occs-plugin-meta {
+  display: flex; align-items: center; gap: 8px;
+  flex: 0 1 auto; margin-right: auto; min-width: 0;
+}
+.occs-plugin-ver {
+  flex-shrink: 0; max-width: 100%;
+  padding: 0 5px; line-height: 16px; border-radius: 3px;
+  border: 1px solid var(--vscode-panel-border, #2e2e2e);
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10.5px; font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.occs-plugin-auto { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.occs-plugin-auto .occs-toggle { width: 28px; height: 16px; }
+.occs-plugin-auto .occs-toggle .slider::before {
+  width: 10px; height: 10px; left: 2px; top: 2px;
+}
+.occs-plugin-auto .occs-toggle input:checked + .slider::before {
+  transform: translateX(12px);
+}
+.occs-plugin-auto-label {
+  font-size: 10.5px; cursor: pointer; user-select: none;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+.occs-plugin-auto-label:hover { color: var(--vscode-foreground, #d4d4d4); }
+.occs-plugin-status {
+  flex-shrink: 1; min-width: 0;
+  font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+.occs-plugin-status.is-update { color: var(--vscode-charts-blue, #3794ff); }
+.occs-plugin-status.is-ok { color: var(--vscode-charts-green, #23a123); }
+.occs-plugin-status.is-error { color: var(--vscode-errorForeground, #f87171); }
+.occs-plugin-status.is-restart { color: var(--vscode-charts-yellow, #cca700); }
+.occs-plugin-link {
+  flex-shrink: 0; margin: 0; padding: 0; border: none; background: none;
+  cursor: pointer; font: inherit; font-size: 10.5px;
+  color: var(--vscode-textLink-foreground, var(--vscode-focusBorder, #007fd4));
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.occs-plugin-link:hover {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground, #007fd4));
+}
+.occs-plugin-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .occs-plugin-actions .occs-icon-btn {
-  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+}
+.occs-plugin-confirm {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.occs-plugin-confirm .occs-plugin-remove-label {
+  font-size: 11px; color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+/* Update action: quieter than the toolbar primary, louder than a bare icon. */
+.occs-btn.occs-btn-accent {
+  background: transparent;
+  border: 1px solid var(--vscode-focusBorder, #007fd4);
+  color: var(--vscode-textLink-foreground, var(--vscode-focusBorder, #007fd4));
+}
+.occs-btn.occs-btn-accent:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+.occs-plugin-detail {
+  margin: 8px 0 2px; padding: 8px 10px 10px; min-width: 0;
+  border-radius: 6px;
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.07));
+}
+.occs-plugin-options-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.occs-plugin-options-title { font-size: 11px; font-weight: 600; }
+.occs-plugin-options-count {
+  font-size: 10px; color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+.occs-plugin-options-actions { margin-left: auto; }
+.occs-plugin-options-empty {
+  padding: 2px 0; font-size: 10.5px;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+.occs-plugin-opt { display: flex; align-items: center; gap: 8px; padding: 3px 0; min-width: 0; }
+.occs-plugin-opt-key {
+  flex: 1 1 45%; min-width: 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px; color: var(--vscode-foreground, #d4d4d4);
+  overflow-wrap: anywhere;
+}
+.occs-plugin-opt-control {
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: 6px; flex: 1 1 55%; min-width: 0;
+}
+.occs-plugin-opt-input {
+  flex: 1; width: auto; min-width: 56px; padding: 2px 6px; font-size: 11px;
+}
+.occs-plugin-json { display: flex; flex-direction: column; gap: 6px; }
+.occs-plugin-json-input {
+  box-sizing: border-box; width: 100%; min-height: 88px; resize: vertical;
+  padding: 6px 8px; border-radius: 4px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  background: var(--vscode-input-background, #2a2a2a);
+  color: var(--vscode-input-foreground, var(--vscode-foreground, #d4d4d4));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px; line-height: 1.5;
+}
+.occs-plugin-json-input:focus {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+.occs-plugin-json-error { font-size: 10.5px; color: var(--vscode-errorForeground, #f87171); }
+.occs-plugin-json-error.hidden { display: none; }
+.occs-plugin-json-hint {
+  font-size: 10px; line-height: 1.5;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+.occs-plugin-json-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 6px;
 }
 .occs-btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -1125,6 +1255,7 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .occs-overlay.is-preview .occs-header,
 .occs-overlay.is-preview .occs-error,
 .occs-overlay.is-preview .occs-side-nav,
+.occs-overlay.is-preview .occs-plugin-section,
 .occs-overlay.is-preview .occs-row-info {
   opacity: 0;
   pointer-events: none;

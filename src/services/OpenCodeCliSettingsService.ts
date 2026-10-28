@@ -11,10 +11,26 @@ import {
   discoverOpenCodeThemesFromDisk,
   mergeThemeCatalogs,
 } from "./aiTools/openCodeThemeDiscovery";
+import { l10n } from "../i18n";
 import { resolveOpenCodeCliConfigPath } from "./openCodeConfigPath";
 import { OutputChannelService } from "./OutputChannelService";
 import { isVersionNewer } from "./semver";
 import type { OpenCodeCliPluginUpdateInfo } from "../types";
+
+/**
+ * cli.json exists but cannot be read or parsed. Callers that report the
+ * failure for one specific operation can recognize it and reword the message
+ * while keeping the original text as `cause`.
+ */
+export class ConfigUnreadableError extends Error {
+  public readonly cause: unknown;
+
+  public constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "ConfigUnreadableError";
+    this.cause = cause;
+  }
+}
 
 export interface OpenCodeCliSettingsPayload {
   /** Effective values keyed by dotted path (defaults filled in). */
@@ -25,6 +41,8 @@ export interface OpenCodeCliSettingsPayload {
   /** Theme options: builtin + discovered theme files. */
   themeOptions: OpenCodeCliSettingOption[];
   plugins: unknown[];
+  /** Installed versions from OpenCode's npm cache, keyed by package name. */
+  installedPluginVersions: Record<string, string>;
 }
 
 /**
@@ -75,7 +93,99 @@ export class OpenCodeCliSettingsService {
         projectDir,
       ),
       plugins,
+      installedPluginVersions: await this.loadInstalledPluginVersions(plugins),
     };
+  }
+
+  /**
+   * Installed versions read from OpenCode's npm cache, keyed by package name.
+   * The cache is a best-effort source: a missing or damaged entry is skipped so
+   * it can never break the settings view. Reads are async so a cold cache does
+   * not block the extension host.
+   */
+  public async loadInstalledPluginVersions(
+    plugins: readonly unknown[],
+  ): Promise<Record<string, string>> {
+    const cacheDir = resolveOpenCodePluginCacheDir();
+    const versions: Record<string, string> = {};
+    for (const plugin of plugins) {
+      const parsed = parsePluginSpec(plugin);
+      if (!parsed) continue;
+      const version = await this.readInstalledVersion(
+        cacheDir,
+        parsed.name,
+        parsed.version,
+      );
+      if (version) {
+        versions[parsed.name] = version;
+      }
+    }
+    return versions;
+  }
+
+  /**
+   * OpenCode caches one directory per installed spec. The configured spec is
+   * tried first; `latest` is the fallback because a bare name maps to it and
+   * because a pruned generation may leave only the tracking directory behind.
+   */
+  private async readInstalledVersion(
+    cacheDir: string,
+    name: string,
+    spec: string | null,
+  ): Promise<string | undefined> {
+    const keys = spec && spec !== "latest" ? [spec, "latest"] : ["latest"];
+    for (const key of keys) {
+      const version = await this.readCacheGenerationVersion(
+        path.join(cacheDir, pluginCacheKey(name, key)),
+        name,
+      );
+      if (version) return version;
+    }
+    return undefined;
+  }
+
+  /** Highest numeric generation directory wins, matching OpenCode's own pick. */
+  private async readCacheGenerationVersion(
+    dir: string,
+    name: string,
+  ): Promise<string | undefined> {
+    let entries: string[];
+    try {
+      entries = await fs.promises.readdir(dir);
+    } catch (error) {
+      this.logger.debug(
+        `[OpenCodeCliSettingsService] No plugin cache at ${dir}: ${errorText(error)}`,
+      );
+      return undefined;
+    }
+    const generations = entries
+      .filter((entry) => /^\d+$/.test(entry))
+      .sort((a, b) => Number(a) - Number(b));
+    const current = generations[generations.length - 1];
+    if (!current) return undefined;
+    const manifestPath = path.join(
+      dir,
+      current,
+      "node_modules",
+      name,
+      "package.json",
+    );
+    try {
+      const raw = await fs.promises.readFile(manifestPath, "utf8");
+      const manifest = JSON.parse(raw) as unknown;
+      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+        return undefined;
+      }
+      const version = (manifest as { version?: unknown }).version;
+      return typeof version === "string" && version.trim()
+        ? version.trim()
+        : undefined;
+    } catch (error) {
+      this.logger.debug(
+        `[OpenCodeCliSettingsService] Cannot read plugin manifest ${manifestPath}: ${errorText(error)}`,
+      );
+      return undefined;
+    }
   }
 
   /** Write one dotted path. Value equal to default deletes the key. */
@@ -140,8 +250,14 @@ export class OpenCodeCliSettingsService {
   }
 
   /**
-   * Pin a plugin entry to `version`. Accepts string specs and
-   * `{ package, version }` objects; preserves other object fields.
+   * Pin a plugin entry to `version`, or keep it tracking npm. Entries that
+   * already follow latest (no version, a range, or a dist-tag) stay unpinned so
+   * the user's follow switch does not flip to pinned after an update. Pinned
+   * entries get the version written into `package`.
+   *
+   * The index only selects the entry. The write itself targets the package
+   * name, so a config rewritten in between cannot make the version land on a
+   * different plugin that shifted into that index.
    */
   public async updatePluginVersion(
     index: number,
@@ -154,27 +270,190 @@ export class OpenCodeCliSettingsService {
     if (!ver) {
       throw new Error("Plugin version is required");
     }
+    try {
+      const targetName = this.pluginNameAtIndex(index);
+      await this.mutateDoc((doc) => {
+        const existing = Array.isArray(doc.plugins)
+          ? (doc.plugins as unknown[])
+          : [];
+        const target = existing.findIndex(
+          (plugin) => parsePluginSpec(plugin)?.name === targetName,
+        );
+        if (target < 0) {
+          throw new Error(`Plugin "${targetName}" is no longer configured.`);
+        }
+        doc.plugins = existing.map((plugin, i) => {
+          if (i !== target) return plugin;
+          const parsed = parsePluginSpec(plugin);
+          // Follow-latest entries must not gain a version: OpenCode re-resolves
+          // the registry on restart, so writing an exact pin would be a change
+          // the user never asked for.
+          if (parsed && followsLatest(parsed.version)) {
+            return applyPluginFollowLatest(plugin);
+          }
+          return applyPluginVersion(plugin, ver);
+        });
+      });
+    } catch (error) {
+      if (error instanceof ConfigUnreadableError) {
+        throw new ConfigUnreadableError(
+          l10n.t(
+            "Cannot update the plugin version because the OpenCode CLI config file cannot be read. Fix {0} and try again.",
+            path.resolve(this.resolveConfigPath()),
+          ),
+          error,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Turn update tracking on or off for one entry. On: the version is removed
+   * from `package` so OpenCode resolves the registry. Off: the entry is pinned
+   * to its current exact version, or to the registry latest when it had none.
+   * `options` and other fields are preserved.
+   *
+   * Like `updatePluginVersion`, the index only selects the entry; the write
+   * finds it by package name after the registry lookup.
+   */
+  public async setPluginAutoUpdate(
+    index: number,
+    autoUpdate: boolean,
+  ): Promise<void> {
+    if (!Number.isInteger(index) || index < 0) {
+      throw new Error(`Invalid plugin index: ${index}`);
+    }
+    try {
+      const targetName = this.pluginNameAtIndex(index);
+      let pinVersion = "";
+      if (!autoUpdate) {
+        pinVersion = await this.resolvePinVersion(targetName);
+      }
+      await this.mutateDoc((doc) => {
+        const existing = Array.isArray(doc.plugins)
+          ? (doc.plugins as unknown[])
+          : [];
+        const target = existing.findIndex(
+          (plugin) => parsePluginSpec(plugin)?.name === targetName,
+        );
+        if (target < 0) {
+          throw new Error(`Plugin "${targetName}" is no longer configured.`);
+        }
+        doc.plugins = existing.map((plugin, i) => {
+          if (i !== target) return plugin;
+          return autoUpdate
+            ? applyPluginFollowLatest(plugin)
+            : applyPluginVersion(plugin, pinVersion);
+        });
+      });
+    } catch (error) {
+      if (error instanceof ConfigUnreadableError) {
+        throw new ConfigUnreadableError(
+          l10n.t(
+            "Cannot change the update setting because the OpenCode CLI config file cannot be read. Fix {0} and try again.",
+            path.resolve(this.resolveConfigPath()),
+          ),
+          error,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Replace one entry's `options`. A string entry is promoted to
+   * `{ package, options }` so the package and its version survive; an empty
+   * object removes the field instead of writing `options: {}`.
+   */
+  public async setPluginOptions(
+    index: number,
+    options: Record<string, unknown>,
+  ): Promise<void> {
+    if (!Number.isInteger(index) || index < 0) {
+      throw new Error(`Invalid plugin index: ${index}`);
+    }
     await this.mutateDoc((doc) => {
       const existing = Array.isArray(doc.plugins) ? (doc.plugins as unknown[]) : [];
       if (index >= existing.length) {
         throw new Error(`Plugin index out of range: ${index}`);
       }
       doc.plugins = existing.map((plugin, i) =>
-        i === index ? applyPluginVersion(plugin, ver) : plugin,
+        i === index ? applyPluginOptions(plugin, options) : plugin,
       );
     });
   }
 
   /**
-   * Check npm for a newer version of every configured plugin.
-   * Unpinned packages report `current: null` with the registry latest.
+   * Package name configured at `index`. The index is only a selector: every
+   * write resolves the entry by this name so a concurrent rewrite of cli.json
+   * cannot redirect the write to a different plugin.
+   */
+  private pluginNameAtIndex(index: number): string {
+    const doc = this.readDoc(this.resolveConfigPath());
+    const plugins = Array.isArray(doc.plugins) ? (doc.plugins as unknown[]) : [];
+    const plugin = plugins[index];
+    if (plugin === undefined) {
+      throw new Error(`Plugin index out of range: ${index}`);
+    }
+    const parsed = parsePluginSpec(plugin);
+    if (!parsed) {
+      throw new Error("This plugin entry cannot be updated.");
+    }
+    return parsed.name;
+  }
+
+  /**
+   * Resolve the exact version to pin when update tracking is turned off: the
+   * entry's own exact version when it has one, the registry latest otherwise.
+   * The entry is looked up by package name, since the list may have changed
+   * since the caller picked the index.
+   */
+  private async resolvePinVersion(name: string): Promise<string> {
+    const configPath = this.resolveConfigPath();
+    const doc = this.readDoc(configPath);
+    const plugins = Array.isArray(doc.plugins) ? (doc.plugins as unknown[]) : [];
+    const plugin = plugins.find((entry) => parsePluginSpec(entry)?.name === name);
+    const parsed = plugin === undefined ? null : parsePluginSpec(plugin);
+    if (parsed?.version && isExactVersion(parsed.version)) {
+      return parsed.version;
+    }
+    try {
+      return await fetchNpmLatestVersion(name);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `[OpenCodeCliSettingsService] npm latest lookup failed for ${name}: ${message}`,
+      );
+      throw new Error(
+        "Could not resolve the latest published version for this plugin.",
+      );
+    }
+  }
+
+  /**
+   * Check npm for a newer version of every pinned plugin.
+   * Entries that follow latest (no exact version in `package`) are skipped:
+   * OpenCode resolves those from the registry on its own, so a manual check has
+   * nothing actionable to report and no result entry is returned for them.
+   * Unreadable entries are still checked so their `Unrecognized plugin entry`
+   * error stays visible.
+   * An unreadable config rejects instead of reporting an empty list: without
+   * the plugin list there is nothing to check, and an empty result would read
+   * as "no plugins installed".
    */
   public async checkPluginUpdates(): Promise<OpenCodeCliPluginUpdateInfo[]> {
     const configPath = this.resolveConfigPath();
     const doc = this.readDoc(configPath);
     const plugins = Array.isArray(doc.plugins) ? (doc.plugins as unknown[]) : [];
+    const pinned = plugins.filter((plugin) => {
+      const parsed = parsePluginSpec(plugin);
+      // Same rule as `followsLatest` so the check list cannot drift from the
+      // auto-update switch the user sees.
+      return parsed ? !followsLatest(parsed.version) : true;
+    });
     return Promise.all(
-      plugins.map((plugin) => this.checkOnePlugin(plugin)),
+      pinned.map((plugin) => this.checkOnePlugin(plugin)),
     );
   }
 
@@ -228,25 +507,58 @@ export class OpenCodeCliSettingsService {
     return mergeThemeCatalogs(discovered, OPENCODE_BUILTIN_THEMES, current);
   }
 
+  /**
+   * Read cli.json. A missing file is an empty config; an existing file that
+   * cannot be parsed throws, because returning `{}` would render every setting
+   * as its default and silently hide the damage from the user.
+   */
   private readDoc(configPath: string): Record<string, unknown> {
-    try {
-      if (!fs.existsSync(configPath)) {
-        return {};
-      }
-      const raw = fs.readFileSync(configPath, "utf8");
-      const parsed = JSON.parse(raw) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>;
-      }
-      return {};
-    } catch (error) {
-      this.logger.warn(
-        `[OpenCodeCliSettingsService] Failed to read ${configPath}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+    if (!fs.existsSync(configPath)) {
       return {};
     }
+    let raw: string;
+    try {
+      raw = fs.readFileSync(configPath, "utf8");
+    } catch (error) {
+      throw this.configUnreadableError(configPath, error);
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch (error) {
+      throw this.configUnreadableError(configPath, error);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      this.logger.error(
+        `[OpenCodeCliSettingsService] Refusing ${configPath}: top-level JSON value is not an object`,
+      );
+      throw new Error(
+        l10n.t(
+          "The OpenCode CLI config file must contain a JSON object. Fix {0} and reload.",
+          path.resolve(configPath),
+        ),
+      );
+    }
+    return parsed as Record<string, unknown>;
+  }
+
+  /**
+   * Log the technical cause and return a message the user can act on. The raw
+   * parser message stays in the log; the user text only names the file.
+   */
+  private configUnreadableError(
+    configPath: string,
+    cause: unknown,
+  ): ConfigUnreadableError {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    this.logger.error(
+      `[OpenCodeCliSettingsService] Cannot parse ${configPath}: ${detail}`,
+    );
+    const message = l10n.t(
+      "Cannot read the OpenCode CLI config file. Fix the JSON syntax in {0} and reload.",
+      path.resolve(configPath),
+    );
+    return new ConfigUnreadableError(message, cause);
   }
 
   private async mutateDoc(
@@ -378,7 +690,11 @@ function pruneEmpty(
   }
 }
 
-/** Parse a plugin entry (`"pkg"` / `"pkg@1.0.0"` / `{ package, version }`). */
+/**
+ * Parse a plugin entry (`"pkg"` / `"pkg@1.0.0"` / `{ package: "pkg@1.0.0" }`).
+ * OpenCode v2 only honors a version embedded in `package`; an object `version`
+ * field is silently ignored by the runtime, so it is ignored here as well.
+ */
 export function parsePluginSpec(plugin: unknown): {
   name: string;
   version: string | null;
@@ -387,16 +703,9 @@ export function parsePluginSpec(plugin: unknown): {
     return splitPackageSpec(plugin);
   }
   if (plugin && typeof plugin === "object" && !Array.isArray(plugin)) {
-    const rec = plugin as { package?: unknown; version?: unknown };
-    const nameRaw = rec.package;
-    const versionRaw = rec.version;
+    const nameRaw = (plugin as { package?: unknown }).package;
     if (typeof nameRaw === "string" && nameRaw.trim()) {
-      const fromName = splitPackageSpec(nameRaw.trim());
-      const version =
-        typeof versionRaw === "string" && versionRaw.trim()
-          ? versionRaw.trim()
-          : fromName.version;
-      return { name: fromName.name, version };
+      return splitPackageSpec(nameRaw.trim());
     }
   }
   return null;
@@ -417,9 +726,25 @@ function splitPackageSpec(spec: string): {
   return { name: spec, version: null };
 }
 
+/** A single exact semver pin, as opposed to a range or a dist-tag. */
+function isExactVersion(version: string): boolean {
+  return /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version);
+}
+
+/**
+ * Whether the entry stays on OpenCode's update path. No version, a range such
+ * as `^1.2.0` and a dist-tag such as `latest` all resolve through the registry;
+ * only a single exact version pins the entry and stops the checks.
+ */
+function followsLatest(version: string | null): boolean {
+  return version === null || !isExactVersion(version);
+}
+
 /**
  * Rewrite one plugin entry to pin `version`, keeping the entry's shape
- * (plain string spec vs `{ package, version, ... }` object).
+ * (plain string spec vs `{ package, options, ... }` object). The version is
+ * written into `package` because OpenCode v2 ignores an object `version`
+ * field; a leftover `version` field is dropped from the result.
  */
 function applyPluginVersion(plugin: unknown, version: string): unknown {
   if (typeof plugin === "string") {
@@ -431,11 +756,76 @@ function applyPluginVersion(plugin: unknown, version: string): unknown {
     const nameRaw = rec.package;
     if (typeof nameRaw === "string" && nameRaw.trim()) {
       const { name } = splitPackageSpec(nameRaw.trim());
-      return { ...rec, package: name, version };
+      const next: Record<string, unknown> = { ...rec, package: `${name}@${version}` };
+      delete next.version;
+      return next;
     }
   }
   // Unrecognized shape — pin as a plain package@version string.
   return `${String(plugin)}@${version}`;
+}
+
+/**
+ * Rewrite one plugin entry to follow npm again: the version part is removed
+ * from `package` while the entry shape and every other field are preserved.
+ * A legacy object `version` field is dropped as well.
+ */
+function applyPluginFollowLatest(plugin: unknown): unknown {
+  if (typeof plugin === "string") {
+    const spec = plugin.trim();
+    if (!spec) {
+      throw new Error("This plugin entry cannot change its update setting.");
+    }
+    return splitPackageSpec(spec).name;
+  }
+  if (plugin && typeof plugin === "object" && !Array.isArray(plugin)) {
+    const rec = plugin as Record<string, unknown>;
+    const nameRaw = rec.package;
+    if (typeof nameRaw === "string" && nameRaw.trim()) {
+      const next: Record<string, unknown> = {
+        ...rec,
+        package: splitPackageSpec(nameRaw.trim()).name,
+      };
+      delete next.version;
+      return next;
+    }
+  }
+  throw new Error("This plugin entry cannot change its update setting.");
+}
+
+/**
+ * Replace one entry's `options`. A string entry becomes an object so the
+ * package string, including any pinned version, survives; an empty object
+ * removes the field instead of writing `options: {}`.
+ */
+function applyPluginOptions(
+  plugin: unknown,
+  options: Record<string, unknown>,
+): unknown {
+  const hasOptions = Object.keys(options).length > 0;
+  if (typeof plugin === "string") {
+    const spec = plugin.trim();
+    if (!spec) {
+      throw new Error("This plugin entry cannot store options.");
+    }
+    if (!hasOptions) return plugin;
+    return { package: spec, options };
+  }
+  if (plugin && typeof plugin === "object" && !Array.isArray(plugin)) {
+    const rec = plugin as Record<string, unknown>;
+    const nameRaw = rec.package;
+    if (typeof nameRaw !== "string" || !nameRaw.trim()) {
+      throw new Error("This plugin entry cannot store options.");
+    }
+    const next: Record<string, unknown> = { ...rec };
+    if (hasOptions) {
+      next.options = options;
+    } else {
+      delete next.options;
+    }
+    return next;
+  }
+  throw new Error("This plugin entry cannot store options.");
 }
 
 async function fetchNpmLatestVersion(name: string): Promise<string> {
@@ -457,6 +847,40 @@ async function fetchNpmLatestVersion(name: string): Promise<string> {
     throw new Error("npm registry response missing version");
   }
   return version.trim();
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Directory OpenCode installs npm plugins into. OpenCode resolves its cache
+ * root through XDG on every platform, including Windows, so
+ * `%LOCALAPPDATA%` must not be consulted here.
+ */
+function resolveOpenCodePluginCacheDir(): string {
+  const cacheRoot =
+    process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
+  return path.join(cacheRoot, "opencode", "npm");
+}
+
+/** Characters Windows rejects in a file name. */
+const WINDOWS_ILLEGAL_PATH_CHARS = new Set(["<", ">", ":", '"', "|", "?", "*"]);
+
+/**
+ * Cache-key sanitizing mirroring OpenCode's `sanitize`: only Windows rewrites
+ * characters, and control characters always become `_`.
+ */
+function sanitizeCacheKey(value: string): string {
+  if (process.platform !== "win32") return value;
+  return Array.from(value, (char) =>
+    WINDOWS_ILLEGAL_PATH_CHARS.has(char) || char.charCodeAt(0) < 32 ? "_" : char,
+  ).join("");
+}
+
+/** `<name>@<spec>` cache directory name, sanitized the way OpenCode does. */
+function pluginCacheKey(name: string, spec: string): string {
+  return sanitizeCacheKey(`${name}@${spec}`);
 }
 
 

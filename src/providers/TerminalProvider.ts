@@ -154,6 +154,10 @@ export class TerminalProvider
       resetOpenCodeCliSetting: (path) => this.resetOpenCodeCliSetting(path),
       addOpenCodeCliPlugin: (packageName) => this.addOpenCodeCliPlugin(packageName),
       removeOpenCodeCliPlugin: (index) => this.removeOpenCodeCliPlugin(index),
+      setOpenCodeCliPluginAutoUpdate: (index, autoUpdate) =>
+        this.setOpenCodeCliPluginAutoUpdate(index, autoUpdate),
+      setOpenCodeCliPluginOptions: (index, options) =>
+        this.setOpenCodeCliPluginOptions(index, options),
       checkOpenCodeCliPluginUpdates: () => this.checkOpenCodeCliPluginUpdates(),
       updateOpenCodeCliPlugin: (index, version) =>
         this.updateOpenCodeCliPlugin(index, version),
@@ -514,6 +518,7 @@ export class TerminalProvider
         configPath: payload.configPath,
         themeOptions: payload.themeOptions,
         plugins: payload.plugins,
+        installedPluginVersions: payload.installedPluginVersions,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -552,6 +557,58 @@ export class TerminalProvider
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(
         `[TerminalProvider] openCode plugin remove failed: ${message}`,
+      );
+      this.postWebviewMessage({
+        type: "openCodeCliSettingsSaveResult",
+        ok: false,
+        path: "plugins",
+        error: message,
+      });
+    }
+    await this.requestOpenCodeCliSettingsData();
+  }
+
+  public async setOpenCodeCliPluginAutoUpdate(
+    index: number,
+    autoUpdate: boolean,
+  ): Promise<void> {
+    try {
+      await this.openCodeCliSettingsService.setPluginAutoUpdate(index, autoUpdate);
+      this.postWebviewMessage({
+        type: "openCodeCliSettingsSaveResult",
+        ok: true,
+        path: "plugins",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `[TerminalProvider] openCode plugin auto-update change failed: ${message}`,
+      );
+      this.postWebviewMessage({
+        type: "openCodeCliSettingsSaveResult",
+        ok: false,
+        path: "plugins",
+        error: message,
+      });
+    }
+    await this.requestOpenCodeCliSettingsData();
+  }
+
+  public async setOpenCodeCliPluginOptions(
+    index: number,
+    options: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.openCodeCliSettingsService.setPluginOptions(index, options);
+      this.postWebviewMessage({
+        type: "openCodeCliSettingsSaveResult",
+        ok: true,
+        path: "plugins",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `[TerminalProvider] openCode plugin options change failed: ${message}`,
       );
       this.postWebviewMessage({
         type: "openCodeCliSettingsSaveResult",
