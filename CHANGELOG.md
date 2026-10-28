@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **UI**: Merge the font increase, decrease, and reset actions into one toolbar dropdown.
 - **UI**: Use cloud icons for sync conflict and credential states; drop count badges from the toolbar status.
 
+#### 5.6.3
+**Improvements**
+- **Plugins**: Replace plugin auto-update with a cache refresh for more reliable plugin information.
+
 #### 5.6.2
 **New Features**
 - **CLI Settings**: Add plugin auto-update support and editing of plugin options.
