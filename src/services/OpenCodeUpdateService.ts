@@ -286,6 +286,12 @@ export class OpenCodeUpdateService implements vscode.Disposable {
   private readonly upgradeChoicesCache = new Map<string, string[]>();
   private readonly _onDidChangeStatus =
     new vscode.EventEmitter<OpenCodeUpdateStatus>();
+  /**
+   * Raw upgrade/install output lines, exactly as the child process printed
+   * them. The webview progress dialog consumes them for its log pane; the
+   * full log still lands in the output channel through the logger.
+   */
+  private readonly _onDidOutputLine = new vscode.EventEmitter<string>();
   private currentState: OpenCodeUpdateState = "idle";
   /** True while the in-webview install confirmation should be showing. */
   private installPromptPending = false;
@@ -299,6 +305,10 @@ export class OpenCodeUpdateService implements vscode.Disposable {
 
   public readonly onDidChangeStatus: vscode.Event<OpenCodeUpdateStatus> =
     this._onDidChangeStatus.event;
+
+  /** Streamed upgrade/install output for the progress dialog log pane. */
+  public readonly onDidOutputLine: vscode.Event<string> =
+    this._onDidOutputLine.event;
 
   public constructor(
     store: OpenCodeUpdateStateStore,
@@ -926,6 +936,7 @@ export class OpenCodeUpdateService implements vscode.Disposable {
             this.logger.debug(
               `[OpenCodeUpdateService] install ${stream} | ${line}`,
             );
+            this._onDidOutputLine.fire(line);
           },
         });
         this.logger.info(
@@ -1123,6 +1134,7 @@ export class OpenCodeUpdateService implements vscode.Disposable {
 
   public dispose(): void {
     this._onDidChangeStatus.dispose();
+    this._onDidOutputLine.dispose();
   }
 
   /**
@@ -1368,6 +1380,7 @@ export class OpenCodeUpdateService implements vscode.Disposable {
           this.logger.debug(
             `[OpenCodeUpdateService] upgrade ${stream} | ${line}`,
           );
+          this._onDidOutputLine.fire(line);
         },
       });
       this.logger.info(

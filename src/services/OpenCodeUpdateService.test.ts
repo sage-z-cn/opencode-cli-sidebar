@@ -1302,6 +1302,33 @@ describe("OpenCodeUpdateService", () => {
       expect(execUpgrade).not.toHaveBeenCalled();
       expect(service.status).toBe("failed");
     });
+
+    it("streams upgrade output through onDidOutputLine", async () => {
+      respondVersionSequence([V2_0_6, V2_0_7]);
+      fetchMock.mockResolvedValue(jsonResponse({ version: "2.0.7" }));
+      const execUpgrade = vi.fn(
+        async (
+          file: string,
+          _args: string[],
+          options?: {
+            onLine?: (line: string, stream: "stdout" | "stderr") => void;
+          },
+        ) => {
+          if (file === "opencode") {
+            options?.onLine?.("added 10 packages", "stdout");
+            return "upgraded";
+          }
+          return "ok";
+        },
+      );
+      const { service } = makeService({ execUpgrade });
+      const lines: string[] = [];
+      service.onDidOutputLine((line) => lines.push(line));
+
+      await service.startUpdate("npm");
+
+      expect(lines).toContain("added 10 packages");
+    });
   });
 
   describe("startInstall", () => {

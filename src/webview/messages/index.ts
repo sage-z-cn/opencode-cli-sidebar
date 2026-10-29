@@ -54,6 +54,9 @@ export interface MessageHandlerCallbacks {
   onOpenCodeChangelog?: (
     message: Extract<HostMessage, { type: "openCodeChangelog" }>,
   ) => void;
+  onOpenCodeUpdateOutput?: (
+    message: Extract<HostMessage, { type: "openCodeUpdateOutput" }>,
+  ) => void;
   onWebdavSyncData?: (
     message: Extract<HostMessage, { type: "webdavSyncData" }>,
   ) => void;
@@ -228,6 +231,10 @@ export function createMessageHandler(
 
         case "openCodeChangelog":
           callbacks.onOpenCodeChangelog?.(message);
+          break;
+
+        case "openCodeUpdateOutput":
+          callbacks.onOpenCodeUpdateOutput?.(message);
           break;
 
         case "webdavSyncData":

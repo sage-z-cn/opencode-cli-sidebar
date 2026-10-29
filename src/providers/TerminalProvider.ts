@@ -76,6 +76,9 @@ export class TerminalProvider
 
   /** True while the current flow is a missing-CLI install, not an update. */
   private updateFlowFromInstall = false;
+  /** Pending output lines waiting for the next batched webview push. */
+  private updateOutputBuffer: string[] = [];
+  private updateOutputTimer: NodeJS.Timeout | undefined;
   /** True while a cross-window version sync probe is in flight. */
   private syncingVersionFromOtherWindow = false;
   public constructor(
@@ -171,7 +174,8 @@ export class TerminalProvider
       retryCliProbe: () => this.retryCliProbe(),
       answerCliInstallPrompt: (action) =>
         this.answerCliInstallPrompt(action),
-      requestOpenCodeChangelog: () => this.requestOpenCodeChangelog(),
+      requestOpenCodeChangelog: (version, mode) =>
+        this.requestOpenCodeChangelog(version, mode),
       sendChangelogToOpenCode: (text) =>
         this.sendPrompt(text, { asPaste: true }),
     };
@@ -195,6 +199,9 @@ export class TerminalProvider
       this.disposables.push(
         this.opencodeUpdateService.onDidChangeStatus((event) => {
           this.handleUpdateServiceStatus(event);
+        }),
+        this.opencodeUpdateService.onDidOutputLine((line) => {
+          this.queueUpdateOutputLine(line);
         }),
       );
     }
@@ -846,34 +853,60 @@ export class TerminalProvider
     }
   }
 
-  /** Resolves the target version's release notes for the webview dialog. */
-  public async requestOpenCodeChangelog(): Promise<void> {
-    const version =
-      this.updateUi.targetVersion ??
-      this.updateUi.latestVersion ??
-      this.updateUi.installedVersion ??
-      this.updateUi.currentVersion;
-    const fallbackUrl = changelogPageUrl(version);
-    if (!version || !this.changelogService) {
+  /**
+   * Resolves release notes for the update dialog. `version` names the
+   * release explicitly; otherwise an upcoming request reads the flow's
+   * target, and an installed request reads what is on disk.
+   */
+  public async requestOpenCodeChangelog(
+    version?: string,
+    mode: "upcoming" | "installed" = "installed",
+  ): Promise<void> {
+    const resolved =
+      version ||
+      (mode === "upcoming"
+        ? this.updateUi.targetVersion ?? this.updateUi.latestVersion
+        : this.updateUi.installedVersion ??
+          this.updateUi.currentVersion ??
+          this.updateUi.latestVersion ??
+          this.updateUi.targetVersion) ||
+      "";
+    const fallbackUrl = changelogPageUrl(resolved);
+    if (!resolved || !this.changelogService) {
       this.postWebviewMessage({
         type: "openCodeChangelog",
-        payload: { version: version ?? "", ok: false, fallbackUrl },
+        payload: { version: resolved, ok: false, fallbackUrl, mode },
       });
       return;
     }
-    const result = await this.changelogService.fetchChangelog(version);
+    const result = await this.changelogService.fetchChangelog(resolved);
     this.postWebviewMessage({
       type: "openCodeChangelog",
       payload: result.ok
         ? {
-            version,
+            version: resolved,
             ok: true,
             date: result.date,
             html: result.html,
             fallbackUrl,
+            mode,
           }
-        : { version, ok: false, fallbackUrl },
+        : { version: resolved, ok: false, fallbackUrl, mode },
     });
+  }
+
+  /**
+   * Warms the changelog cache as soon as an update is detected, so the
+   * notes step opens without a loading flash. Failures stay silent: the
+   * dialog retries on open and the update never depends on notes.
+   */
+  private prefetchOpenCodeChangelog(version?: string): void {
+    if (!version || !this.changelogService) {
+      return;
+    }
+    void this.changelogService
+      .fetchChangelog(version)
+      .catch(() => undefined);
   }
 
   public abandonOpenCodeUpdate(): void {
@@ -896,7 +929,7 @@ export class TerminalProvider
     this.postUpdateUiStatus(this.currentUpdateUiSnapshot());
   }
 
-  /** "Later" on the success card: keep the version pill, drop the card. */
+  /** Dialog close on the success result: keep the version pill, drop the flow. */
   public dismissOpenCodeUpdate(): void {
     this.updateUi = { ...this.updateUi, state: "idle", step: "" };
     this.lastUpdateStep = "";
@@ -974,13 +1007,16 @@ export class TerminalProvider
         };
         // The signal is transient: injected into this single push only, so
         // follow-up pushes (method enrichment, late catch-up) can never
-        // re-open the popover.
+        // re-open the dialog.
         this.postUpdateUiStatus({
           ...this.currentUpdateUiSnapshot(),
-          // Manual checks surface the method popover directly; automatic
-          // ones only mark the pill.
-          openMethodPicker: event.manual === true,
+          // Manual checks open the release notes; automatic ones only
+          // mark the pill.
+          openUpdateDialog: event.manual === true ? "notes" : undefined,
         });
+        this.prefetchOpenCodeChangelog(
+          event.latestVersion ?? this.updateUi.latestVersion,
+        );
         void this.enrichUpdateMethods();
         break;
       }
@@ -1018,6 +1054,7 @@ export class TerminalProvider
           this.updateUiHistory = [];
           this.lastUpdateStep = "";
           this.updateFlowFromInstall = step === "installing";
+          this.resetUpdateOutput();
         }
         if (this.lastUpdateStep && this.lastUpdateStep !== step) {
           this.updateUiHistory.push({
@@ -1210,6 +1247,35 @@ export class TerminalProvider
       type: "openCodeUpdateStatus",
       status,
     });
+  }
+
+  /**
+   * Buffers one upgrade/install output line and pushes the batch on a
+   * short timer. npm installs can print hundreds of lines per second, so
+   * posting each line individually would stall the webview.
+   */
+  private queueUpdateOutputLine(line: string): void {
+    this.updateOutputBuffer.push(line);
+    if (this.updateOutputTimer) {
+      return;
+    }
+    this.updateOutputTimer = setTimeout(() => {
+      this.updateOutputTimer = undefined;
+      const lines = this.updateOutputBuffer.splice(0);
+      if (!lines.length) {
+        return;
+      }
+      this.postWebviewMessage({ type: "openCodeUpdateOutput", lines });
+    }, 100);
+  }
+
+  /** Drops buffered output when a new flow starts. */
+  private resetUpdateOutput(): void {
+    this.updateOutputBuffer = [];
+    if (this.updateOutputTimer) {
+      clearTimeout(this.updateOutputTimer);
+      this.updateOutputTimer = undefined;
+    }
   }
 
 
@@ -1677,6 +1743,7 @@ export class TerminalProvider
   public dispose(): void {
     this.disposables.forEach((disposable) => disposable.dispose());
     this.disposables.length = 0;
+    this.resetUpdateOutput();
     this.dataThrottleService.dispose();
     this.sessionRuntime.dispose();
   }

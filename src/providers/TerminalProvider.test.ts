@@ -116,6 +116,7 @@ describe("TerminalProvider", () => {
   function createProvider(options?: {
     instanceStore?: InstanceStore;
     updateService?: OpenCodeUpdateService;
+    changelogService?: unknown;
   }): TerminalProvider {
     const context = new vscode.ExtensionContext();
     providerContext = context;
@@ -130,6 +131,7 @@ describe("TerminalProvider", () => {
       undefined,
       undefined,
       options?.updateService,
+      options?.changelogService as any,
     );
   }
 
@@ -398,8 +400,10 @@ describe("TerminalProvider", () => {
   describe("OpenCode self-update UI bridge", () => {
     function createUpdateServiceFake() {
       const emitter = new vscode.EventEmitter<UpdateServiceStatus>();
+      const outputEmitter = new vscode.EventEmitter<string>();
       const service = {
         onDidChangeStatus: emitter.event,
+        onDidOutputLine: outputEmitter.event,
         probeLocalVersion: vi.fn(async () => undefined),
         recheckCliAvailable: vi.fn(async () => false),
         checkForUpdates: vi.fn(async () => ({
@@ -422,6 +426,7 @@ describe("TerminalProvider", () => {
       return {
         service: service as unknown as OpenCodeUpdateService,
         emitter,
+        outputEmitter,
       };
     }
 
@@ -519,7 +524,7 @@ describe("TerminalProvider", () => {
         manual: true,
       });
 
-      expect(getUpdateStatusPushes(view).at(-1).openMethodPicker).toBe(true);
+      expect(getUpdateStatusPushes(view).at(-1).openUpdateDialog).toBe("notes");
 
       await flushAsyncStartup();
 
@@ -527,7 +532,7 @@ describe("TerminalProvider", () => {
       // it would re-open an already-dismissed popover.
       const pushes = getUpdateStatusPushes(view);
       expect(pushes.length).toBeGreaterThan(1);
-      expect(pushes.at(-1).openMethodPicker).toBeUndefined();
+      expect(pushes.at(-1).openUpdateDialog).toBeUndefined();
     });
 
     it("does not open the method popover for automatic available events", async () => {
@@ -540,11 +545,11 @@ describe("TerminalProvider", () => {
         latestVersion: "2.0.7",
       });
 
-      expect(getUpdateStatusPushes(view).at(-1).openMethodPicker).toBe(false);
+      expect(getUpdateStatusPushes(view).at(-1).openUpdateDialog).toBeUndefined();
 
       await flushAsyncStartup();
 
-      expect(getUpdateStatusPushes(view).at(-1).openMethodPicker).toBeUndefined();
+      expect(getUpdateStatusPushes(view).at(-1).openUpdateDialog).toBeUndefined();
     });
 
     it("accumulates step history and keeps remediation inside updating", () => {
@@ -1294,7 +1299,7 @@ describe("TerminalProvider", () => {
       });
       expect(push.notice).toBeUndefined();
       expect(push.checkOutcome).toBeUndefined();
-      expect(push.openMethodPicker).toBeUndefined();
+      expect(push.openUpdateDialog).toBeUndefined();
     });
 
     it("keeps the available badge when the synced version is still outdated", async () => {
@@ -1363,6 +1368,114 @@ describe("TerminalProvider", () => {
       await provider.syncOpenCodeVersionFromOtherWindow("2.0.39");
 
       expect(service.probeLocalVersion).toHaveBeenCalledWith(true);
+    });
+
+    it("prefetches the release notes when an update is detected", async () => {
+      mockConfiguration();
+      const fetchChangelog = vi.fn(async (version: string) => ({
+        ok: true,
+        version,
+        html: "<p>notes</p>",
+      }));
+      const fake = createUpdateServiceFake();
+      provider = createProvider({
+        updateService: fake.service,
+        changelogService: { fetchChangelog },
+      });
+      resolveProvider(provider);
+
+      fake.emitter.fire({
+        state: "available",
+        currentVersion: "2.0.6",
+        latestVersion: "2.0.7",
+      });
+      await flushAsyncStartup();
+
+      expect(fetchChangelog).toHaveBeenCalledWith("2.0.7");
+    });
+
+    it("resolves upcoming release notes and echoes the request mode", async () => {
+      mockConfiguration();
+      const fetchChangelog = vi.fn(async (version: string) => ({
+        ok: true,
+        version,
+        html: "<p>notes</p>",
+      }));
+      const fake = createUpdateServiceFake();
+      provider = createProvider({
+        updateService: fake.service,
+        changelogService: { fetchChangelog },
+      });
+      const { view } = resolveProvider(provider);
+      fake.emitter.fire({
+        state: "available",
+        currentVersion: "2.0.6",
+        latestVersion: "2.0.7",
+      });
+      await flushAsyncStartup();
+      vi.mocked(view.webview.postMessage).mockClear();
+
+      await provider.requestOpenCodeChangelog(undefined, "upcoming");
+
+      expect(fetchChangelog).toHaveBeenCalledWith("2.0.7");
+      const changelogPush = vi
+        .mocked(view.webview.postMessage)
+        .mock.calls.map((call) => call[0] as any)
+        .find((message) => message?.type === "openCodeChangelog");
+      expect(changelogPush?.payload).toMatchObject({
+        version: "2.0.7",
+        ok: true,
+        mode: "upcoming",
+      });
+    });
+
+    it("batches streamed upgrade output into one webview push", async () => {
+      mockConfiguration();
+      const { view, outputEmitter } = setup();
+
+      outputEmitter.fire("line one");
+      outputEmitter.fire("line two");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const pushes = vi
+        .mocked(view.webview.postMessage)
+        .mock.calls.map((call) => call[0] as any)
+        .filter((message) => message?.type === "openCodeUpdateOutput");
+      expect(pushes).toHaveLength(1);
+      expect(pushes[0].lines).toEqual(["line one", "line two"]);
+    });
+
+    it("forwards explicit release-note requests through the message bridge", async () => {
+      mockConfiguration();
+      const fetchChangelog = vi.fn(async (version: string) => ({
+        ok: true,
+        version,
+        html: "<p>notes</p>",
+      }));
+      const fake = createUpdateServiceFake();
+      provider = createProvider({
+        updateService: fake.service,
+        changelogService: { fetchChangelog },
+      });
+      const { view, messageHandler } = resolveProvider(provider);
+
+      messageHandler({
+        type: "requestOpenCodeChangelog",
+        version: "2.0.7",
+        mode: "upcoming",
+      });
+      await flushAsyncStartup();
+
+      expect(fetchChangelog).toHaveBeenCalledWith("2.0.7");
+      const push = vi
+        .mocked(view.webview.postMessage)
+        .mock.calls.map((call) => call[0] as any)
+        .find((message) => message?.type === "openCodeChangelog");
+      expect(push?.payload).toMatchObject({
+        version: "2.0.7",
+        mode: "upcoming",
+        ok: true,
+      });
     });
   });
 

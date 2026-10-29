@@ -75,7 +75,7 @@ export type WebviewMessage =
   | { type: "clearOpenCodeCliPluginCache"; name: string }
   /** Webview boot: ask the host for the current OpenCode self-update status. */
   | { type: "requestOpenCodeUpdateStatus" }
-  /** Method popover confirmation; while blocked on nvm it means "fix and continue". */
+  /** Method dialog confirmation; while blocked on nvm it means "fix and continue". */
   | { type: "startOpenCodeUpdate"; method: string }
   /** Settings dropdown item: manual update check. */
   | { type: "checkOpenCodeUpdates" }
@@ -89,7 +89,17 @@ export type WebviewMessage =
   | { type: "retryCliProbe" }
   /** Missing-CLI install confirmation dialog answer. */
   | { type: "answerCliInstallPrompt"; action: CliInstallPromptAction }
-  | { type: "requestOpenCodeChangelog" }
+  /**
+   * Release notes for the update dialog. `version` names the release to
+   * show; omitted falls back to the flow's target or installed version.
+   * `mode` marks an upcoming release, whose dialog offers the update
+   * action, versus an installed one, which only offers a re-check.
+   */
+  | {
+      type: "requestOpenCodeChangelog";
+      version?: string;
+      mode?: "upcoming" | "installed";
+    }
   | { type: "sendChangelogToOpenCode"; text: string }
   /* ===================== WebDAV config sync ===================== */
   /** Webview boot / sync panel open: request the full sync snapshot. */
@@ -280,6 +290,8 @@ export type HostMessage =
   /** Single push channel driving the OpenCode self-update UI. */
   | { type: "openCodeUpdateStatus"; status: OpenCodeUpdateUiStatus }
   | { type: "openCodeChangelog"; payload: OpenCodeChangelogPayload }
+  /** Batched upgrade/install output lines for the progress dialog log pane. */
+  | { type: "openCodeUpdateOutput"; lines: string[] }
   /* ===================== WebDAV config sync ===================== */
   /** Full snapshot reply to requestWebdavSyncData. */
   | { type: "webdavSyncData"; snapshot: WebDavSyncSnapshot }
@@ -440,13 +452,15 @@ export interface WebDavConnectionDraft {
   acceptSelfSigned: boolean;
 }
 
-/** Release-notes payload for the in-webview changelog dialog. */
+/** Release-notes payload for the in-webview update dialog. */
 export interface OpenCodeChangelogPayload {
   version: string;
   ok: boolean;
   date?: string;
   html?: string;
   fallbackUrl: string;
+  /** Echo of the request: upcoming notes carry the update action. */
+  mode?: "upcoming" | "installed";
 }
 
 /** Step ids used by the OpenCode self-update pipeline (aligned with OpenCodeUpdateService). */
@@ -518,10 +532,12 @@ export interface OpenCodeUpdateUiStatus {
   manualCommands?: string[];
   /**
    * Transient flag on a manual-check "available" push: the webview opens
-   * the method popover immediately instead of waiting for a pill click.
-   * Automatic checks leave it unset so only the pill is marked.
+   * the update dialog at the given step instead of waiting for a pill
+   * click. Automatic checks leave it unset so only the pill is marked.
+   * `notes` starts at the release notes, `method` skips straight to the
+   * method list used by the missing-CLI install flow.
    */
-  openMethodPicker?: boolean;
+  openUpdateDialog?: "notes" | "method";
   /**
    * Transient flag on an "installable" push: the CLI was just detected as
    * missing, so the webview shows the install confirmation dialog once

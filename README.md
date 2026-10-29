@@ -110,8 +110,8 @@ Under OpenCode v2, the extension can update the OpenCode CLI from the sidebar.
 
 - **Auto check**: checks the official npm registry (falling back to the npmmirror and Tencent npm mirrors) in the background shortly after activation and then every `update.checkIntervalHours` hours; silent unless an update is found
 - **Manual check**: run the `OpenCode CLI Sidebar: Check for OpenCode Updates` command from the Command Palette, or use the check item in the settings menu
-- **Version badge**: when an update is available, the toolbar version pill becomes the update entry; clicking it opens a method popover (curl/npm/pnpm/bun/yarn/vp/brew, detected and last-used methods are marked)
-- **Progress and restart**: updates run without stopping your session; after success the card offers restarting the terminal onto the new version
+- **Version badge**: when an update is available, the toolbar version pill becomes the update entry; clicking it opens the new version's release notes first, then the install-method list (curl/npm/pnpm/bun/yarn/vp/brew, detected and last-used methods are marked)
+- **Progress and restart**: updates run without stopping your session; the dialog shows step progress and live command output, can be minimized to the toolbar line, and offers restarting the terminal onto the new version afterwards
 - **nvm handling**: on nvm-windows the required `reshim` runs automatically, and nvm firewall blocks are trusted and retried automatically; if the automatic fix fails, the commands to run manually are shown
 - **Settings**: `update.autoCheck` (default `true`) enables the background check; `update.checkIntervalHours` (default `24`, minimum `1`) sets the interval
 

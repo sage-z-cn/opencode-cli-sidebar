@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **UI**: Replace hand-drawn toolbar and panel icons with Lucide icons.
 - **UI**: Merge the font increase, decrease, and reset actions into one toolbar dropdown.
 - **UI**: Use cloud icons for sync conflict and credential states; drop count badges from the toolbar status.
+- **Update**: Show the new version's release notes before the update method choice.
+- **Update**: Move method selection, progress and results into one dialog with a live output pane and a minimize-to-toolbar option.
 
 #### 5.6.3
 **Improvements**

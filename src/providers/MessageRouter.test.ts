@@ -145,6 +145,7 @@ describe("MessageRouter", () => {
       restartAfterUpdate: vi.fn(async () => undefined),
       dismissOpenCodeUpdate: vi.fn(),
       answerCliInstallPrompt: vi.fn(async () => undefined),
+      requestOpenCodeChangelog: vi.fn(async () => undefined),
     };
   }
 
@@ -390,6 +391,12 @@ describe("MessageRouter", () => {
     await router.handleMessage({ type: "abandonOpenCodeUpdate" });
     await router.handleMessage({ type: "restartAfterUpdate" });
     await router.handleMessage({ type: "dismissOpenCodeUpdate" });
+    await router.handleMessage({
+      type: "requestOpenCodeChangelog",
+      version: "2.0.7",
+      mode: "upcoming",
+    });
+    await router.handleMessage({ type: "requestOpenCodeChangelog" });
 
     expect(provider.requestOpenCodeUpdateStatus).toHaveBeenCalledTimes(1);
     expect(provider.startOpenCodeUpdate).toHaveBeenCalledWith("npm");
@@ -397,6 +404,16 @@ describe("MessageRouter", () => {
     expect(provider.abandonOpenCodeUpdate).toHaveBeenCalledTimes(1);
     expect(provider.restartAfterUpdate).toHaveBeenCalledTimes(1);
     expect(provider.dismissOpenCodeUpdate).toHaveBeenCalledTimes(1);
+    expect(provider.requestOpenCodeChangelog).toHaveBeenNthCalledWith(
+      1,
+      "2.0.7",
+      "upcoming",
+    );
+    expect(provider.requestOpenCodeChangelog).toHaveBeenNthCalledWith(
+      2,
+      undefined,
+      "installed",
+    );
   });
 
   it("routes all three install-prompt answers and drops invalid actions", async () => {

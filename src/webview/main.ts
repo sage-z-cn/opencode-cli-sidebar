@@ -38,8 +38,8 @@ import {
 import {
   applyOpenCodeUpdateStatus,
   applyOpenCodeChangelog,
+  appendOpenCodeUpdateOutput,
   initOpenCodeUpdateUi,
-  notifyOpenCodeSessionStarted,
 } from "./update";
 import {
   applyWebdavLog,
@@ -116,7 +116,6 @@ const callbacks: MessageHandlerCallbacks = {
 
   onOpenCodeSessionStarted() {
     clearOpenCodeCliPluginRestartPending();
-    notifyOpenCodeSessionStarted();
   },
 
   onOpenCodeUpdateStatus(message) {
@@ -125,6 +124,10 @@ const callbacks: MessageHandlerCallbacks = {
 
   onOpenCodeChangelog(message) {
     applyOpenCodeChangelog(message.payload);
+  },
+
+  onOpenCodeUpdateOutput(message) {
+    appendOpenCodeUpdateOutput(message.lines);
   },
 
   onWebdavSyncData(message) {

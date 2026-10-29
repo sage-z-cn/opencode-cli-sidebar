@@ -76,7 +76,10 @@ export interface MessageRouterProviderBridge {
   dismissOpenCodeUpdate(): void;
   retryCliProbe(): Promise<void>;
   answerCliInstallPrompt(action: CliInstallPromptAction): Promise<void>;
-  requestOpenCodeChangelog(): Promise<void>;
+  requestOpenCodeChangelog(
+    version?: string,
+    mode?: "upcoming" | "installed",
+  ): Promise<void>;
   sendChangelogToOpenCode(text: string): Promise<void>;
 }
 
@@ -275,7 +278,10 @@ export class MessageRouter {
         }
         break;
       case "requestOpenCodeChangelog":
-        await this.provider.requestOpenCodeChangelog();
+        await this.provider.requestOpenCodeChangelog(
+          typeof message.version === "string" ? message.version : undefined,
+          message.mode === "upcoming" ? "upcoming" : "installed",
+        );
         break;
       case "sendChangelogToOpenCode":
         if (typeof message.text === "string" && message.text) {

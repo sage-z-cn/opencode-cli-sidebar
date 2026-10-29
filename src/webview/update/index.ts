@@ -1,12 +1,11 @@
 /**
  * OpenCode self-update UI (webview side).
  *
- * Browser-only; all host I/O goes through WebviewMessage. The interaction
- * specification is the frozen prototype at docs/opencode-upgrade/index.html:
- * version pill as the sole update entry, anchored method popover, a
- * one-line toolbar progress text next to the pill for installs/updates,
- * in-panel cards (success / blocked / failure / transient hints), log
- * drawer, close semantics, abandon exit.
+ * Browser-only; all host I/O goes through WebviewMessage. Every step of
+ * the flow lives in one modal dialog: release notes, method choice,
+ * progress with a live output pane, and the result. The version pill is
+ * the only entry; a minimized progress line keeps a running upgrade
+ * reachable without blocking the terminal.
  */
 import type {
   CliInstallPromptAction,
@@ -15,6 +14,7 @@ import type {
 } from "../../types";
 import { postMessage } from "../shared/vscode-api";
 import { ICONS as LUCIDE_ICONS, icon } from "../shared/icons";
+import { UpdateDialogShell, trapFocus } from "./dialog";
 
 // ── Strings (injected host-side; see update/l10n.ts) ──
 
@@ -61,6 +61,8 @@ const METHOD_DESCS: Record<string, string> = {
 };
 
 const HINT_TTL_MS = 4500;
+const ABORT_ARM_MS = 5000;
+const MAX_OUTPUT_LINES = 200;
 
 const ICONS = {
   check: icon(LUCIDE_ICONS.check, 13),
@@ -70,6 +72,7 @@ const ICONS = {
   error: icon(LUCIDE_ICONS.circleX, 13),
   copy: icon(LUCIDE_ICONS.copy, 13),
   send: icon(LUCIDE_ICONS.send, 13),
+  browser: icon(LUCIDE_ICONS.globe, 13),
 };
 
 function escapeHtml(s: string): string {
@@ -87,52 +90,41 @@ let status: OpenCodeUpdateUiStatus | null = null;
 
 let pill: HTMLButtonElement | null = null;
 let pillText: HTMLElement | null = null;
-/** Toolbar progress line right of the version pill (updating state). */
-let progressLine: HTMLElement | null = null;
-let popover: HTMLDivElement | null = null;
-let popList: HTMLElement | null = null;
+/** Minimized progress line right of the version pill. */
+let progressLine: HTMLButtonElement | null = null;
 let card: HTMLElement | null = null;
-let drawer: HTMLElement | null = null;
-let drawerBody: HTMLElement | null = null;
 let liveRegion: HTMLElement | null = null;
+let dialog: UpdateDialogShell | null = null;
 
-type CardMode =
-  | "success"
-  | "manual"
-  | "verify"
-  | "generic"
-  | "hint"
-  | "checking";
+type DialogStep = "notes" | "methods" | "progress" | "result";
 
+let dialogStep: DialogStep | null = null;
+/** Install flows have no release notes and start at the method step. */
+let flowKind: "update" | "install" = "update";
+/** Which release the notes step describes. */
+let notesMode: "upcoming" | "installed" = "upcoming";
+let notesState: "loading" | "ready" | "failed" = "loading";
+let notesPayload: OpenCodeChangelogPayload | null = null;
+let notesUrl = "";
+/** True when the progress dialog is collapsed to the toolbar line. */
+let minimized = false;
+/** Upgrade/install output tail for the dialog log pane. */
+let outputLines: string[] = [];
+/** Two-step abort: first click arms, second click abandons. */
+let abortArmed = false;
+let abortTimer: ReturnType<typeof setTimeout> | null = null;
+/** True while a start request is waiting for the host's first push. */
+let startingUpdate = false;
+/** True while the notes-step check-for-updates round-trip runs. */
+let checkPending = false;
+let checkUpToDate = false;
+let checkFailed = false;
+/** Keyboard position inside the method list. */
+let methodFocused = 0;
+
+type CardMode = "hint" | "checking";
 let cardMode: CardMode | null = null;
 let hintTimer: ReturnType<typeof setTimeout> | null = null;
-
-let popFocused = 0;
-
-// ── Missing-CLI install confirmation (srp-overlay pattern) ──
-
-let installPrompt: HTMLDivElement | null = null;
-/** Changelog overlay; lazily built on first use, reused afterwards. */
-let changelogDialog: HTMLDivElement | null = null;
-/** Version of the rendered changelog; used by the send prompt suffix. */
-let changelogVersion = "";
-/** True while the post-update restart behind the dialog is in flight. */
-let changelogRestartPending = false;
-let changelogRestartTimer: ReturnType<typeof setTimeout> | null = null;
-/** True while a changelog-dialog check is resolving back into the dialog. */
-let changelogCheckFromDialog = false;
-/**
- * Last seen pending value: only a rising edge (false → true) may show
- * the dialog, so status re-pushes never re-pop it. The host clears the
- * flag after an answer, which re-arms the edge for a future activation.
- */
-let installPromptLastPending = false;
-/**
- * True while the dialog's "Re-detect" round-trip is in flight: the
- * buttons stay disabled and the dialog survives on this local flag
- * (not the host's pending flag) until a state push resolves it.
- */
-let installPromptRetryActive = false;
 
 // ── A11y ──
 
@@ -154,20 +146,18 @@ export function initOpenCodeUpdateUi(): void {
   pill = document.getElementById("btn-oc-version") as HTMLButtonElement | null;
   pillText = document.getElementById("ocu-version-text");
 
-  progressLine = document.createElement("span");
+  progressLine = document.createElement("button");
+  progressLine.type = "button";
   progressLine.className = "ocu-progress hidden";
   progressLine.id = "ocu-progress";
   progressLine.setAttribute("role", "status");
   pill?.insertAdjacentElement("afterend", progressLine);
-  progressLine.addEventListener("click", (e) => {
-    if (
-      (e.target as HTMLElement).closest<HTMLElement>(
-        '[data-ocu-act="abandon"]',
-      )
-    ) {
-      postMessage({ type: "abandonOpenCodeUpdate" });
-      showHintCard(t("abandonedHint", "Install abandoned"));
-    }
+  progressLine.addEventListener("click", () => {
+    if (status?.state !== "updating") return;
+    minimized = false;
+    dialogStep = "progress";
+    renderDialog(true);
+    renderProgressLine();
   });
 
   liveRegion = document.createElement("div");
@@ -175,37 +165,12 @@ export function initOpenCodeUpdateUi(): void {
   liveRegion.setAttribute("aria-live", "polite");
   document.body.appendChild(liveRegion);
 
-  popover = document.createElement("div");
-  popover.className = "ocu-popover hidden";
-  popover.id = "ocu-popover";
-  popover.setAttribute("role", "dialog");
-  popover.setAttribute("aria-labelledby", "ocu-popover-title");
-  popover.innerHTML =
-    '<div class="ocu-pop-head">' +
-    '<span id="ocu-popover-title"></span>' +
-    '<button type="button" class="ocu-pop-close" id="ocu-pop-close" aria-label="' +
-    escapeHtml(t("closeLabel", "Close")) +
-    '">' +
-    ICONS.x +
-    "</button></div>" +
-    '<div class="ocu-pop-list" id="ocu-pop-list" role="listbox" aria-label="' +
-    escapeHtml(t("installPopoverTitle", "Install OpenCode CLI")) +
-    '"></div>' +
-    '<div class="ocu-pop-foot"><span class="ocu-pop-hints" aria-hidden="true"><span>' +
-    escapeHtml(t("hintConfirm", "Enter to confirm")) +
-    "</span><span>" +
-    escapeHtml(t("hintCancel", "Esc to cancel")) +
-    "</span><span>" +
-    escapeHtml(t("hintMove", "Up and down to switch")) +
-    "</span></span>" +
-    '<button type="button" class="ocu-pop-link hidden" id="ocu-pop-changelog">' +
-    escapeHtml(t("changelogLabel", "Changelog")) +
-    "</button>" +
-    '<button type="button" class="ocu-pop-cancel" id="ocu-pop-cancel">' +
-    escapeHtml(t("cancelLabel", "Cancel")) +
-    "</button></div>";
-  document.body.appendChild(popover);
-  popList = popover.querySelector("#ocu-pop-list");
+  dialog = new UpdateDialogShell({
+    onAction: handleDialogAction,
+    onMinimize: minimizeDialog,
+    onDismiss: dismissDialog,
+    onKeyDown: handleDialogKeyDown,
+  });
 
   card = document.createElement("section");
   card.className = "ocu-card hidden";
@@ -213,24 +178,8 @@ export function initOpenCodeUpdateUi(): void {
   card.setAttribute("role", "status");
   document.getElementById("terminal-container")?.appendChild(card);
 
-  drawer = document.createElement("div");
-  drawer.className = "ocu-drawer hidden";
-  drawer.id = "ocu-drawer";
-  drawer.setAttribute("role", "dialog");
-  drawer.setAttribute("aria-label", t("logTitle", "Install log"));
-  drawer.innerHTML =
-    '<div class="ocu-drawer-head"><span>' +
-    escapeHtml(t("logTitle", "Install log")) +
-    '</span><button type="button" class="ocu-drawer-close" id="ocu-drawer-close" aria-label="' +
-    escapeHtml(t("closeLabel", "Close")) +
-    '">' +
-    ICONS.x +
-    "</button></div>" +
-    '<div class="ocu-drawer-body" id="ocu-drawer-body" tabindex="0"></div>';
-  document.getElementById("terminal-container")?.appendChild(drawer);
-  drawerBody = drawer.querySelector("#ocu-drawer-body");
-
   bindEvents();
+  bindGlobalKeys();
 
   postMessage({ type: "requestOpenCodeUpdateStatus" });
 }
@@ -241,66 +190,95 @@ function isBusyState(state: string): boolean {
   return state === "updating";
 }
 
-/** States whose pill click opens the method popover. */
-function isPopoverState(state: string): boolean {
-  // "failed" retries the update flow: the pill keeps the entry look and
-  // the popover re-offers the methods (changelog included).
-  return state === "available" || state === "installable" || state === "failed";
-}
-
 export function applyOpenCodeUpdateStatus(next: OpenCodeUpdateUiStatus): void {
   status = status ? { ...status, ...next } : { ...next };
-  // One-shot flag from the manual-check push, same pattern as notice.
-  const openPicker =
-    next.openMethodPicker === true && next.state === "available";
+  const st = status;
+
   maybeShowInstallPrompt();
   finishInstallPromptRetry();
   renderPill();
   updateMenuGate();
-  renderProgressLine();
-  if (changelogCheckFromDialog && !isBusyState(status.state)) {
-    // A check started from the changelog dialog resolves back into it: a
-    // found update hands over to the method popover, anything else
-    // reports in the dialog footer.
-    changelogCheckFromDialog = false;
-    if (status.state === "available") {
-      hideChangelogDialog();
-      openPopover();
-    } else {
-      setChangelogCheckUi(
-        next.checkOutcome === "upToDate" ? "upToDate" : "failed",
-      );
+
+  if (isBusyState(st.state)) {
+    if (dialogStep !== "progress") {
+      outputLines = [];
+      minimized = false;
+    }
+    if (st.step === "installing") {
+      flowKind = "install";
+    }
+    const stepChanged = dialogStep !== "progress";
+    dialogStep = "progress";
+    startingUpdate = false;
+    renderDialog(stepChanged);
+    if (stepChanged) {
+      announce(progressStepText());
+    }
+  } else if (st.state === "success" || st.state === "failed") {
+    startingUpdate = false;
+    const entered = dialogStep !== "result";
+    dialogStep = "result";
+    minimized = false;
+    renderDialog(entered);
+  } else if (st.state === "available") {
+    startingUpdate = false;
+    if (dialogStep === "progress" || dialogStep === "result") {
+      dialogStep = null;
+      dialog?.hide();
+    }
+    if (!checkPending && next.openUpdateDialog === "notes" && dialogStep !== "notes") {
+      openUpcomingNotes();
+    } else if (dialogStep === "notes" && notesMode === "upcoming") {
+      renderDialog(false);
+    }
+  } else if (st.state === "idle") {
+    startingUpdate = false;
+    minimized = false;
+    if (dialogStep === "progress" || dialogStep === "result") {
+      dialogStep = null;
+      dialog?.hide();
+    }
+  } else if (st.state === "installable") {
+    startingUpdate = false;
+    minimized = false;
+    if (dialogStep === "progress" || dialogStep === "result") {
+      dialogStep = null;
+      dialog?.hide();
     }
   }
-  if (popover && !popover.classList.contains("hidden") && !isPopoverState(status.state)) {
-    closePopover(false);
+
+  if (checkPending && st.state !== "updating") {
+    checkPending = false;
+    if (st.state === "available") {
+      openUpcomingNotes();
+    } else {
+      checkUpToDate = next.checkOutcome === "upToDate";
+      checkFailed = !checkUpToDate;
+      renderDialog(false);
+    }
   }
+
+  renderProgressLine();
   const notice = next.notice;
   if (notice) {
     showHintCard(notice);
   } else if (
     cardMode === "checking" &&
-    (status.state === "available" ||
-      status.state === "idle" ||
-      status.state === "installable")
+    (st.state === "available" ||
+      st.state === "idle" ||
+      st.state === "installable")
   ) {
-    // Host answered the manual check without a notice: drop the pending card.
     hideCardFull();
   }
-  renderCard();
-  if (popover && !popover.classList.contains("hidden")) {
-    // Enrichment re-push while the popover is open: refresh rows in place
-    // instead of toggling the popover closed and open again.
-    if (isPopoverState(next.state)) refreshOpenPopover();
-    return;
+
+  if (!dialog?.visible && dialogStep) {
+    renderDialog(false);
   }
-  if (openPicker) openPopover();
 }
 
 /** Settings dropdown item was clicked; show local pending state immediately. */
 export function notifyOpenCodeUpdateCheckRequested(): void {
   if (!status || isBusyState(status.state)) return;
-  closePopover(false);
   showCheckingCard();
 }
 
@@ -324,7 +302,7 @@ function renderPill(): void {
   pillText.textContent =
     st.state === "installable"
       ? t("installLabel", "Install")
-      : st.installedVersion ?? st.currentVersion ?? st.runningVersion ?? "";
+      : firstNonEmpty(st.installedVersion, st.currentVersion, st.runningVersion);
 
   pill.classList.remove("hidden");
   pill.disabled = false;
@@ -375,7 +353,7 @@ function updateMenuGate(): void {
   item.classList.toggle("is-disabled", featureOn && status ? isBusyState(status.state) : false);
 }
 
-// ── Toolbar progress line ──
+// ── Minimized progress line ──
 
 /** Canonical step order per flow, for the step-count progress readout. */
 const UPDATE_STEP_ORDER = [
@@ -387,21 +365,17 @@ const UPDATE_STEP_ORDER = [
 ];
 const INSTALL_STEP_ORDER = ["installing", "reshim", "verify"];
 
-/**
- * Step-count progress ("3/5") for the updating flow: the current step's
- * position in the flow's canonical order. Recovery steps occupy the
- * reshim slot, so skipped conditional steps keep the denominator stable.
- */
 function progressStepCount(): string {
   const stepId = status?.step ?? "";
   if (!stepId) return "";
   const history = status?.history ?? [];
   const fromInstall =
-    stepId === "installing" || history[0]?.step === "installing";
+    flowKind === "install" ||
+    stepId === "installing" ||
+    history[0]?.step === "installing";
   const order = fromInstall ? INSTALL_STEP_ORDER : UPDATE_STEP_ORDER;
   let index = order.indexOf(stepId);
   if (index < 0) {
-    // remediate-trust / remediate-reshim run in place of reshim.
     index = Math.max(order.indexOf("reshim"), 1);
   }
   return `${index + 1}/${order.length}`;
@@ -413,40 +387,34 @@ function progressStepText(): string {
 }
 
 /**
- * One-line install/update progress right of the version pill; the
- * in-panel progress card no longer exists. Remediation steps expose
- * the abandon exit inline.
+ * The toolbar line is the minimized form of the progress step. It is
+ * hidden while the dialog is open and shown once the user minimizes.
  */
 function renderProgressLine(): void {
   if (!progressLine) return;
   const st = status;
-  if (!st || !isBusyState(st.state)) {
+  if (!st || !isBusyState(st.state) || !minimized) {
     progressLine.classList.add("hidden");
     progressLine.innerHTML = "";
     return;
   }
-  const inRemediation =
-    st.step === "remediate-trust" || st.step === "remediate-reshim";
-  const stepText = progressStepText();
   const countText = progressStepCount();
+  const stepText = progressStepText();
   progressLine.innerHTML =
     '<span class="ocu-progress-spin" aria-hidden="true">' +
     ICONS.sync +
     "</span>" +
     '<span class="ocu-progress-text">' +
     escapeHtml(countText ? stepText + " " + countText : stepText) +
-    "</span>" +
-    (inRemediation
-      ? '<button type="button" class="ocu-progress-x" data-ocu-act="abandon" aria-label="' +
-        escapeHtml(t("abandonUpdate", "Abandon install")) +
-        '">' +
-        ICONS.x +
-        "</button>"
-      : "");
+    "</span>";
   progressLine.classList.remove("hidden");
+  progressLine.setAttribute(
+    "aria-label",
+    t("viewProgressLabel", "View install progress"),
+  );
 }
 
-// ── Cards ──
+// ── Hint card ──
 
 function hideCardFull(): void {
   if (!card) return;
@@ -461,16 +429,11 @@ function hideCardFull(): void {
   if (hadFocus && pill && !pill.disabled) pill.focus();
 }
 
-/** Progress heads are text-only; info/error heads keep their icon. */
-function cardHead(kind: "prog" | "info" | "error", title: string): string {
+function cardHead(kind: "prog" | "info", title: string): string {
   const iconHtml =
     kind === "prog"
       ? ""
-      : '<span class="ocu-card-ic ocu-ic-' +
-        kind +
-        '">' +
-        (kind === "error" ? ICONS.error : ICONS.info) +
-        "</span>";
+      : '<span class="ocu-card-ic ocu-ic-info">' + ICONS.info + "</span>";
   return (
     '<div class="ocu-card-head">' +
     iconHtml +
@@ -483,123 +446,6 @@ function cardHead(kind: "prog" | "info" | "error", title: string): string {
     ICONS.x +
     "</button></div>"
   );
-}
-
-function buildCard(mode: CardMode): void {
-  if (!card) return;
-  const st = status;
-  let html = "";
-
-  if (mode === "success") {
-    html = cardHead("info", format(t("successTitle", "OpenCode {0} installed."), st?.installedVersion ?? st?.targetVersion ?? ""));
-    if (st?.sessionAutoStarted) {
-      // The host already booted the session: restart actions would
-      // contradict the automatic start.
-      html +=
-        '<div class="ocu-card-body"><p class="ocu-card-msg">' +
-        escapeHtml(t("sessionAutoStarted", "OpenCode session started automatically.")) +
-        '</p><div class="ocu-card-actions">' +
-        '<button type="button" class="ocu-btn" data-ocu-act="changelog">' +
-        escapeHtml(t("changelogLabel", "Changelog")) +
-        "</button></div></div>";
-    } else {
-      html +=
-        '<div class="ocu-card-body"><p class="ocu-card-msg">' +
-        escapeHtml(t("successMessage", "Restart the terminal now?")) +
-        '</p><div class="ocu-card-actions">' +
-        '<button type="button" class="ocu-btn ocu-btn-primary" data-ocu-act="restart">' +
-        escapeHtml(t("restartNow", "Restart now")) +
-        "</button>" +
-        '<button type="button" class="ocu-btn" data-ocu-act="restart-changelog">' +
-        escapeHtml(t("restartWithChangelog", "Restart and view changelog")) +
-        "</button>" +
-        '<button type="button" class="ocu-btn" data-ocu-act="later">' +
-        escapeHtml(t("later", "Later")) +
-        "</button></div></div>";
-    }
-  } else if (mode === "manual") {
-    html = cardHead("error", t("blockedTitle", "npm install blocked by nvm security policy"));
-    const cmds = status?.manualCommands ?? status?.remediationCommands ?? [];
-    html +=
-      '<div class="ocu-card-body"><p class="ocu-card-msg">' +
-      escapeHtml(t("remediateFailed", "Automatic fix did not succeed. Run the following commands in the terminal, then start the install again.")) +
-      "</p>";
-    for (const cmd of cmds) {
-      html +=
-        '<div class="ocu-cmd-row"><code>' +
-        escapeHtml(cmd) +
-        '</code><button type="button" class="ocu-copy" data-ocu-copy="' +
-        escapeHtml(cmd) +
-        '">' +
-        ICONS.copy +
-        '<span class="ocu-copy-label">' +
-        escapeHtml(t("copy", "Copy")) +
-        "</span></button></div>";
-    }
-    html +=
-      '<div class="ocu-card-actions"><button type="button" class="ocu-btn ocu-btn-primary" data-ocu-act="gotit">' +
-      escapeHtml(t("gotIt", "Got it")) +
-      "</button></div></div>";
-  } else if (mode === "generic") {
-    // Generic failure without a verified version: show the detail line.
-    html = cardHead("error", st?.detail ?? t("progressTitle", "Installing OpenCode"));
-    html +=
-      '<div class="ocu-card-body"><div class="ocu-card-actions">' +
-      '<button type="button" class="ocu-btn" data-ocu-act="viewlog">' +
-      escapeHtml(t("viewLog", "View log")) +
-      "</button></div></div>";
-  } else {
-    // verify
-    html = cardHead(
-      "error",
-      format(t("verifyFailedTitle", "Install did not take effect, version is still {0}"), st?.currentVersion ?? st?.installedVersion ?? ""),
-    );
-    html +=
-      '<div class="ocu-card-body"><div class="ocu-card-actions">' +
-      '<button type="button" class="ocu-btn" data-ocu-act="viewlog">' +
-      escapeHtml(t("viewLog", "View log")) +
-      "</button></div></div>";
-  }
-
-  card.innerHTML = html;
-  card.setAttribute("role", mode === "manual" || mode === "verify" || mode === "generic" ? "alert" : "status");
-}
-
-function renderCard(): void {
-  if (!card) return;
-  const st = status;
-  if (
-    !st ||
-    st.state === "idle" ||
-    st.state === "available" ||
-    st.state === "installable" ||
-    st.state === "updating"
-  ) {
-    if (cardMode !== "hint" && cardMode !== "checking") hideCardFull();
-    return;
-  }
-  if (cardMode === "hint") {
-    // The transient hint owns the card slot until it expires; the
-    // expiry callback re-renders whatever the current status maps to.
-    return;
-  }
-
-  const manualCommands = st.manualCommands ?? st.remediationCommands ?? [];
-  const target: CardMode = st.state === "success"
-    ? "success"
-    : manualCommands.length
-      ? "manual"
-      : st.installedVersion
-        ? "verify"
-        : "generic";
-
-  const modeChanged = target !== cardMode;
-  cardMode = target;
-  buildCard(target);
-  card.classList.remove("hidden");
-  if (modeChanged && target === "success") {
-    card.querySelector<HTMLButtonElement>('[data-ocu-act="restart"]')?.focus();
-  }
 }
 
 function showHintCard(text: string): void {
@@ -616,10 +462,7 @@ function showHintCard(text: string): void {
   hintTimer = setTimeout(() => {
     hintTimer = null;
     if (cardMode === "hint") {
-      // Re-render from the current status instead of just hiding:
-      // idle/available still hides, while failed restores its card.
-      cardMode = null;
-      renderCard();
+      hideCardFull();
     }
   }, HINT_TTL_MS);
 }
@@ -634,222 +477,755 @@ function showCheckingCard(): void {
   card.classList.remove("hidden");
 }
 
-// ── Log drawer ──
+// ── Dialog: state helpers ──
 
-function openDrawer(): void {
-  if (!drawer || !drawerBody) return;
-  const history = status?.history ?? [];
-  const lines: string[] = [];
-  for (const entry of history) {
-    const glyph = entry.ok ? "✓" : "✗";
-    const cls = entry.ok ? "ocu-lg-ok" : "ocu-lg-err";
-    lines.push(
-      '<div class="' + cls + '">' + glyph + " " + escapeHtml(entry.label || STEP_LABELS[entry.step] || entry.step) + "</div>",
-    );
+function firstNonEmpty(...values: Array<string | undefined>): string {
+  for (const value of values) {
+    if (value) return value;
   }
-  if (status?.detail) {
-    lines.push('<div class="ocu-lg-cmd">' + escapeHtml(status.detail) + "</div>");
+  return "";
+}
+
+function updateTargetVersion(): string {
+  return firstNonEmpty(status?.targetVersion, status?.latestVersion);
+}
+
+function installedVersion(): string {
+  return firstNonEmpty(
+    status?.installedVersion,
+    status?.currentVersion,
+    status?.runningVersion,
+  );
+}
+
+function closeDialog(): void {
+  dialogStep = null;
+  minimized = false;
+  abortArmed = false;
+  if (abortTimer !== null) {
+    clearTimeout(abortTimer);
+    abortTimer = null;
   }
-  if (status?.state === "failed") {
-    lines.push(
-      '<div class="ocu-lg-err">' +
+  dialog?.hide();
+}
+
+function dismissDialog(): void {
+  checkPending = false;
+  checkUpToDate = false;
+  checkFailed = false;
+  if (dialogStep === "result" && status?.state === "success") {
+    postMessage({ type: "dismissOpenCodeUpdate" });
+  }
+  closeDialog();
+  if (pill && !pill.disabled) pill.focus();
+}
+
+function minimizeDialog(): void {
+  if (dialogStep !== "progress") {
+    dismissDialog();
+    return;
+  }
+  minimized = true;
+  dialog?.hide();
+  renderProgressLine();
+  if (pill && !pill.disabled) pill.focus();
+}
+
+function openUpcomingNotes(): void {
+  flowKind = "update";
+  notesMode = "upcoming";
+  notesState = "loading";
+  notesPayload = null;
+  notesUrl = "";
+  checkPending = false;
+  checkFailed = false;
+  checkUpToDate = false;
+  dialogStep = "notes";
+  minimized = false;
+  renderDialog(true);
+  requestNotes(updateTargetVersion(), "upcoming");
+}
+
+function openInstalledNotes(): void {
+  notesMode = "installed";
+  notesState = "loading";
+  notesPayload = null;
+  notesUrl = "";
+  checkPending = false;
+  checkFailed = false;
+  checkUpToDate = false;
+  dialogStep = "notes";
+  minimized = false;
+  renderDialog(true);
+  requestNotes(installedVersion(), "installed");
+}
+
+function requestNotes(
+  version: string | undefined,
+  mode: "upcoming" | "installed",
+): void {
+  postMessage({
+    type: "requestOpenCodeChangelog",
+    version: version || undefined,
+    mode,
+  });
+}
+
+function openMethodStep(): void {
+  dialogStep = "methods";
+  startingUpdate = false;
+  minimized = false;
+  methodFocused = preferredMethodIndex();
+  renderDialog(true);
+}
+
+function openResultStep(): void {
+  dialogStep = "result";
+  minimized = false;
+  renderDialog(true);
+}
+
+// ── Dialog: content builders ──
+
+function renderDialog(stepChanged: boolean): void {
+  if (!dialog) return;
+  if (!dialogStep) {
+    dialog.hide();
+    return;
+  }
+  if (minimized && dialogStep === "progress") {
+    dialog.hide();
+    return;
+  }
+  const content = buildDialogContent();
+  const showsNow = !dialog.visible;
+  if (showsNow) {
+    dialog.show(content);
+  } else {
+    dialog.update(content);
+  }
+  if (stepChanged && content.focus) {
+    dialog.focus(content.focus);
+  }
+}
+
+function buildDialogContent(): {
+  title: string;
+  headActions?: string;
+  body: string;
+  foot: string;
+  progress?: boolean;
+  focus?: string;
+  closeLabel?: string;
+} {
+  switch (dialogStep) {
+    case "notes":
+      return buildNotesContent();
+    case "methods":
+      return buildMethodsContent();
+    case "progress":
+      return buildProgressContent();
+    case "result":
+      return buildResultContent();
+    default:
+      return {
+        title: t("changelogLabel", "Changelog"),
+        body: "",
+        foot: "",
+        closeLabel: t("closeLabel", "Close"),
+      };
+  }
+}
+
+function buildNotesContent(): {
+  title: string;
+  headActions?: string;
+  body: string;
+  foot: string;
+  focus?: string;
+  closeLabel?: string;
+} {
+  const upcoming = notesMode === "upcoming";
+  const version = notesPayload?.version || (upcoming ? updateTargetVersion() : installedVersion());
+  const title = version ? "OpenCode " + version : t("changelogLabel", "Changelog");
+
+  const openUrl = notesPayload?.fallbackUrl || notesUrl;
+  const browserButton = openUrl
+    ? '<button type="button" class="ocu-dlg-head-btn" data-ocu-dlg="open" aria-label="' +
+      escapeHtml(t("changelogOpenInBrowser", "Open in browser")) +
+      '" title="' +
+      escapeHtml(t("changelogOpenInBrowser", "Open in browser")) +
+      '">' +
+      ICONS.browser +
+      "</button>"
+    : "";
+  const headActions =
+    (notesState === "ready"
+      ? '<button type="button" class="ocu-dlg-head-btn" data-ocu-dlg="copy">' +
+        ICONS.copy +
+        '<span class="ocu-copy-label">' +
+        escapeHtml(t("copy", "Copy")) +
+        "</span></button>" +
+        '<button type="button" class="ocu-dlg-head-btn" data-ocu-dlg="send">' +
+        ICONS.send +
+        '<span class="ocu-copy-label">' +
+        escapeHtml(t("changelogSend", "Send to OpenCode")) +
+        "</span></button>"
+      : "") + browserButton;
+
+  const delta =
+    upcoming && version
+      ? '<p class="ocu-dlg-delta">' +
         escapeHtml(
           format(
-            t("verifyFailedTitle", "Install did not take effect, version is still {0}"),
-            status.currentVersion ?? status.installedVersion ?? "",
+            t("versionDelta", "Current {0}, new {1}"),
+            status?.currentVersion || installedVersion(),
+            version,
           ),
         ) +
-        "</div>",
-    );
-  }
-  if (!lines.length) {
-    lines.push('<div class="ocu-lg-out">—</div>');
-  }
-  drawerBody.innerHTML = lines.join("");
-  drawer.classList.remove("hidden");
-  drawer.querySelector<HTMLButtonElement>("#ocu-drawer-close")?.focus();
-}
+        "</p>"
+      : "";
 
-function closeDrawer(restoreFocus: boolean): void {
-  if (!drawer || drawer.classList.contains("hidden")) return;
-  drawer.classList.add("hidden");
-  if (restoreFocus && pill && !pill.disabled) pill.focus();
-}
+  let body = delta;
+  if (notesState === "ready" && notesPayload?.ok) {
+    body +=
+      (notesPayload.date
+        ? '<p class="ocu-cl-date">' + escapeHtml(notesPayload.date) + "</p>"
+        : "") + (notesPayload.html ?? "");
+  } else if (notesState === "failed") {
+    body +=
+      '<p class="ocu-cl-msg">' +
+      escapeHtml(
+        upcoming
+          ? t(
+              "notesUnavailable",
+              "Release notes are unavailable for this version. You can still update.",
+            )
+          : t("changelogFailed", "Changelog is unavailable for this version."),
+      ) +
+      "</p>";
+  } else {
+    body +=
+      '<p class="ocu-cl-msg">' +
+      escapeHtml(t("changelogLoading", "Fetching changelog…")) +
+      "</p>";
+  }
 
-// ── Method popover ──
+  let foot = "";
+  if (upcoming) {
+    // Primary action sits last so it lands in the dialog's bottom-right
+    // corner; the browser fallback lives in the head next to close.
+    foot =
+      '<div class="ocu-dlg-foot-main">' +
+      '<button type="button" class="ocu-btn ocu-btn-primary" data-ocu-dlg="update">' +
+      escapeHtml(
+        format(
+          t("updateNotesCta", "Update to {0}"),
+          version || t("latestLabel", "latest"),
+        ),
+      ) +
+      "</button></div>";
+  } else {
+    const stateText = checkPending
+      ? t("checkingUpdates", "Checking for updates…")
+      : checkUpToDate
+        ? t("changelogUpToDate", "Already on the latest version.")
+        : checkFailed
+          ? t("changelogCheckFailed", "Check failed. Try again later.")
+          : "";
+    foot =
+      '<div class="ocu-dlg-foot-main"><span class="ocu-cl-status">' +
+      escapeHtml(stateText) +
+      '</span><button type="button" class="ocu-btn" data-ocu-dlg="check"' +
+      (checkPending ? " disabled" : "") +
+      ">" +
+      escapeHtml(t("changelogCheck", "Check for new version")) +
+      "</button></div>";
+  }
+
+  return {
+    title,
+    headActions: headActions || undefined,
+    body: '<div class="ocu-cl-body">' + body + "</div>",
+    foot,
+    focus: upcoming ? '[data-ocu-dlg="update"]' : '[data-ocu-dlg="check"]',
+    closeLabel: t("closeLabel", "Close"),
+  };
+}
 
 function methods(): string[] {
   const list = status?.methods;
   return list && list.length ? list : DEFAULT_METHODS;
 }
 
-function popRows(): HTMLElement[] {
-  if (!popList) return [];
-  return Array.from(popList.querySelectorAll<HTMLElement>(".ocu-pop-row"));
+/** Preselection: last used method, then detected, then the host default. */
+function preferredMethodIndex(): number {
+  const preferred =
+    status?.lastUsedMethod ??
+    status?.detectedMethod ??
+    status?.defaultMethod ??
+    "npm";
+  return Math.max(0, methods().indexOf(preferred));
 }
 
-function positionPopover(): void {
-  if (!popover || !pill) return;
-  const vw = document.documentElement.clientWidth || window.innerWidth || 420;
-  const vh = window.innerHeight || 700;
-  const pr = pill.getBoundingClientRect();
-  const w = Math.max(200, Math.min(280, vw - 16));
-  let left = pr.left;
-  const top = pr.bottom + 6;
-  left = Math.max(8, Math.min(left, vw - w - 8));
-  popover.style.width = w + "px";
-  popover.style.left = left + "px";
-  popover.style.top = top + "px";
-  popover.style.maxHeight = Math.max(180, vh - top - 10) + "px";
-}
+function buildMethodsContent(): {
+  title: string;
+  body: string;
+  foot: string;
+  focus?: string;
+  closeLabel?: string;
+} {
+  const target = updateTargetVersion();
+  const updating = flowKind === "update";
+  const title = updating
+    ? format(t("updatePopoverTitle", "Update OpenCode CLI to {0}"), target || "")
+    : t("installPopoverTitle", "Install OpenCode CLI");
 
-function renderPopoverRows(): void {
-  if (!popList) return;
   const det = status?.detectedMethod ?? "";
   const last = status?.lastUsedMethod ?? "";
-  let html = "";
+  let rows = "";
   methods().forEach((id, i) => {
     const isLast = Boolean(last) && id === last;
     const isDet = Boolean(det) && id === det;
     let tags = "";
     if (isLast) {
-      tags += '<span class="ocu-tag ocu-tag-last">' + escapeHtml(t("methodLastUsed", "Last used")) + "</span>";
+      tags +=
+        '<span class="ocu-tag ocu-tag-last">' +
+        escapeHtml(t("methodLastUsed", "Last used")) +
+        "</span>";
     } else if (isDet) {
-      tags += '<span class="ocu-tag ocu-tag-det">' + escapeHtml(t("methodDetected", "Detected install method")) + "</span>";
+      tags +=
+        '<span class="ocu-tag ocu-tag-det">' +
+        escapeHtml(t("methodDetected", "Detected install method")) +
+        "</span>";
     }
     let desc = METHOD_DESCS[id] ?? "";
     if (isLast && isDet) {
       desc += " · " + t("methodDetected", "Detected install method");
     }
-    html +=
+    rows +=
       '<button type="button" class="ocu-pop-row' +
-      (i === 0 ? " is-focused" : "") +
+      (i === methodFocused ? " is-focused" : "") +
       '" role="option" aria-selected="' +
-      (i === 0) +
-      '" data-ocu-method="' +
+      (i === methodFocused) +
+      '" data-ocu-dlg="method" data-ocu-method="' +
       escapeHtml(id) +
       '" tabindex="' +
-      (i === 0 ? 0 : -1) +
-      '">' +
+      (i === methodFocused ? 0 : -1) +
+      '"' +
+      (startingUpdate ? " disabled" : "") +
+      ">" +
       '<span class="ocu-pop-main"><span class="ocu-pop-label">' +
       escapeHtml(id) +
       "</span>" +
       tags +
-      '<span class="ocu-pop-ok hidden">' +
+      '<span class="ocu-pop-ok' +
+      (i === methodFocused ? "" : " hidden") +
+      '">' +
       ICONS.check +
       "</span></span>" +
-      (desc ? '<span class="ocu-pop-desc" title="' + escapeHtml(desc) + '">' + escapeHtml(desc) + "</span>" : "") +
+      (desc
+        ? '<span class="ocu-pop-desc" title="' +
+          escapeHtml(desc) +
+          '">' +
+          escapeHtml(desc) +
+          "</span>"
+        : "") +
       "</button>";
   });
-  popList.innerHTML = html;
+
+  const back = updating
+    ? '<button type="button" class="ocu-pop-link" data-ocu-dlg="back-notes">' +
+      escapeHtml(t("backToNotes", "Release notes")) +
+      "</button>"
+    : "";
+
+  return {
+    title,
+    body: '<div class="ocu-dlg-methods" role="listbox">' + rows + "</div>",
+    foot:
+      '<div class="ocu-dlg-foot-main"><span class="ocu-pop-hint">' +
+      escapeHtml(t("hintConfirm", "Enter to confirm")) +
+      "</span>" +
+      back +
+      '<button type="button" class="ocu-btn" data-ocu-dlg="cancel">' +
+      escapeHtml(t("cancelLabel", "Cancel")) +
+      "</button></div>",
+    focus: "[data-ocu-method]",
+    closeLabel: t("closeLabel", "Close"),
+  };
 }
 
-function syncPopoverFocus(): void {
-  const rows = popRows();
+function buildProgressContent(): {
+  title: string;
+  headActions?: string;
+  body: string;
+  foot: string;
+  progress: boolean;
+  focus?: string;
+  closeLabel?: string;
+} {
+  const target = updateTargetVersion();
+  const title =
+    flowKind === "install"
+      ? t("installProgressTitle", "Installing OpenCode")
+      : target
+        ? format(t("updateProgressTitle", "Updating OpenCode to {0}"), target)
+        : t("updateProgressPlainTitle", "Updating OpenCode");
+
+  const history = status?.history ?? [];
+  let steps = "";
+  for (const entry of history) {
+    steps +=
+      '<li class="ocu-dlg-step ' +
+      (entry.ok ? "is-done" : "is-failed") +
+      '"><span class="ocu-dlg-step-ic">' +
+      (entry.ok ? ICONS.check : ICONS.x) +
+      "</span>" +
+      escapeHtml(entry.label || STEP_LABELS[entry.step] || entry.step) +
+      "</li>";
+  }
+  steps +=
+    '<li class="ocu-dlg-step is-active"><span class="ocu-dlg-step-spin">' +
+    ICONS.sync +
+    "</span>" +
+    escapeHtml(progressStepText()) +
+    '<span class="ocu-dlg-step-count">' +
+    escapeHtml(progressStepCount()) +
+    "</span></li>";
+
+  const logLines = outputLines
+    .map((line) => '<div class="ocu-dlg-log-line">' + escapeHtml(line) + "</div>")
+    .join("");
+
+  const body =
+    '<ul class="ocu-dlg-steps">' +
+    steps +
+    "</ul>" +
+    '<details class="ocu-dlg-log">' +
+    "<summary>" +
+    escapeHtml(t("outputTitle", "Output")) +
+    "</summary>" +
+    '<div class="ocu-dlg-log-lines" data-ocu-log>' +
+    logLines +
+    "</div></details>";
+
+  return {
+    title,
+    headActions:
+      '<button type="button" class="ocu-dlg-head-btn" data-ocu-dlg="minimize">' +
+      escapeHtml(t("minimize", "Minimize")) +
+      "</button>",
+    body,
+    foot:
+      '<div class="ocu-dlg-foot-main"><button type="button" class="ocu-dlg-danger" data-ocu-dlg="abort"' +
+      (abortArmed ? ' data-armed="true"' : "") +
+      ">" +
+      escapeHtml(
+        abortArmed
+          ? t("abortConfirm", "Click again to abort")
+          : flowKind === "install"
+            ? t("abandonUpdate", "Abandon install")
+            : t("abortUpdate", "Abort update"),
+      ) +
+      "</button></div>",
+    progress: true,
+    focus: ".ocu-dlg-body",
+    closeLabel: t("minimize", "Minimize"),
+  };
+}
+
+function buildResultContent(): {
+  title: string;
+  body: string;
+  foot: string;
+  focus?: string;
+  closeLabel?: string;
+} {
+  const st = status;
+  if (st?.state === "success") {
+    const version = st.installedVersion ?? st.targetVersion ?? "";
+    const message = st.sessionAutoStarted
+      ? t("sessionAutoStarted", "OpenCode session started automatically.")
+      : t("successMessage", "Restart the terminal now?");
+    const actions = st.sessionAutoStarted
+      ? '<button type="button" class="ocu-btn" data-ocu-dlg="changelog">' +
+        escapeHtml(t("changelogLabel", "Changelog")) +
+        "</button>"
+      : '<button type="button" class="ocu-btn ocu-btn-primary" data-ocu-dlg="restart">' +
+        escapeHtml(t("restartNow", "Restart now")) +
+        "</button>";
+    return {
+      title: format(t("successTitle", "OpenCode {0} installed."), version),
+      body: '<p class="ocu-card-msg">' + escapeHtml(message) + "</p>",
+      foot: '<div class="ocu-dlg-foot-main">' + actions + "</div>",
+      focus: st.sessionAutoStarted
+        ? '[data-ocu-dlg="changelog"]'
+        : '[data-ocu-dlg="restart"]',
+      closeLabel: t("closeLabel", "Close"),
+    };
+  }
+
+  const commands = status?.manualCommands?.length
+    ? status.manualCommands
+    : status?.remediationCommands ?? [];
+  const title = commands.length
+    ? t("blockedTitle", "npm install blocked by nvm security policy")
+    : t("updateFailedTitle", "Update did not finish");
+
+  let body = "";
+  if (!commands.length && st?.detail) {
+    body +=
+      '<p class="ocu-card-msg">' + escapeHtml(st.detail) + "</p>";
+  }
+  if (commands.length) {
+    body +=
+      '<p class="ocu-card-msg">' +
+      escapeHtml(
+        t(
+          "remediateFailed",
+          "Automatic fix did not succeed. Run the following commands in the terminal, then start the install again.",
+        ),
+      ) +
+      "</p>";
+    for (const cmd of commands) {
+      body +=
+        '<div class="ocu-cmd-row"><code>' +
+        escapeHtml(cmd) +
+        '</code><button type="button" class="ocu-copy" data-ocu-copy="' +
+        escapeHtml(cmd) +
+        '">' +
+        ICONS.copy +
+        '<span class="ocu-copy-label">' +
+        escapeHtml(t("copy", "Copy")) +
+        "</span></button></div>";
+    }
+  }
+  if (outputLines.length) {
+    body +=
+      '<details class="ocu-dlg-log"><summary>' +
+      escapeHtml(t("outputTitle", "Output")) +
+      '</summary><div class="ocu-dlg-log-lines" data-ocu-log>' +
+      outputLines
+        .map(
+          (line) =>
+            '<div class="ocu-dlg-log-line">' + escapeHtml(line) + "</div>",
+        )
+        .join("") +
+      "</div></details>";
+  }
+
+  return {
+    title,
+    body,
+    foot:
+      '<div class="ocu-dlg-foot-main">' +
+      '<button type="button" class="ocu-btn" data-ocu-dlg="cancel">' +
+      escapeHtml(t("resultClose", "Close")) +
+      "</button>" +
+      '<button type="button" class="ocu-btn ocu-btn-primary" data-ocu-dlg="retry">' +
+      escapeHtml(t("resultRetry", "Retry")) +
+      "</button></div>",
+    focus: '[data-ocu-dlg="retry"]',
+    closeLabel: t("closeLabel", "Close"),
+  };
+}
+
+// ── Dialog: actions ──
+
+function handleDialogAction(action: string, element: HTMLElement): void {
+  if (action.startsWith("open-url:")) {
+    postMessage({ type: "openUrl", url: action.slice("open-url:".length) });
+    return;
+  }
+  switch (action) {
+    case "update":
+      openMethodStep();
+      return;
+    case "open": {
+      const url = notesPayload?.fallbackUrl ?? notesUrl;
+      if (url) postMessage({ type: "openUrl", url });
+      return;
+    }
+    case "copy":
+      copyText(dialog?.plainText() ?? "", element);
+      return;
+    case "send": {
+      const text = dialog?.plainText() ?? "";
+      if (!text) return;
+      postMessage({
+        type: "sendChangelogToOpenCode",
+        text:
+          text +
+          "\n---\n" +
+          format(
+            t(
+              "changelogSendPrompt",
+              "The above is the OpenCode {0} changelog. Please summarize it.",
+            ),
+            notesPayload?.version ?? "",
+          ),
+      });
+      flashSendLabel(element);
+      closeDialog();
+      return;
+    }
+    case "check":
+      if (checkPending) return;
+      checkPending = true;
+      checkFailed = false;
+      checkUpToDate = false;
+      renderDialog(false);
+      postMessage({ type: "checkOpenCodeUpdates" });
+      return;
+    case "back-notes":
+      notesState = notesPayload?.ok ? "ready" : notesState;
+      dialogStep = "notes";
+      notesMode = "upcoming";
+      renderDialog(true);
+      if (notesState === "loading") {
+        requestNotes(updateTargetVersion(), "upcoming");
+      }
+      return;
+    case "method": {
+      if (startingUpdate) return;
+      const method = element.dataset.ocuMethod ?? "";
+      if (!method) return;
+      startingUpdate = true;
+      renderDialog(false);
+      postMessage({ type: "startOpenCodeUpdate", method });
+      return;
+    }
+    case "minimize":
+      minimizeDialog();
+      return;
+    case "abort":
+      if (!abortArmed) {
+        abortArmed = true;
+        renderDialog(false);
+        if (abortTimer !== null) clearTimeout(abortTimer);
+        abortTimer = setTimeout(() => {
+          abortTimer = null;
+          abortArmed = false;
+          if (dialogStep === "progress") renderDialog(false);
+        }, ABORT_ARM_MS);
+        return;
+      }
+      abortArmed = false;
+      if (abortTimer !== null) {
+        clearTimeout(abortTimer);
+        abortTimer = null;
+      }
+      postMessage({ type: "abandonOpenCodeUpdate" });
+      showHintCard(t("abandonedHint", "Install abandoned"));
+      closeDialog();
+      return;
+    case "restart":
+      closeDialog();
+      postMessage({ type: "restartAfterUpdate" });
+      return;
+    case "changelog":
+      closeDialog();
+      openInstalledNotes();
+      return;
+    case "retry":
+      openMethodStep();
+      return;
+    case "cancel":
+      dismissDialog();
+      return;
+    default:
+      return;
+  }
+}
+
+function handleDialogKeyDown(event: KeyboardEvent): boolean {
+  if (dialogStep !== "methods") return false;
+  const rows = Array.from(
+    dialog?.root.querySelectorAll<HTMLElement>("[data-ocu-method]") ?? [],
+  );
+  if (!rows.length) return false;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    setMethodFocused(methodFocused + 1, rows);
+    return true;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    setMethodFocused(methodFocused - 1, rows);
+    return true;
+  }
+  if (event.key === "Home") {
+    event.preventDefault();
+    setMethodFocused(0, rows);
+    return true;
+  }
+  if (event.key === "End") {
+    event.preventDefault();
+    setMethodFocused(rows.length - 1, rows);
+    return true;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    const row = rows[methodFocused];
+    if (row) {
+      handleDialogAction("method", row);
+    }
+    return true;
+  }
+  return false;
+}
+
+function setMethodFocused(index: number, rows: HTMLElement[]): void {
+  if (!rows.length) return;
+  methodFocused = (index + rows.length) % rows.length;
   rows.forEach((row, i) => {
-    const on = i === popFocused;
+    const on = i === methodFocused;
     row.classList.toggle("is-focused", on);
     row.setAttribute("aria-selected", on ? "true" : "false");
     row.tabIndex = on ? 0 : -1;
     row.querySelector(".ocu-pop-ok")?.classList.toggle("hidden", !on);
   });
+  rows[methodFocused].focus();
+  rows[methodFocused].scrollIntoView({ block: "nearest" });
 }
 
-function popoverTitleText(): string {
-  // The available flow is an update and names its target version; the
-  // installable flow is a first install and keeps the install wording.
-  if (status?.state === "available") {
-    const latest = status.latestVersion ?? status.targetVersion ?? "";
-    return format(t("updatePopoverTitle", "Update OpenCode CLI to {0}"), latest);
-  }
-  return t("installPopoverTitle", "Install OpenCode CLI");
-}
+// ── Changelog payload ──
 
-function openPopover(): void {
-  if (!popover || !status || !isPopoverState(status.state)) return;
-  if (!popover.classList.contains("hidden")) {
-    closePopover(true);
+/** Fills the notes step when the host answers the release-notes request. */
+export function applyOpenCodeChangelog(payload: OpenCodeChangelogPayload): void {
+  if (dialogStep !== "notes") {
     return;
   }
-  const titleText = popoverTitleText();
-  const titleEl = popover.querySelector("#ocu-popover-title");
-  if (titleEl) {
-    titleEl.textContent = titleText;
+  notesPayload = payload;
+  notesState = payload.ok ? "ready" : "failed";
+  notesUrl = payload.fallbackUrl;
+  if (payload.mode) {
+    notesMode = payload.mode;
   }
-  popList?.setAttribute("aria-label", titleText);
-  // Release notes make sense wherever an update flow is pending.
-  popover
-    .querySelector("#ocu-pop-changelog")
-    ?.classList.toggle(
-      "hidden",
-      status.state !== "available" && status.state !== "failed",
-    );
-  renderPopoverRows();
-  const pref =
-    status.lastUsedMethod ?? status.detectedMethod ?? status.defaultMethod ?? "npm";
-  const idx = Math.max(0, methods().indexOf(pref));
-  popFocused = idx;
-  syncPopoverFocus();
-  positionPopover();
-  popover.classList.remove("hidden");
-  popRows()[popFocused]?.focus();
-  announce(titleText);
-}
-
-function closePopover(restoreFocus: boolean): void {
-  if (!popover || popover.classList.contains("hidden")) return;
-  popover.classList.add("hidden");
-  if (popList) popList.innerHTML = "";
-  if (restoreFocus && pill && !pill.disabled) pill.focus();
-}
-
-/** Host re-pushed an available snapshot while the popover is open. */
-function refreshOpenPopover(): void {
-  if (!popover) return;
-  const hadFocus = popover.contains(document.activeElement);
-  const titleEl = popover.querySelector("#ocu-popover-title");
-  if (titleEl) {
-    titleEl.textContent = popoverTitleText();
+  renderDialog(false);
+  if (payload.ok) {
+    announce("OpenCode " + payload.version);
   }
-  popList?.setAttribute("aria-label", popoverTitleText());
-  popover
-    .querySelector("#ocu-pop-changelog")
-    ?.classList.toggle(
-      "hidden",
-      status?.state !== "available" && status?.state !== "failed",
-    );
-  renderPopoverRows();
-  const count = methods().length;
-  if (popFocused >= count) popFocused = Math.max(0, count - 1);
-  syncPopoverFocus();
-  positionPopover();
-  if (hadFocus) popRows()[popFocused]?.focus();
 }
 
-function setPopoverFocused(idx: number): void {
-  const rows = popRows();
-  if (!rows.length) return;
-  popFocused = (idx + rows.length) % rows.length;
-  syncPopoverFocus();
-  const row = rows[popFocused];
-  row.focus();
-  row.scrollIntoView({ block: "nearest" });
+/** Streamed upgrade/install output for the progress log pane. */
+export function appendOpenCodeUpdateOutput(lines: string[]): void {
+  if (!lines.length) return;
+  outputLines.push(...lines);
+  if (outputLines.length > MAX_OUTPUT_LINES) {
+    outputLines = outputLines.slice(outputLines.length - MAX_OUTPUT_LINES);
+  }
+  dialog?.appendOutput(lines);
 }
 
-function chooseMethod(id: string): void {
-  closePopover(false);
-  postMessage({ type: "startOpenCodeUpdate", method: id });
-  pill?.focus();
-}
+// ── Missing-CLI install confirmation (srp-overlay pattern) ──
 
-// ── Install confirmation dialog ──
+let installPrompt: HTMLDivElement | null = null;
+/** True while the install prompt's re-detect round-trip is in flight. */
+let installPromptRetryActive = false;
+let installPromptLastPending = false;
 
-/**
- * Missing-CLI confirmation, structure mirroring the service-restart
- * prompt: fixed overlay, alertdialog semantics, three actions. Esc and
- * backdrop clicks behave like "Not now"; there is no ✕ button to keep
- * the dialog minimal.
- */
 function buildInstallPrompt(): HTMLDivElement {
   const el = document.createElement("div");
   el.className = "ocu-ip-overlay hidden";
@@ -903,8 +1279,7 @@ function buildInstallPrompt(): HTMLDivElement {
 /** Startup auto-prompt only: installable + pending, once per arming. */
 function maybeShowInstallPrompt(): void {
   const inInstallable = status?.state === "installable";
-  const pending =
-    inInstallable && status?.installPromptPending === true;
+  const pending = inInstallable && status?.installPromptPending === true;
   if (pending && !installPromptLastPending) {
     if (!installPrompt) installPrompt = buildInstallPrompt();
     installPrompt.classList.remove("hidden");
@@ -917,10 +1292,6 @@ function maybeShowInstallPrompt(): void {
     installPrompt &&
     !installPrompt.classList.contains("hidden")
   ) {
-    // The state left installable (flow started, failed, or resolved):
-    // the confirmation must not linger over whatever comes next. While
-    // still installable the dialog lives on local state alone, so a
-    // cleared pending flag or a failed re-detect never closes it.
     hideInstallPrompt();
     resetInstallPromptRetry();
   }
@@ -932,13 +1303,10 @@ function finishInstallPromptRetry(): void {
   if (!installPromptRetryActive) return;
   resetInstallPromptRetry();
   if (status?.state === "installable") {
-    // The probe found no CLI: keep the dialog open with the inline
-    // result so the user can retry or pick an install method.
     showInstallPromptResult();
   }
 }
 
-/** Starts the re-detect round-trip: lock the dialog and ask the host. */
 function startInstallPromptRetry(): void {
   if (installPromptRetryActive) return;
   installPromptRetryActive = true;
@@ -947,7 +1315,6 @@ function startInstallPromptRetry(): void {
   postMessage({ type: "retryCliProbe" });
 }
 
-/** Unlocks the dialog after a re-detect round-trip finished. */
 function resetInstallPromptRetry(): void {
   installPromptRetryActive = false;
   setInstallPromptBusy(false);
@@ -991,297 +1358,9 @@ function answerInstallPrompt(action: CliInstallPromptAction): void {
   hideInstallPrompt();
   postMessage({ type: "answerCliInstallPrompt", action });
   if (action === "install") {
-    // The method popover is driven entirely in the webview.
-    openPopover();
+    flowKind = "install";
+    openMethodStep();
   }
-}
-
-// ── Changelog dialog ──
-
-/** Renders the host's changelog answer into the open dialog. */
-export function applyOpenCodeChangelog(
-  payload: OpenCodeChangelogPayload,
-): void {
-  const dialog = changelogDialog;
-  if (!dialog || dialog.classList.contains("hidden")) {
-    return;
-  }
-  dialog.dataset.ocuClUrl = payload.fallbackUrl;
-  const title = dialog.querySelector<HTMLElement>("#ocu-cl-title");
-  const body = dialog.querySelector<HTMLElement>("#ocu-cl-body");
-  const actionBtns = dialog.querySelectorAll<HTMLElement>(
-    ".ocu-cl-copy, .ocu-cl-send",
-  );
-  if (!body) {
-    return;
-  }
-  if (payload.ok) {
-    changelogVersion = payload.version;
-    actionBtns.forEach((btn) => btn.classList.remove("hidden"));
-    // During the post-update restart the session cannot accept sends.
-    setChangelogSendEnabled(!changelogRestartPending);
-    if (title) {
-      title.textContent = payload.version
-        ? "OpenCode " + payload.version
-        : t("changelogLabel", "Changelog");
-    }
-    body.innerHTML =
-      (payload.date
-        ? '<p class="ocu-cl-date">' + escapeHtml(payload.date) + "</p>"
-        : "") +
-      (payload.html ?? "");
-    return;
-  }
-  actionBtns.forEach((btn) => btn.classList.add("hidden"));
-  if (title) {
-    title.textContent = t("changelogLabel", "Changelog");
-  }
-  body.innerHTML =
-    '<p class="ocu-cl-msg">' +
-    escapeHtml(
-      t("changelogFailed", "Changelog is unavailable for this version."),
-    ) +
-    "</p>" +
-    '<div class="ocu-cl-actions"><button type="button" class="ocu-btn" data-ocu-cl="open">' +
-    escapeHtml(t("changelogOpenInBrowser", "Open in browser")) +
-    "</button></div>";
-}
-
-function buildChangelogDialog(): HTMLDivElement {
-  const el = document.createElement("div");
-  el.className = "ocu-cl-overlay hidden";
-  el.id = "ocu-changelog";
-  el.dataset.ocuClUrl = "";
-  el.innerHTML =
-    '<div class="ocu-cl-dialog" role="dialog" aria-modal="true" aria-labelledby="ocu-cl-title">' +
-    '<div class="ocu-cl-head"><span id="ocu-cl-title"></span>' +
-    '<button type="button" class="ocu-cl-copy hidden" data-ocu-cl="copy" aria-label="' +
-    escapeHtml(t("changelogCopy", "Copy changelog")) +
-    '">' +
-    ICONS.copy +
-    '<span class="ocu-copy-label">' +
-    escapeHtml(t("copy", "Copy")) +
-    "</span></button>" +
-    '<button type="button" class="ocu-cl-send hidden" data-ocu-cl="send" aria-label="' +
-    escapeHtml(t("changelogSend", "Send to OpenCode")) +
-    '">' +
-    ICONS.send +
-    '<span class="ocu-copy-label">' +
-    escapeHtml(t("changelogSend", "Send to OpenCode")) +
-    "</span></button>" +
-    '<button type="button" class="ocu-cl-x" data-ocu-cl="close" aria-label="' +
-    escapeHtml(t("closeLabel", "Close")) +
-    '">' +
-    ICONS.x +
-    "</button></div>" +
-    '<div class="ocu-cl-body" id="ocu-cl-body" tabindex="0"></div>' +
-    '<div class="ocu-cl-foot"><span class="ocu-cl-status" id="ocu-cl-status" role="status"></span>' +
-    '<button type="button" class="ocu-btn" data-ocu-cl="check">' +
-    escapeHtml(t("changelogCheck", "Check for new version")) +
-    "</button></div>" +
-    "</div>";
-
-  el.addEventListener("click", (e) => {
-    const target = e.target as HTMLElement;
-    const act = target.closest<HTMLElement>("[data-ocu-cl]");
-    if (act) {
-      const action = act.dataset.ocuCl;
-      if (action === "close") {
-        hideChangelogDialog();
-      } else if (action === "check") {
-        if (!changelogCheckFromDialog) {
-          changelogCheckFromDialog = true;
-          setChangelogCheckUi("checking");
-          postMessage({ type: "checkOpenCodeUpdates" });
-        }
-      } else if (action === "copy") {
-        const text = changelogPlainText(el);
-        if (text) {
-          copyText(text, act);
-        }
-      } else if (action === "send") {
-        const text = changelogPlainText(el);
-        if (text) {
-          postMessage({
-            type: "sendChangelogToOpenCode",
-            text:
-              text +
-              "\n---\n" +
-              format(
-                t(
-                  "changelogSendPrompt",
-                  "The above is the OpenCode {0} changelog. Please summarize it.",
-                ),
-                changelogVersion,
-              ),
-          });
-          flashSendLabel(act);
-          hideChangelogDialog();
-        }
-      } else if (action === "open") {
-        const url = el.dataset.ocuClUrl ?? "";
-        if (url) {
-          postMessage({ type: "openUrl", url });
-        }
-      }
-      return;
-    }
-    // Release-note links point at GitHub: route them through the host's
-    // external opener instead of navigating the webview.
-    const link = target.closest<HTMLAnchorElement>("a[href]");
-    if (link) {
-      e.preventDefault();
-      const href = link.getAttribute("href") ?? "";
-      if (/^https?:/i.test(href)) {
-        postMessage({ type: "openUrl", url: href });
-      }
-      return;
-    }
-    if (e.target === el) {
-      hideChangelogDialog();
-    }
-  });
-
-  document.body.appendChild(el);
-  return el;
-}
-
-function openChangelogDialog(options?: { hideCheck?: boolean }): void {
-  if (!changelogDialog) {
-    changelogDialog = buildChangelogDialog();
-  }
-  changelogDialog.dataset.ocuClUrl = "";
-  changelogVersion = "";
-  const title = changelogDialog.querySelector<HTMLElement>("#ocu-cl-title");
-  const body = changelogDialog.querySelector<HTMLElement>("#ocu-cl-body");
-  // Nothing copyable/sendable until the payload lands; reset the footer check.
-  changelogDialog
-    .querySelectorAll(".ocu-cl-copy, .ocu-cl-send")
-    .forEach((btn) => btn.classList.add("hidden"));
-  setChangelogSendEnabled(!changelogRestartPending);
-  // Inside the update flow (method-popover entry) a pending update is
-  // already known, so the footer's check action stays hidden.
-  changelogDialog
-    .querySelector(".ocu-cl-foot")
-    ?.classList.toggle("hidden", options?.hideCheck === true);
-  setChangelogCheckUi("idle");
-  if (title) {
-    title.textContent = t("changelogLabel", "Changelog");
-  }
-  if (body) {
-    body.innerHTML =
-      '<p class="ocu-cl-msg">' +
-      escapeHtml(t("changelogLoading", "Fetching changelog…")) +
-      "</p>";
-  }
-  changelogDialog.classList.remove("hidden");
-  changelogDialog
-    .querySelector<HTMLButtonElement>('[data-ocu-cl="close"]')
-    ?.focus();
-}
-
-function hideChangelogDialog(): void {
-  changelogDialog?.classList.add("hidden");
-}
-
-/** Title + body as plain text, shared by the copy and send actions. */
-function changelogPlainText(dialog: HTMLElement): string {
-  const title = dialog.querySelector<HTMLElement>("#ocu-cl-title");
-  const body = dialog.querySelector<
-    HTMLElement & { innerText?: string }
-  >("#ocu-cl-body");
-  // innerText keeps the rendered line breaks; textContent would mash
-  // block elements into one run-on line.
-  const bodyText = body?.innerText ?? body?.textContent ?? "";
-  return (
-    (title?.textContent ?? "") +
-    "\n\n" +
-    bodyText
-  ).trim();
-}
-
-/** Brief "Sent" feedback on the send button label. */
-function flashSendLabel(button: HTMLElement): void {
-  const label = button.querySelector<HTMLElement>(".ocu-copy-label");
-  if (!label) {
-    return;
-  }
-  label.textContent = t("changelogSentLabel", "Sent");
-  setTimeout(() => {
-    label.textContent = t("changelogSend", "Send to OpenCode");
-  }, 1600);
-}
-
-/** Footer state for the dialog's own check-for-updates action. */
-function setChangelogCheckUi(
-  kind: "idle" | "checking" | "upToDate" | "failed",
-): void {  const dialog = changelogDialog;
-  if (!dialog) {
-    return;
-  }
-  const statusEl = dialog.querySelector<HTMLElement>("#ocu-cl-status");
-  const checkBtn = dialog.querySelector<HTMLButtonElement>(
-    '[data-ocu-cl="check"]',
-  );
-  if (statusEl) {
-    statusEl.textContent =
-      kind === "checking"
-        ? t("checkingUpdates", "Checking for updates…")
-        : kind === "upToDate"
-          ? t("changelogUpToDate", "Already on the latest version.")
-          : kind === "failed"
-            ? t("changelogCheckFailed", "Check failed. Try again later.")
-            : "";
-  }
-  if (checkBtn) {
-    checkBtn.disabled = kind === "checking";
-  }
-}
-
-/** Reflects session readiness on the dialog's send action. */
-function setChangelogSendEnabled(enabled: boolean): void {
-  const sendBtn = changelogDialog?.querySelector<HTMLButtonElement>(
-    '[data-ocu-cl="send"]',
-  );
-  if (!sendBtn) {
-    return;
-  }
-  sendBtn.disabled = !enabled;
-  sendBtn.title = enabled
-    ? ""
-    : t("changelogRestarting", "Session is restarting…");
-}
-
-/**
- * Sending needs a live session, so the dialog's send action waits out
- * the post-update restart and re-arms once the new session is up.
- */
-function markChangelogRestartPending(): void {
-  changelogRestartPending = true;
-  setChangelogSendEnabled(false);
-  // Safety valve: a restart that never completes must not leave the
-  // send action disabled forever.
-  if (changelogRestartTimer !== null) {
-    clearTimeout(changelogRestartTimer);
-  }
-  changelogRestartTimer = setTimeout(() => {
-    changelogRestartTimer = null;
-    changelogRestartPending = false;
-    setChangelogSendEnabled(true);
-  }, 60_000);
-}
-
-/** Session lifecycle hook: the restarted session accepts sends again. */
-export function notifyOpenCodeSessionStarted(): void {
-  if (changelogRestartTimer !== null) {
-    clearTimeout(changelogRestartTimer);
-    changelogRestartTimer = null;
-  }
-  if (!changelogRestartPending) {
-    return;
-  }
-  changelogRestartPending = false;
-  setChangelogSendEnabled(true);
 }
 
 // ── Clipboard ──
@@ -1323,104 +1402,49 @@ function copyText(text: string, button: HTMLElement): void {
   }
 }
 
-// ── Focus trap ──
-
-function trapCycle(root: HTMLElement, e: KeyboardEvent): void {
-  const focusables = Array.from(
-    root.querySelectorAll<HTMLElement>(
-      'button, input, select, textarea, [tabindex]',
-    ),
-  ).filter(
-    (el) =>
-      !(el as HTMLButtonElement).disabled &&
-      el.getAttribute("tabindex") !== "-1" &&
-      el.closest(".hidden") === null,
-  );
-  if (!focusables.length) return;
-  const first = focusables[0];
-  const last = focusables[focusables.length - 1];
-  if (e.shiftKey && document.activeElement === first) {
-    e.preventDefault();
-    last.focus();
-  } else if (!e.shiftKey && document.activeElement === last) {
-    e.preventDefault();
-    first.focus();
-  }
+/** Brief "Sent" feedback on the send button label. */
+function flashSendLabel(button: HTMLElement): void {
+  const label = button.querySelector(".ocu-copy-label");
+  if (!label) return;
+  label.textContent = t("changelogSentLabel", "Sent");
+  setTimeout(() => {
+    label.textContent = t("changelogSend", "Send to OpenCode");
+  }, 1600);
 }
 
 // ── Events ──
 
 function bindEvents(): void {
   pill?.addEventListener("click", () => {
-    if (cardMode === "checking") return;
     if (!status) return;
     if (isBusyState(status.state)) {
-      // State B: the toolbar progress line carries the live status; the
-      // pill toggles the log drawer for the step history.
-      if (drawer && !drawer.classList.contains("hidden")) {
-        closeDrawer(false);
-      } else {
-        openDrawer();
-      }
+      minimized = false;
+      dialogStep = "progress";
+      renderDialog(true);
+      renderProgressLine();
       return;
     }
-    if (isPopoverState(status.state)) {
-      openPopover();
+    if (status.state === "available") {
+      openUpcomingNotes();
       return;
     }
-    if (status.state === "success") {
-      // Leave the restart prompt cleanly (same as "Later") before the
-      // re-check replaces the card, so the update flow is not dropped
-      // silently on the host side.
-      hideCardFull();
-      postMessage({ type: "dismissOpenCodeUpdate" });
+    if (status.state === "failed" || status.state === "success") {
+      openResultStep();
+      return;
     }
-    // failed/idle/success: the pill opens the current version's notes;
-    // the check-for-updates action lives inside the changelog dialog.
-    closePopover(false);
-    openChangelogDialog();
-    postMessage({ type: "requestOpenCodeChangelog" });
+    if (status.state === "installable") {
+      flowKind = "install";
+      openMethodStep();
+      return;
+    }
+    openInstalledNotes();
   });
 
   card?.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
     const act = target.closest<HTMLElement>("[data-ocu-act]");
-    if (act) {
-      const action = act.dataset.ocuAct;
-      if (action === "x") {
-        if (cardMode === "success") {
-          // Same as Esc on the success card: dismiss the flow entirely.
-          hideCardFull();
-          postMessage({ type: "dismissOpenCodeUpdate" });
-        } else {
-          hideCardFull();
-        }
-      } else if (action === "restart") {
-        hideCardFull();
-        postMessage({ type: "restartAfterUpdate" });
-      } else if (action === "restart-changelog") {
-        // One click, both jobs: ask for the notes first (the version
-        // fields are still set), then restart behind the open dialog.
-        hideCardFull();
-        openChangelogDialog({ hideCheck: true });
-        markChangelogRestartPending();
-        postMessage({ type: "requestOpenCodeChangelog" });
-        postMessage({ type: "restartAfterUpdate" });
-      } else if (action === "changelog") {
-        hideCardFull();
-        openChangelogDialog({ hideCheck: true });
-        postMessage({ type: "requestOpenCodeChangelog" });
-      } else if (action === "later") {
-        hideCardFull();
-        postMessage({ type: "dismissOpenCodeUpdate" });
-      } else if (action === "abandon") {
-        postMessage({ type: "abandonOpenCodeUpdate" });
-        showHintCard(t("abandonedHint", "Install abandoned"));
-      } else if (action === "viewlog") {
-        openDrawer();
-      } else if (action === "gotit") {
-        hideCardFull();
-      }
+    if (act && act.dataset.ocuAct === "x") {
+      hideCardFull();
       return;
     }
     const copyBtn = target.closest<HTMLElement>("[data-ocu-copy]");
@@ -1428,113 +1452,25 @@ function bindEvents(): void {
       copyText(copyBtn.dataset.ocuCopy ?? "", copyBtn);
     }
   });
+}
 
-  popover?.addEventListener("keydown", (e) => {
-    const rows = popRows();
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setPopoverFocused(popFocused + 1);
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setPopoverFocused(popFocused - 1);
-    } else if (e.key === "Home") {
-      e.preventDefault();
-      setPopoverFocused(0);
-    } else if (e.key === "End") {
-      e.preventDefault();
-      setPopoverFocused(rows.length - 1);
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      const row = rows[popFocused];
-      if (row) chooseMethod(row.dataset.ocuMethod ?? "");
-    }
-  });
-
-  popList?.addEventListener("click", (e) => {
-    const row = (e.target as HTMLElement).closest<HTMLElement>("[data-ocu-method]");
-    if (row) chooseMethod(row.dataset.ocuMethod ?? "");
-  });
-
-  popover?.querySelector("#ocu-pop-close")?.addEventListener("click", () => {
-    closePopover(true);
-  });
-
-  popover?.querySelector("#ocu-pop-cancel")?.addEventListener("click", () => {
-    closePopover(true);
-  });
-
-  popover?.querySelector("#ocu-pop-changelog")?.addEventListener("click", () => {
-    closePopover(false);
-    openChangelogDialog({ hideCheck: true });
-    postMessage({ type: "requestOpenCodeChangelog" });
-  });
-
-  drawer?.querySelector("#ocu-drawer-close")?.addEventListener("click", () => {
-    closeDrawer(true);
-  });
-
-  document.addEventListener("mousedown", (e) => {
-    const target = e.target as HTMLElement | null;
-    if (!target) return;
-    if (
-      popover &&
-      !popover.classList.contains("hidden") &&
-      !popover.contains(target) &&
-      !(pill && pill.contains(target))
-    ) {
-      closePopover(true);
-    }
-  });
-
+function bindGlobalKeys(): void {
   document.addEventListener("keydown", (e) => {
     if (installPrompt && !installPrompt.classList.contains("hidden")) {
       if (e.key === "Escape") {
         e.preventDefault();
         answerInstallPrompt("notNow");
       } else if (e.key === "Tab") {
-        trapCycle(installPrompt, e);
+        trapFocus(installPrompt, e);
       }
       return;
     }
-    if (changelogDialog && !changelogDialog.classList.contains("hidden")) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        hideChangelogDialog();
-      } else if (e.key === "Tab") {
-        trapCycle(changelogDialog, e);
-      }
-      return;
-    }
-    if (popover && !popover.classList.contains("hidden")) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closePopover(true);
-      } else if (e.key === "Tab") {
-        trapCycle(popover, e);
-      }
-      return;
-    }
-    if (drawer && !drawer.classList.contains("hidden")) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closeDrawer(true);
-      } else if (e.key === "Tab") {
-        trapCycle(drawer, e);
-      }
+    if (dialog?.handleKeydown(e)) {
       return;
     }
     if (card && !card.classList.contains("hidden") && e.key === "Escape") {
       e.preventDefault();
-      if (cardMode === "success") {
-        hideCardFull();
-        postMessage({ type: "dismissOpenCodeUpdate" });
-      } else {
-        hideCardFull();
-      }
+      hideCardFull();
     }
-  });
-
-  window.addEventListener("resize", () => {
-    if (popover && !popover.classList.contains("hidden")) positionPopover();
   });
 }
