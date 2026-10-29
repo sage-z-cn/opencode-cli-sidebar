@@ -440,6 +440,73 @@ describe("ConfigSyncService decision matrix", () => {
     });
   });
 
+  it("propagates a deletion to the unchanged survivor under the propagate policy", () => {
+    expect(
+      decideSyncAction({
+        localHash: null,
+        remoteHash: H("base"),
+        baselineHash: H("base"),
+        onConflict: "prompt",
+        deletions: "propagate",
+      }),
+    ).toEqual({ type: "deleteRemote" });
+    expect(
+      decideSyncAction({
+        localHash: H("base"),
+        remoteHash: null,
+        baselineHash: H("base"),
+        onConflict: "prompt",
+        deletions: "propagate",
+      }),
+    ).toEqual({ type: "deleteLocal" });
+  });
+
+  it("keeps a conflict when the survivor moved after the deletion", () => {
+    expect(
+      decideSyncAction({
+        localHash: null,
+        remoteHash: H("newer"),
+        baselineHash: H("base"),
+        onConflict: "prompt",
+        deletions: "propagate",
+      }),
+    ).toEqual({
+      type: "conflict",
+      kind: "localDeleted",
+      reason: "remoteChanged",
+    });
+    expect(
+      decideSyncAction({
+        localHash: H("edited"),
+        remoteHash: null,
+        baselineHash: H("base"),
+        onConflict: "prompt",
+        deletions: "propagate",
+      }),
+    ).toEqual({ type: "conflict", kind: "remoteDeleted" });
+  });
+
+  it("never propagates a deletion without a baseline", () => {
+    expect(
+      decideSyncAction({
+        localHash: null,
+        remoteHash: H("remote"),
+        baselineHash: null,
+        onConflict: "prompt",
+        deletions: "propagate",
+      }),
+    ).toEqual({ type: "download" });
+    expect(
+      decideSyncAction({
+        localHash: H("local"),
+        remoteHash: null,
+        baselineHash: null,
+        onConflict: "prompt",
+        deletions: "propagate",
+      }),
+    ).toEqual({ type: "upload" });
+  });
+
   it("uploads brand-new local files and downloads brand-new remote files", () => {
     expect(
       decideSyncAction({
@@ -1067,6 +1134,63 @@ describe("ConfigSyncService engine", () => {
     const snapshot = await service.getSnapshot();
     expect(snapshot.conflicts).toEqual([]);
     expect(readLocal("cli.json")).toBe("base");
+  });
+
+  it("propagates a local deletion to the server under the propagate policy", async () => {
+    writeLocal("cli.json", "base");
+    client.addFile("cli.json", "base");
+    await service.syncNow();
+    settings["sync.deletions"] = "propagate";
+    fs.rmSync(path.join(configDir, "cli.json"));
+
+    await service.syncNow();
+
+    expect(client.calls.del).toEqual(["cli.json"]);
+    expect(client.files.has("cli.json")).toBe(false);
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.conflicts).toEqual([]);
+    expect(snapshot.history[0]).toMatchObject({ deletes: 1, result: "success" });
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(syncStorageDir(storageDir), "manifest.json"), "utf8"),
+    );
+    expect(manifest.files["cli.json"]).toBeUndefined();
+  });
+
+  it("keeps the server copy when it changed after the local deletion", async () => {
+    writeLocal("cli.json", "base");
+    client.addFile("cli.json", "base");
+    await service.syncNow();
+    settings["sync.deletions"] = "propagate";
+    fs.rmSync(path.join(configDir, "cli.json"));
+    client.addFile("cli.json", "remote-newer");
+
+    await service.syncNow();
+
+    expect(client.calls.del).toEqual([]);
+    expect(client.files.get("cli.json")?.content.toString()).toBe(
+      "remote-newer",
+    );
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.conflicts[0]).toMatchObject({
+      kind: "localDeleted",
+      reason: "remoteChanged",
+    });
+  });
+
+  it("propagates a remote deletion locally only after a backup", async () => {
+    writeLocal("cli.json", "base");
+    client.addFile("cli.json", "base");
+    await service.syncNow();
+    settings["sync.deletions"] = "propagate";
+    client.files.delete("cli.json");
+
+    await service.syncNow();
+
+    expect(fs.existsSync(path.join(configDir, "cli.json"))).toBe(false);
+    expect(backupCount("cli.json")).toBe(1);
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.conflicts).toEqual([]);
+    expect(snapshot.history[0]).toMatchObject({ deletes: 1 });
   });
 
   it("auto-resolves both-changed files according to the conflict policy", async () => {

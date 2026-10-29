@@ -455,7 +455,8 @@
           "type": "string",
           "enum": [
             "prompt",
-            "ignore"
+            "ignore",
+            "propagate"
           ],
           "default": "prompt",
           "description": "%configuration.opencode-cli-sidebar.sync.deletions.description%"

@@ -37,6 +37,7 @@
 
 - WebDAV config sync lives in `src/services/sync`: `ConfigSyncService` owns the sync state machine, `WebDavClient` the HTTP layer, `syncItems` item/path/exclusion rules, `SyncManifest` the remote baseline manifest.
 - Data safety first: ambiguous states resolve to conflicts, never silent overwrites. Local destruction paths require a successful backup first. The exception is deliberate scope exit: adding an exclusion purges the corresponding remote files without a prompt.
+- `sync.deletions` is the only path that removes a file without a prompt: `propagate` mirrors a deletion to the other side, and only while that side still matches the manifest baseline; any newer version on the survivor keeps surfacing as a conflict.
 - `ConfigSyncService` resolves through `syncServiceRegistry`; commands and the message router never instantiate it directly.
 - Sync passwords go to VS Code SecretStorage; never log credentials or write them to settings/state.
 - Machine-wide UI status (conflicts, state, lastSyncAt, pendingCount, autoSyncPaused) lives in `sync/status.json` under globalStorage; every window watches the file and converges through it. `leader` stays per-window. Writes are serialized per window and carry a unique `writeId` (revision numbers can collide across windows). State-only writes preserve the file's conflict list; only a full pass scan replaces it and conflict resolution removes resolved entries, so a stale window cannot resurrect resolved conflicts.

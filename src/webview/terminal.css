@@ -2182,8 +2182,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .dav-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--vscode-foreground, #d4d4d4); }
 .dav-sub-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; margin-top: 2px; }
 .dav-sub { font-size: 11px; color: var(--vscode-descriptionForeground, #8a8a8a); }
-.dav-sub--error { color: var(--vscode-errorForeground, #f87171); }
-.dav-sub--warn { color: var(--vscode-editorWarning-foreground, #cca700); }
 .dav-header-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .dav-icon-btn {
   background: none; border: none; color: var(--vscode-descriptionForeground, #8a8a8a);
@@ -2302,6 +2300,16 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .dav-poll-row input:focus { outline: 1px solid var(--vscode-focusBorder, #007fd4); border-color: var(--vscode-focusBorder, #007fd4); }
 .dav-poll-row input:disabled { opacity: 0.4; cursor: not-allowed; }
 .dav-poll-unit { font-size: 11px; color: var(--vscode-descriptionForeground, #8a8a8a); }
+/* General pane: deletion policy select, same compact control language as the poll row */
+.dav-select-row { display: flex; align-items: center; gap: 8px; margin: 16px 0 4px; font-size: 12px; flex-wrap: wrap; }
+.dav-select-label { color: var(--vscode-foreground, #d4d4d4); }
+.dav-select {
+  background: var(--vscode-input-background, #2a2a2a);
+  color: var(--vscode-input-foreground, var(--vscode-foreground, #d4d4d4));
+  border: 1px solid var(--vscode-input-border, transparent); border-radius: 4px;
+  padding: 3px 6px; font-size: 12px; font-family: inherit;
+}
+.dav-select:focus { outline: 1px solid var(--vscode-focusBorder, #007fd4); border-color: var(--vscode-focusBorder, #007fd4); }
 /* Server pane: rate-limit row, same compact number-input language as the poll row */
 .dav-ratelimit-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 4px; font-size: 12px; flex-wrap: wrap; }
 .dav-ratelimit-row label { color: var(--vscode-foreground, #d4d4d4); }
@@ -2499,6 +2507,7 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   background: var(--vscode-editorWidget-background, #202020);
 }
 .dav-foot-st { flex: 1; font-size: 11px; color: var(--vscode-descriptionForeground, #8a8a8a); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dav-foot-st.is-warn { color: var(--vscode-editorWarning-foreground, #cca700); }
 
 /* Narrow sidebar (<420px): summary/messages wrap to a second row;
    nav collapses to a horizontal scrollable tab strip above the body */

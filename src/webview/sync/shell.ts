@@ -40,6 +40,11 @@ export interface SyncShellStrings {
   fSelfSignedHint: string;
   fShowIcon: string;
   fShowIconHint: string;
+  deletionPolicy: string;
+  deletionPrompt: string;
+  deletionIgnore: string;
+  deletionPropagate: string;
+  deletionHint: string;
   panelIntro: string;
   autoSync: string;
   chevTitle: string;
@@ -84,11 +89,6 @@ export function renderSyncShell(d: SyncShellStrings): string {
         <h1 class="dav-title">${d.panelTitle}</h1>
         <div class="dav-sub-row">
           <span class="dav-sub" id="dav-sub-mode">${d.panelIntro}</span>
-          <span class="dav-sub" id="dav-sub-pending" hidden></span>
-          <span class="dav-sub dav-sub--error" id="dav-sub-conflict" hidden></span>
-          <span class="dav-sub dav-sub--error" id="dav-sub-paused" hidden></span>
-          <span class="dav-sub dav-sub--warn" id="dav-sub-auth" hidden></span>
-          <span class="dav-sub" id="dav-sub-leader" hidden></span>
         </div>
       </div>
       <div class="dav-header-actions">
@@ -134,6 +134,15 @@ export function renderSyncShell(d: SyncShellStrings): string {
             </div>
           </div>
           <label class="dav-check dav-block-gap"><input type="checkbox" id="dav-f-showicon"><span>${d.fShowIcon}<span class="dav-hint">${d.fShowIconHint}</span></span></label>
+          <div class="dav-select-row">
+            <label class="dav-select-label" for="dav-f-deletions">${d.deletionPolicy}</label>
+            <select class="dav-select" id="dav-f-deletions">
+              <option value="prompt">${d.deletionPrompt}</option>
+              <option value="ignore">${d.deletionIgnore}</option>
+              <option value="propagate">${d.deletionPropagate}</option>
+            </select>
+          </div>
+          <div class="dav-hint">${d.deletionHint}</div>
         </div>
         <div class="dav-pane" data-pane="server" id="dav-pane-server">
           <div class="dav-field">

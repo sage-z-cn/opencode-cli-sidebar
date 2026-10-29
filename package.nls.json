@@ -58,5 +58,5 @@
   "configuration.opencode-cli-sidebar.sync.disabledItems.description": "Sync item paths that are currently turned off.",
   "configuration.opencode-cli-sidebar.sync.excludedPaths.description": "Files or folders inside the OpenCode config folder that are never synced, even when a sync item covers them.",
   "configuration.opencode-cli-sidebar.sync.onConflict.description": "What to do when local and remote copies changed at the same time: prompt, preferLocal, or preferRemote.",
-  "configuration.opencode-cli-sidebar.sync.deletions.description": "What to do when a file was deleted on one side: prompt for a decision or ignore the deletion."
+  "configuration.opencode-cli-sidebar.sync.deletions.description": "What to do when a file was deleted on one side: prompt for a decision, ignore the deletion and keep the surviving copy, or propagate it to the other side."
 }

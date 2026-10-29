@@ -34,12 +34,7 @@ export const syncL10nStrings: Record<string, string> = {
   autoOn: l10n.t("Auto sync on"),
   manualMode: l10n.t("Manual-only mode"),
   pausedBadge: l10n.t("Auto sync paused after repeated errors"),
-  notLeaderBadge: l10n.t("Auto-sync is handled by another window"),
   actSyncNow: l10n.t("Sync now"),
-
-  // Panel header modes
-  hdrPending: l10n.t("{0} pending"),
-  hdrConflict: l10n.t("{0} conflict(s)"),
 
   // Items pane
   itemTagBuiltin: l10n.t("built-in"),
@@ -161,6 +156,13 @@ export const syncShellStrings: SyncShellStrings = {
   fShowIcon: l10n.t("Show sync status on the toolbar button"),
   fShowIconHint: l10n.t(
     "Shown on the config sync toolbar button; appears for syncing, pending, conflicts and errors only",
+  ),
+  deletionPolicy: l10n.t("When a file is deleted"),
+  deletionPrompt: l10n.t("Ask first"),
+  deletionIgnore: l10n.t("Keep the other copy"),
+  deletionPropagate: l10n.t("Delete on both sides"),
+  deletionHint: l10n.t(
+    "Deleting on both sides removes the other copy only while it still matches the last sync",
   ),
   autoSync: l10n.t("Auto sync"),
   chevTitle: l10n.t("Collapse or expand trigger sources"),

@@ -7,6 +7,7 @@
 import type {
   WebDavConflictEntry,
   WebDavConnectionDraft,
+  WebDavDeletionPolicy,
   WebDavHistoryEntry,
   WebDavServerConfig,
   WebDavSyncItemUi,
@@ -30,6 +31,10 @@ function el<T extends HTMLElement>(id: string): T {
 
 function input(id: string): HTMLInputElement {
   return el<HTMLInputElement>(id);
+}
+
+function select(id: string): HTMLSelectElement {
+  return el<HTMLSelectElement>(id);
 }
 
 // ── Server form ──
@@ -64,6 +69,7 @@ export function populateGeneralForm(state: SyncUiState): void {
   input("dav-f-interval").value = String(
     Math.max(1, settings.pollIntervalMinutes),
   );
+  select("dav-f-deletions").value = settings.deletions ?? "prompt";
   el("dav-f-passbadge").classList.toggle("hidden", !settings.passwordSet);
 }
 
@@ -92,6 +98,12 @@ export function collectServerConfig(): {
   return { config, password: password ? password : undefined };
 }
 
+/** Deletion policy select; unknown values fall back to the safe prompt. */
+export function collectDeletionPolicy(): WebDavDeletionPolicy {
+  const value = select("dav-f-deletions").value;
+  return value === "ignore" || value === "propagate" ? value : "prompt";
+}
+
 /** Read the immediate-apply options (auto sync group + status indication). */
 export function collectSyncOptions(): WebDavSyncOptions {
   return {
@@ -106,6 +118,7 @@ export function collectSyncOptions(): WebDavSyncOptions {
       Number(input("dav-f-interval").value) || 30,
     ),
     showStatusIcon: input("dav-f-showicon").checked,
+    deletions: collectDeletionPolicy(),
   };
 }
 

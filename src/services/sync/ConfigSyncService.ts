@@ -9,6 +9,7 @@ import type {
   WebDavConflictEntry,
   WebDavConflictKind,
   WebDavConnectionDraft,
+  WebDavDeletionPolicy,
   WebDavHistoryEntry,
   WebDavServerConfig,
   WebDavSyncOptions,
@@ -76,7 +77,13 @@ const LOCK_RETRY_MS = 60_000;
 export type SyncTrigger = WebDavSyncTrigger;
 
 export type SyncConflictPolicy = "prompt" | "preferLocal" | "preferRemote";
-export type SyncDeletionPolicy = "prompt" | "ignore";
+/**
+ * Deletion handling. `prompt` surfaces a conflict, `ignore` leaves the
+ * surviving side untouched, and `propagate` mirrors the deletion to the
+ * other side once it is certain the other side did not move since the
+ * last sync.
+ */
+export type SyncDeletionPolicy = WebDavDeletionPolicy;
 
 export interface SyncEngineConfig {
   enabled: boolean;
@@ -172,6 +179,8 @@ export type SyncActionType =
   | "agree"
   | "upload"
   | "download"
+  | "deleteRemote"
+  | "deleteLocal"
   | "conflict"
   | "skip"
   | "forget";
@@ -196,8 +205,9 @@ export interface SyncDecisionInput {
 
 /**
  * Pure three-way decision: local and remote state versus the manifest
- * baseline. Never deletes anything silently; deletions on either side
- * surface as conflicts unless the deletion policy says otherwise.
+ * baseline. Deletions never resolve silently by default: they surface as
+ * conflicts unless the policy says `ignore` (keep the survivor) or
+ * `propagate` (mirror the deletion once the survivor is unchanged).
  */
 export function decideSyncAction(input: SyncDecisionInput): SyncAction {
   const localExists = input.localHash !== null;
@@ -243,6 +253,11 @@ export function decideSyncAction(input: SyncDecisionInput): SyncAction {
       // by the ignore policy.
       return { type: "conflict", kind: "remoteDeleted" };
     }
+    if (input.deletions === "propagate") {
+      // Mirror the remote deletion locally; the engine backs the local
+      // copy up before removing it.
+      return { type: "deleteLocal" };
+    }
     return input.deletions === "prompt"
       ? { type: "conflict", kind: "remoteDeleted" }
       : { type: "skip" };
@@ -250,6 +265,14 @@ export function decideSyncAction(input: SyncDecisionInput): SyncAction {
 
   if (!hasBaseline) {
     return { type: "download" };
+  }
+  if (input.deletions === "propagate") {
+    // Only a server copy still matching the baseline is safe to delete: a
+    // newer remote version was written after this device deleted the file,
+    // so the deletion decision cannot speak for it.
+    return input.remoteHash === input.baselineHash
+      ? { type: "deleteRemote" }
+      : { type: "conflict", kind: "localDeleted", reason: "remoteChanged" };
   }
   return input.deletions === "prompt"
     ? { type: "conflict", kind: "localDeleted" }
@@ -518,6 +541,7 @@ export class ConfigSyncService implements vscode.Disposable {
         },
         pollIntervalMinutes: config.pollIntervalMinutes,
         showStatusIcon: config.showStatusIcon,
+        deletions: config.deletions,
         passwordSet,
       },
       items: visibleSyncItems(config.customItems, config.disabledItems),
@@ -654,9 +678,9 @@ export class ConfigSyncService implements vscode.Disposable {
 
   /**
    * Immediate apply for behavior options: persists the auto-sync toggles,
-   * poll interval and status-icon preference, then reconfigures the watcher
-   * and poller right away. Never touches credentials and never re-arms the
-   * circuit breaker.
+   * poll interval, status-icon preference and deletion policy, then
+   * reconfigures the watcher and poller right away. Never touches
+   * credentials and never re-arms the circuit breaker.
    */
   public async applySyncOptions(options: WebDavSyncOptions): Promise<void> {
     try {
@@ -692,6 +716,9 @@ export class ConfigSyncService implements vscode.Disposable {
         !!options.showStatusIcon,
         global,
       );
+      if (options.deletions) {
+        await target.update("sync.deletions", options.deletions, global);
+      }
       // Reuse the settings-change path so watcher and poller honor the new
       // options immediately instead of waiting for the next event.
       this.armTriggers();
@@ -1752,6 +1779,7 @@ export class ConfigSyncService implements vscode.Disposable {
     let applyAgreesAndForgets: (() => Promise<void>) | undefined;
     let completedUploads = 0;
     let completedDownloads = 0;
+    let completedDeletes = 0;
     try {
       const client = await this.createClientFromSettings(config, password);
       const remote = await this.walkRemote(client);
@@ -1769,6 +1797,8 @@ export class ConfigSyncService implements vscode.Disposable {
 
       const uploads: string[] = [];
       const downloads: string[] = [];
+      const remoteDeletes: string[] = [];
+      const localDeletes: string[] = [];
       const agrees: Array<{ rel: string; etag: string | null; hash: string }> =
         [];
       const forgets: string[] = [];
@@ -1857,6 +1887,12 @@ export class ConfigSyncService implements vscode.Disposable {
             break;
           case "download":
             downloads.push(rel);
+            break;
+          case "deleteRemote":
+            remoteDeletes.push(rel);
+            break;
+          case "deleteLocal":
+            localDeletes.push(rel);
             break;
           case "agree":
             agrees.push({
@@ -1979,6 +2015,94 @@ export class ConfigSyncService implements vscode.Disposable {
           remoteContentCache.delete(rel);
         }
       }
+      // Propagated deletions run after transfers so a file that was also
+      // queued for upload/download keeps the transfer's outcome.
+      for (const rel of remoteDeletes) {
+        const remoteStat = remote.files.get(rel);
+        try {
+          if (remoteStat) {
+            await client.del(
+              rel,
+              remoteStat.etag ? { ifMatch: remoteStat.etag } : undefined,
+            );
+          }
+          manifest.remove(rel);
+          await manifest.save();
+          completedDeletes++;
+          this.log("info", `deleted remotely (deletion propagated): ${rel}`);
+        } catch (error) {
+          if (
+            error instanceof WebDavFatalError ||
+            error instanceof WebDavRateLimitedError
+          ) {
+            throw error;
+          }
+          if (error instanceof PreconditionFailedError) {
+            // The server copy moved after the scan: a version this device
+            // never saw, so keep it and surface the decision again.
+            nextConflicts.set(
+              `localDeleted:${rel}`,
+              this.conflictEntry(
+                rel,
+                "localDeleted",
+                undefined,
+                await this.statRemoteFile(client, rel).catch(() => null),
+                "preconditionFailed",
+              ),
+            );
+            continue;
+          }
+          fileErrors++;
+          this.log(
+            "warn",
+            `remote delete failed for ${rel}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      for (const rel of localDeletes) {
+        const abs = this.toAbsoluteLocalPath(rel);
+        try {
+          if (!(await this.backupLocalFile(abs, rel))) {
+            // Never delete the local copy without a backup.
+            nextConflicts.set(
+              `remoteDeleted:${rel}`,
+              this.conflictEntry(
+                rel,
+                "remoteDeleted",
+                await fs.promises.stat(abs).catch(() => undefined),
+                undefined,
+                "backupFailed",
+              ),
+            );
+            this.log(
+              "warn",
+              `deletion not propagated; backup failed for ${rel}`,
+            );
+            continue;
+          }
+          await fs.promises.rm(abs, { force: true });
+          manifest.remove(rel);
+          await manifest.save();
+          completedDeletes++;
+          this.log("info", `deleted locally (deletion propagated): ${rel}`);
+        } catch (error) {
+          if (
+            error instanceof WebDavFatalError ||
+            error instanceof WebDavRateLimitedError
+          ) {
+            throw error;
+          }
+          fileErrors++;
+          this.log(
+            "warn",
+            `local delete failed for ${rel}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
       await applyAgreesAndForgets();
       const now = Date.now();
 
@@ -2018,16 +2142,16 @@ export class ConfigSyncService implements vscode.Disposable {
       this.appendHistory({
         time: now,
         direction,
-        files: completedUploads + completedDownloads,
+        files: completedUploads + completedDownloads + completedDeletes,
         uploads: completedUploads,
         downloads: completedDownloads,
-        deletes: this.takeExcludeDeletes(trigger),
+        deletes: this.takeExcludeDeletes(trigger) + completedDeletes,
         result,
         trigger,
       });
       this.log(
         "info",
-        `sync finished (${trigger}): ${completedUploads} up, ${completedDownloads} down, ${nextConflicts.size} conflict(s), ${fileErrors} error(s)`,
+        `sync finished (${trigger}): ${completedUploads} up, ${completedDownloads} down, ${completedDeletes} deleted, ${nextConflicts.size} conflict(s), ${fileErrors} error(s)`,
       );
 
       const delta: WebDavSyncStatusDelta = {

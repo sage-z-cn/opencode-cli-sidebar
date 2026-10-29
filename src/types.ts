@@ -312,11 +312,16 @@ export interface WebDavServerConfig {
   rateLimitWindowMinutes?: number;
 }
 
+/** How a deletion on one side is handled. */
+export type WebDavDeletionPolicy = "prompt" | "ignore" | "propagate";
+
 /** Behavior options that apply immediately when changed in the panel. */
 export interface WebDavSyncOptions {
   autoSync: WebDavAutoSyncConfig;
   pollIntervalMinutes: number;
   showStatusIcon: boolean;
+  /** Omitted by callers that do not change the deletion policy. */
+  deletions?: WebDavDeletionPolicy;
 }
 
 /** Sync settings snapshot for the panel; server card plus immediate options. */

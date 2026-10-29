@@ -58,5 +58,5 @@
   "configuration.opencode-cli-sidebar.sync.disabledItems.description": "当前已关闭的同步项路径。",
   "configuration.opencode-cli-sidebar.sync.excludedPaths.description": "OpenCode 配置目录内永不同步的文件或文件夹，即使被同步项覆盖。",
   "configuration.opencode-cli-sidebar.sync.onConflict.description": "本地与远端同时修改时的处理方式：prompt 询问、preferLocal 偏好本地或 preferRemote 偏好远端。",
-  "configuration.opencode-cli-sidebar.sync.deletions.description": "一侧文件被删除时的处理方式：prompt 询问或 ignore 忽略。"
+  "configuration.opencode-cli-sidebar.sync.deletions.description": "一侧文件被删除时的处理方式：prompt 询问、ignore 忽略并保留另一侧副本，或 propagate 同步删除另一侧。"
 }

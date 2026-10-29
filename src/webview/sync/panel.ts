@@ -164,25 +164,24 @@ export function footerText(state: SyncUiState): string {
   return st.footIdle(label);
 }
 
+/** Footer accent: only the conflict line carries a warning tone; every
+ *  earlier state in footerText keeps the neutral description color. */
+export function footerTone(state: SyncUiState): "warn" | undefined {
+  if (
+    state.state === "unconfigured" ||
+    state.state === "needsAuth" ||
+    state.state === "syncing" ||
+    state.state === "error" ||
+    state.autoSyncPaused
+  ) {
+    return undefined;
+  }
+  return state.conflictCount > 0 ? "warn" : undefined;
+}
+
 /** Refresh all panel regions from merged state. */
 export function renderPanel(state: SyncUiState): void {
-  const pending = el("dav-sub-pending");
-  pending.hidden = !(state.pendingCount > 0);
-  pending.textContent = state.pendingCount > 0 ? st.hdrPending(state.pendingCount) : "";
-  const conflict = el("dav-sub-conflict");
-  conflict.hidden = !(state.conflictCount > 0);
-  conflict.textContent = state.conflictCount > 0 ? st.hdrConflict(state.conflictCount) : "";
-  el("dav-sub-paused").hidden = !state.autoSyncPaused;
   const auth = state.state === "needsAuth";
-  const authBadge = el("dav-sub-auth");
-  authBadge.hidden = !auth;
-  authBadge.textContent = auth ? st.stNeedsAuth : "";
-  // Non-leader window: another window owns the auto-sync channels.
-  const follower =
-    state.leader === false && state.state !== "unconfigured";
-  const leaderBadge = el("dav-sub-leader");
-  leaderBadge.hidden = !follower;
-  leaderBadge.textContent = follower ? st.notLeaderBadge : "";
 
   const navCount = el("dav-nav-conflict-count");
   navCount.classList.toggle("hidden", !(state.conflictCount > 0));
@@ -194,7 +193,9 @@ export function renderPanel(state: SyncUiState): void {
   syncBtn.classList.toggle("is-loading", syncing);
   syncBtn.setAttribute("aria-busy", String(syncing));
   syncBtn.innerHTML = syncNowButtonLabel(syncing);
-  el("dav-foot-st").textContent = footerText(state);
+  const foot = el("dav-foot-st");
+  foot.textContent = footerText(state);
+  foot.classList.toggle("is-warn", footerTone(state) === "warn");
 
   renderItems(state);
   renderExcludes(state);
@@ -353,6 +354,7 @@ export function initPanel(handlers: {
     },
   );
   el("dav-f-interval").addEventListener("change", handlers.onApplyOptions);
+  el("dav-f-deletions").addEventListener("change", handlers.onApplyOptions);
 
   // History pane: quiet clear action in the header meta row.
   el("dav-hist-clear").addEventListener("click", handlers.onClearHistory);

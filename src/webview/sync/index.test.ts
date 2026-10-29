@@ -100,6 +100,11 @@ const SHELL: SyncShellStrings = {
   fSelfSignedHint: "",
   fShowIcon: "Show icon",
   fShowIconHint: "",
+  deletionPolicy: "When a file is deleted",
+  deletionPrompt: "Ask first",
+  deletionIgnore: "Keep the other copy",
+  deletionPropagate: "Delete on both sides",
+  deletionHint: "",
   panelIntro: "",
   autoSync: "Auto sync",
   chevTitle: "Collapse",
@@ -527,7 +532,6 @@ describe("sync UI (webview)", () => {
       expect(
         document.getElementById("dav-auth-banner-text")?.textContent,
       ).toContain("not stored on this device");
-      expect(document.getElementById("dav-sub-auth")?.hidden).toBe(false);
 
       document.querySelector<HTMLButtonElement>('[data-pane="general"]')?.click();
       document.getElementById("dav-auth-go")?.click();
@@ -545,7 +549,6 @@ describe("sync UI (webview)", () => {
 
       applyWebdavSyncData(snapshot());
       expect(banner.classList.contains("hidden")).toBe(true);
-      expect(document.getElementById("dav-sub-auth")?.hidden).toBe(true);
     });
 
     it("reports required credentials in the footer", () => {
@@ -554,6 +557,38 @@ describe("sync UI (webview)", () => {
         "Credentials required · enter the password in Server settings",
       );
       applyWebdavSyncData(snapshot());
+    });
+
+    it("keeps the panel subtitle to the intro line", () => {
+      applyWebdavSyncData(
+        snapshot({ conflictCount: 2, pendingCount: 3, leader: false }),
+      );
+      const subRow = document.querySelector(".dav-sub-row") as HTMLElement;
+      expect(
+        Array.from(subRow.querySelectorAll(".dav-sub")).map(
+          (node) => node.id,
+        ),
+      ).toEqual(["dav-sub-mode"]);
+      applyWebdavSyncData(snapshot());
+    });
+
+    it("tones the footer only for the conflict line", () => {
+      const foot = () => document.getElementById("dav-foot-st") as HTMLElement;
+      expect(foot().classList.contains("is-warn")).toBe(false);
+
+      applyWebdavSyncData(snapshot({ conflictCount: 2 }));
+      expect(foot().classList.contains("is-warn")).toBe(true);
+
+      // States that speak earlier in the footer keep the neutral color.
+      applyWebdavSyncData(snapshot({ conflictCount: 2, autoSyncPaused: true }));
+      expect(foot().classList.contains("is-warn")).toBe(false);
+
+      applyWebdavSyncData(snapshot({ conflictCount: 2, pendingCount: 1 }));
+      expect(foot().classList.contains("is-warn")).toBe(true);
+      expect(foot().textContent).toContain("conflict(s)");
+
+      applyWebdavSyncData(snapshot());
+      expect(foot().classList.contains("is-warn")).toBe(false);
     });
 
     it("lazy-loads the log on section entry", () => {
@@ -675,6 +710,17 @@ describe("sync UI (webview)", () => {
         options: { showStatusIcon: boolean };
       };
       expect(iconApply.options.showStatusIcon).toBe(false);
+
+      const deletions = document.getElementById(
+        "dav-f-deletions",
+      ) as HTMLSelectElement;
+      expect(deletions.value).toBe("prompt");
+      deletions.value = "propagate";
+      deletions.dispatchEvent(new Event("change"));
+      const deletionApply = posted().pop() as {
+        options: { deletions: string };
+      };
+      expect(deletionApply.options.deletions).toBe("propagate");
     });
 
     it("highlights the save button for unsaved server edits and clears on snapshot", () => {
