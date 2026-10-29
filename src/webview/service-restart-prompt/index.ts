@@ -1,5 +1,5 @@
 /**
- * "Restart Terminal / Full Restart / Cancel" restart dialog
+ * "Full Restart / Restart Terminal / Cancel" restart dialog
  * (webview side).
  *
  * The host pushes `showServiceRestartPrompt` while a restart is pending;
@@ -59,16 +59,16 @@ function buildOverlay(): HTMLDivElement {
     escapeHtml(
       t(
         "body",
-        "The terminal is about to restart. Restart Terminal keeps the current session untouched; Full Restart also restarts the OpenCode background service and interrupts the session that is currently running.",
+        "The terminal is about to restart. Full Restart restarts both the OpenCode service and the current terminal; a session that is still running resumes automatically afterwards. Restart Terminal only reopens the terminal.",
       ),
     ) +
     "</div>" +
     '<div class="srp-actions">' +
-    '<button type="button" class="srp-btn srp-btn-primary" id="srp-terminal-only">' +
-    escapeHtml(t("terminalOnly", "Restart Terminal")) +
-    "</button>" +
-    '<button type="button" class="srp-btn srp-btn-warning" id="srp-restart-service">' +
+    '<button type="button" class="srp-btn srp-btn-primary" id="srp-restart-service">' +
     escapeHtml(t("restartService", "Full Restart")) +
+    "</button>" +
+    '<button type="button" class="srp-btn" id="srp-terminal-only">' +
+    escapeHtml(t("terminalOnly", "Restart Terminal")) +
     "</button>" +
     '<button type="button" class="srp-btn" id="srp-cancel">' +
     escapeHtml(t("cancel", "Cancel")) +
@@ -109,5 +109,5 @@ export function showServiceRestartPrompt(): void {
   if (overlay && !overlay.classList.contains("hidden")) return;
   if (!overlay) overlay = buildOverlay();
   overlay.classList.remove("hidden");
-  overlay.querySelector<HTMLButtonElement>("#srp-terminal-only")?.focus();
+  overlay.querySelector<HTMLButtonElement>("#srp-restart-service")?.focus();
 }

@@ -86,23 +86,23 @@ describe("service restart prompt (webview)", () => {
     expect(overlay().classList.contains("hidden")).toBe(true);
   });
 
-  it("lays out terminal-only first, cancel last, with warning styling on restart-service", () => {
+  it("lays out full restart first, cancel last, with primary styling on restart-service", () => {
     showServiceRestartPrompt();
 
     const ids = Array.from(
       overlay().querySelectorAll<HTMLButtonElement>(".srp-actions button"),
     ).map((b) => b.id);
     expect(ids).toEqual([
-      "srp-terminal-only",
       "srp-restart-service",
+      "srp-terminal-only",
       "srp-cancel",
     ]);
-    // terminal-only 为主按钮样式；restart-service 为警告色按钮；cancel 为次按钮
-    expect(document.getElementById("srp-terminal-only")?.className).toBe(
+    // restart-service 为主按钮样式；terminal-only 与 cancel 为次按钮
+    expect(document.getElementById("srp-restart-service")?.className).toBe(
       "srp-btn srp-btn-primary",
     );
-    expect(document.getElementById("srp-restart-service")?.className).toBe(
-      "srp-btn srp-btn-warning",
+    expect(document.getElementById("srp-terminal-only")?.className).toBe(
+      "srp-btn",
     );
     expect(document.getElementById("srp-cancel")?.className).toBe("srp-btn");
     // 关闭按钮带 aria-label（无注入时回退英文）

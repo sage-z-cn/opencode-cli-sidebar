@@ -2024,16 +2024,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .srp-btn-primary:hover {
   background: var(--vscode-button-hoverBackground, #007fd4);
 }
-/* 警告色按钮：statusBarItem-warning 系（状态栏警告色，饱和橙黄），hover 同色提亮 */
-.srp-btn-warning {
-  background: var(--vscode-statusBarItem-warningBackground, #705f00);
-  border-color: var(--vscode-statusBarItem-warningBackground, #705f00);
-  color: var(--vscode-statusBarItem-warningForeground, #ffffff);
-}
-.srp-btn-warning:hover {
-  background: var(--vscode-statusBarItem-warningBackground, #705f00);
-  filter: brightness(1.15);
-}
 
 /* ── OpenCode 安装确认弹窗（ocu-ip-）：结构与配色同 srp- 的 overlay/alertdialog 模式 ── */
 .ocu-ip-overlay {

@@ -854,7 +854,7 @@
   "The server address or security settings are not valid.": "服务器地址或安全设置无效。",
   "The server refused the operation. Check the account permissions.": "服务器拒绝了该操作，请检查账号权限。",
   "The server rejected the sign-in details.": "服务器拒绝了登录凭据。",
-  "The terminal is about to restart. Restart Terminal keeps the current session untouched; Full Restart also restarts the OpenCode background service and interrupts the session that is currently running.": "即将重启终端。重启终端不会影响当前会话；完全重启将同时重启 OpenCode 后台服务，并中断当前正在执行的会话。",
+  "The terminal is about to restart. Full Restart restarts both the OpenCode service and the current terminal; a session that is still running resumes automatically afterwards. Restart Terminal only reopens the terminal.": "即将重启。完全重启会同时重启 OpenCode Service 和当前终端，仍在执行的会话会在重启后自动继续；重启终端则只重新打开终端。",
   "The WebDAV password is not stored on this device. Enter it in Server settings to resume syncing.": "此设备未保存 WebDAV 密码。请在“服务器”设置中填写密码以恢复同步。",
   "The WebDAV server rejected the stored credentials. Update the username or password in Server settings.": "WebDAV 服务器拒绝了已保存的凭据。请在“服务器”设置中更新用户名或密码。",
   "Theme mode": "主题模式",
