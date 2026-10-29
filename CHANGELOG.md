@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Update**: Show the new version's release notes before the update method choice.
 - **Update**: Move method selection, progress and results into one dialog with a live output pane and a minimize-to-toolbar option.
 
+#### 5.6.4
+**New Features**
+- **Update**: Show release notes and use a unified update dialog.
+- **Webview**: Make full restart the primary action in the restart prompt.
+- **Sync**: Add a propagate option for the deletion sync policy.
+
 #### 5.6.3
 **Improvements**
 - **Plugins**: Replace plugin auto-update with a cache refresh for more reliable plugin information.
