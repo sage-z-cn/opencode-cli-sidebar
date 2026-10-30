@@ -1256,6 +1256,8 @@ describe("TerminalProvider", () => {
       await messageHandler({ type: "restartAfterUpdate" });
       await flushAsyncStartup();
 
+      // 重启意愿已由 webview 确认，宿主不再弹原生模态
+      expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
       expect(restartSpy).toHaveBeenCalledTimes(1);
       expect(restartSpy).toHaveBeenCalledWith("always");
       expect(getUpdateStatusPushes(view).at(-1)).toMatchObject({

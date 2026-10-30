@@ -913,11 +913,13 @@ export class TerminalProvider
     this.opencodeUpdateService?.abandonUpdate();
   }
 
-  /** Restarts the session onto the updated binary, then clears the UI. */
+  /**
+   * 更新已装好：webview 侧已确认过重启意愿，这里直接重启会话并收尾。
+   */
   public async restartAfterUpdate(): Promise<void> {
     const installed = this.updateUi.installedVersion;
     // "always": the updated CLI binary must replace the running shared
-    // background service, so no prompt is shown.
+    // background service, so no second prompt is shown.
     this.restart("always");
     this.updateUi = {
       ...this.updateUi,

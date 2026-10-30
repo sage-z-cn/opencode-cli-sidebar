@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Unreleased
 **Bug Fixes**
 - **Sync**: Keep conflict and status state consistent across all VS Code windows.
+- **Update**: Collapse in-place terminal redraws, strip ANSI sequences, and run upgrade commands without color or spinner animation so the install log stops showing escape garbage.
 
 **Improvements**
 - **Sync**: Carry the sync status on the config sync toolbar button instead of a separate status icon.
@@ -16,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **UI**: Use cloud icons for sync conflict and credential states; drop count badges from the toolbar status.
 - **Update**: Show the new version's release notes before the update method choice.
 - **Update**: Move method selection, progress and results into one dialog with a live output pane and a minimize-to-toolbar option.
+- **Update**: Make the release notes head actions icon-only, ordered send, copy, open in browser.
+- **Update**: Drop the version delta line from the release notes body and label the footer action simply "Update".
+- **Update**: Give the update dialog a fixed height so switching steps no longer resizes it.
+- **Update**: Retitle the method step to "Select update method" or "Select install method" per flow, and replace its cancel and release-notes buttons with a confirm action.
+- **Update**: Report success and failure inside the step dialog with a single confirm action instead of a separate result screen.
+- **Update**: Split the progress dialog into steps on top and a terminal-style output pane below; the output pane no longer collapses.
+- **Update**: Show an explicit success or failure banner above the steps so the outcome never has to be inferred.
+- **Update**: Confirm restarts in a dedicated in-webview dialog after an update succeeds, instead of restarting on confirm or using a native modal.
+- **Update**: Keep a retry action in the failed step view and stop advertising the target version as installed when an update fails.
 
 #### 5.6.4
 **New Features**

@@ -39,7 +39,6 @@ export const openCodeUpdateL10nStrings: Record<string, string> = {
   // Update dialog: release notes step
   changelogLabel: l10n.t('Changelog'),
   changelogSend: l10n.t('Send to OpenCode'),
-  changelogSentLabel: l10n.t('Sent'),
   changelogSendPrompt: l10n.t(
     'The above is the OpenCode {0} changelog. Please summarize it.',
   ),
@@ -49,19 +48,16 @@ export const openCodeUpdateL10nStrings: Record<string, string> = {
   changelogCheck: l10n.t('Check for new version'),
   changelogUpToDate: l10n.t('Already on the latest version.'),
   changelogCheckFailed: l10n.t('Check failed. Try again later.'),
-  versionDelta: l10n.t('Current {0}, new {1}'),
   notesUnavailable: l10n.t(
     'Release notes are unavailable for this version. You can still update.',
   ),
-  updateNotesCta: l10n.t('Update to {0}'),
-  latestLabel: l10n.t('latest'),
+  updateAction: l10n.t('Update'),
 
   // Update dialog: method step
-  installPopoverTitle: l10n.t('Install OpenCode CLI'),
-  updatePopoverTitle: l10n.t('Update OpenCode CLI to {0}'),
-  backToNotes: l10n.t('Release notes'),
+  updateMethodTitle: l10n.t('Select update method'),
+  installMethodTitle: l10n.t('Select install method'),
   hintConfirm: l10n.t('Enter to confirm'),
-  cancelLabel: l10n.t('Cancel'),
+  confirmLabel: l10n.t('Confirm'),
   methodDetected: l10n.t('Detected install method'),
   methodLastUsed: l10n.t('Last used'),
 
@@ -91,17 +87,19 @@ export const openCodeUpdateL10nStrings: Record<string, string> = {
   minimize: l10n.t('Minimize'),
   abortUpdate: l10n.t('Abort update'),
   abortConfirm: l10n.t('Click again to abort'),
-  outputTitle: l10n.t('Output'),
-
-  // Update dialog: result step
-  successTitle: l10n.t('OpenCode {0} installed.'),
-  successMessage: l10n.t('Restart the terminal now?'),
-  sessionAutoStarted: l10n.t('OpenCode session started automatically.'),
+  updateSucceeded: l10n.t('OpenCode {0} updated'),
+  installSucceeded: l10n.t('OpenCode {0} installed'),
+  updateFailedResult: l10n.t('Update failed'),
+  installFailedResult: l10n.t('Installation failed'),
+  retryAction: l10n.t('Retry'),
+  restartPromptTitle: l10n.t('Restart the terminal?'),
+  restartPromptBody: l10n.t(
+    'Restart the terminal to start using the new version.',
+  ),
   restartNow: l10n.t('Restart now'),
-  resultRetry: l10n.t('Retry'),
-  resultClose: l10n.t('Close'),
-  updateFailedTitle: l10n.t('Update did not finish'),
-  blockedTitle: l10n.t('npm install blocked by nvm security policy'),
+  later: l10n.t('Later'),
+
+  // Update dialog: outcome of a finished step
   abandonUpdate: l10n.t('Abandon install'),
   remediateFailed: l10n.t(
     'Automatic fix did not succeed. Run the following commands in the terminal, then start the install again.',

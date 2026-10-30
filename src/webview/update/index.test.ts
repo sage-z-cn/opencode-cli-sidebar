@@ -149,7 +149,7 @@ describe("OpenCode update UI (webview)", () => {
 
     expect(overlay().classList.contains("hidden")).toBe(false);
     expect(dialogTitle()).toBe("OpenCode 2.0.7");
-    expect(dialogBody().textContent).toContain("Current 2.0.6, new 2.0.7");
+    expect(dialogBody().querySelector(".ocu-dlg-delta")).toBeNull();
     expect(latestPosts()).toContainEqual({
       type: "requestOpenCodeChangelog",
       version: "2.0.7",
@@ -173,29 +173,42 @@ describe("OpenCode update UI (webview)", () => {
     expect(dialogBody().textContent).toContain("Notes");
     expect(
       dialogFoot().querySelector('[data-ocu-dlg="update"]')?.textContent,
-    ).toBe("Update to 2.0.7");
+    ).toBe("Update");
     // No secondary "Later" in the notes footer: the primary CTA owns the
     // bottom-right corner and the close button handles dismissal.
     expect(dialogFoot().querySelector('[data-ocu-dlg="later"]')).toBeNull();
     const notesButtons = Array.from(dialogFoot().querySelectorAll("button"));
     expect(notesButtons.at(-1)?.getAttribute("data-ocu-dlg")).toBe("update");
-    // Browser fallback is a single icon button in the head, directly left
-    // of close, not a footer text action.
+    // Head actions are icon-only buttons ordered send, copy, browser.
     const headButtons = Array.from(
       document
         .getElementById("ocu-dlg-head-actions")
         ?.querySelectorAll("button") ?? [],
     );
-    expect(headButtons.at(-1)?.getAttribute("data-ocu-dlg")).toBe("open");
+    expect(headButtons.map((b) => b.getAttribute("data-ocu-dlg"))).toEqual([
+      "send",
+      "copy",
+      "open",
+    ]);
+    for (const button of headButtons) {
+      expect(button.textContent?.trim()).toBe("");
+      expect(button.querySelector("svg")).not.toBeNull();
+      expect(button.getAttribute("title")).toBe(
+        button.getAttribute("aria-label"),
+      );
+      expect(button.getAttribute("title")).toBeTruthy();
+    }
     expect(dialogFoot().querySelector('[data-ocu-dlg="open"]')).toBeNull();
 
     click('[data-ocu-dlg="update"]');
 
-    expect(dialogTitle()).toBe("Update OpenCode CLI to 2.0.7");
+    expect(dialogTitle()).toBe("Select update method");
     expect(dialogBody().querySelectorAll("[data-ocu-method]").length).toBeGreaterThan(0);
-    expect(
-      dialogFoot().querySelector('[data-ocu-dlg="back-notes"]'),
-    ).not.toBeNull();
+    // The method step confirms from the footer; it has no cancel or
+    // release-notes escape hatch, only the head close button.
+    expect(dialogFoot().querySelector('[data-ocu-dlg="confirm"]')).not.toBeNull();
+    expect(dialogFoot().querySelector('[data-ocu-dlg="back-notes"]')).toBeNull();
+    expect(dialogFoot().querySelector('[data-ocu-dlg="cancel"]')).toBeNull();
   });
 
   it("offers the update action even when release notes fail", () => {
@@ -220,22 +233,6 @@ describe("OpenCode update UI (webview)", () => {
         .getElementById("ocu-dlg-head-actions")
         ?.querySelector('[data-ocu-dlg="open"]'),
     ).not.toBeNull();
-  });
-
-  it("returns from the method step to the release notes", () => {
-    resetStatus();
-    applyOpenCodeUpdateStatus({
-      state: "available",
-      step: "",
-      latestVersion: "2.0.7",
-    });
-    pill().click();
-    applyOpenCodeChangelog(notesPayload());
-    click('[data-ocu-dlg="update"]');
-    click('[data-ocu-dlg="back-notes"]');
-
-    expect(dialogTitle()).toBe("OpenCode 2.0.7");
-    expect(dialogBody().textContent).toContain("Notes");
   });
 
   it("preselects the last used method in the method step", () => {
@@ -268,7 +265,14 @@ describe("OpenCode update UI (webview)", () => {
     applyOpenCodeChangelog(notesPayload());
     click('[data-ocu-dlg="update"]');
 
+    // Picking a row only moves the selection; the footer confirm starts it.
     click('[data-ocu-method="npm"]');
+    expect(
+      latestPosts().find(
+        (message: any) => message?.type === "startOpenCodeUpdate",
+      ),
+    ).toBeUndefined();
+    click('[data-ocu-dlg="confirm"]');
 
     expect(latestPosts()).toContainEqual({
       type: "startOpenCodeUpdate",
@@ -358,7 +362,7 @@ describe("OpenCode update UI (webview)", () => {
     expect(overlay().classList.contains("hidden")).toBe(true);
   });
 
-  it("moves to the result step on success and restarts from there", () => {
+  it("asks about restarting inside the dialog after success", () => {
     resetStatus();
     applyOpenCodeUpdateStatus({
       state: "updating",
@@ -373,16 +377,74 @@ describe("OpenCode update UI (webview)", () => {
       targetVersion: "2.0.7",
     });
 
-    expect(dialogTitle()).toBe("OpenCode 2.0.7 installed.");
-    expect(dialogFoot().querySelector('[data-ocu-dlg="restart"]')).not.toBeNull();
+    // 成功在原步骤弹窗收尾：标题换成版本号，步骤与输出保留，页脚只剩确认
+    expect(dialogTitle()).toBe("OpenCode 2.0.7");
+    expect(dialogBody().querySelector(".ocu-dlg-steps")).not.toBeNull();
+    expect(dialogBody().querySelector(".ocu-dlg-result.is-ok")?.textContent).toBe(
+      "OpenCode 2.0.7 updated",
+    );
+    expect(dialogFoot().querySelector('[data-ocu-dlg="abort"]')).toBeNull();
+    expect(
+      dialogFoot().querySelector('[data-ocu-dlg="finish"]')?.textContent,
+    ).toBe("Confirm");
 
-    click('[data-ocu-dlg="restart"]');
+    click('[data-ocu-dlg="finish"]');
+
+    // 确认不直接重启：另开确认弹窗，用户点重启才发消息
+    const prompt = document.getElementById("ocu-restart-prompt");
+    expect(prompt?.classList.contains("hidden")).toBe(false);
+    expect(prompt?.textContent).toContain("Restart the terminal?");
+    expect(overlay().classList.contains("hidden")).toBe(false);
+    expect(latestPosts()).not.toContainEqual({ type: "restartAfterUpdate" });
+
+    click('[data-ocu-rp="restart"]');
 
     expect(latestPosts()).toContainEqual({ type: "restartAfterUpdate" });
+    expect(prompt?.classList.contains("hidden")).toBe(true);
     expect(overlay().classList.contains("hidden")).toBe(true);
   });
 
-  it("dismisses the success result through the close button", () => {
+  it("defers the restart without touching the running session", () => {
+    resetStatus();
+    applyOpenCodeUpdateStatus({
+      state: "success",
+      step: "",
+      installedVersion: "2.0.7",
+      targetVersion: "2.0.7",
+    });
+    vi.mocked(postMessage).mockClear();
+
+    click('[data-ocu-dlg="finish"]');
+    click('[data-ocu-rp="later"]');
+
+    expect(latestPosts()).toContainEqual({ type: "dismissOpenCodeUpdate" });
+    expect(latestPosts()).not.toContainEqual({ type: "restartAfterUpdate" });
+    expect(
+      document
+        .getElementById("ocu-restart-prompt")
+        ?.classList.contains("hidden"),
+    ).toBe(true);
+    expect(overlay().classList.contains("hidden")).toBe(true);
+  });
+
+  it("drops the restart prompt when the flow moves on", () => {
+    resetStatus();
+    applyOpenCodeUpdateStatus({
+      state: "success",
+      step: "",
+      installedVersion: "2.0.7",
+      targetVersion: "2.0.7",
+    });
+    click('[data-ocu-dlg="finish"]');
+    const prompt = document.getElementById("ocu-restart-prompt");
+    expect(prompt?.classList.contains("hidden")).toBe(false);
+
+    applyOpenCodeUpdateStatus({ state: "idle", step: "" });
+
+    expect(prompt?.classList.contains("hidden")).toBe(true);
+  });
+
+  it("dismisses the success dialog through the close button", () => {
     resetStatus();
     applyOpenCodeUpdateStatus({
       state: "success",
@@ -398,7 +460,7 @@ describe("OpenCode update UI (webview)", () => {
     expect(overlay().classList.contains("hidden")).toBe(true);
   });
 
-  it("shows failure detail and command fallbacks in the result step", () => {
+  it("shows failure detail and command fallbacks in the step dialog", () => {
     resetStatus();
     applyOpenCodeUpdateStatus({
       state: "failed",
@@ -408,16 +470,33 @@ describe("OpenCode update UI (webview)", () => {
       remediationCommands: ["nvm firewall trust module opencode", "nvm reshim"],
     });
 
-    expect(dialogTitle()).toBe(
-      "npm install blocked by nvm security policy",
-    );
+    expect(dialogTitle()).toBe("Updating OpenCode");
+    expect(
+      dialogBody().querySelector(".ocu-dlg-result.is-bad")?.textContent,
+    ).toBe("Update failed");
     expect(dialogBody().textContent).toContain("nvm reshim");
     expect(
-      dialogFoot().querySelector('[data-ocu-dlg="retry"]'),
+      dialogFoot().querySelector('[data-ocu-dlg="finish"]'),
     ).not.toBeNull();
   });
 
-  it("retries from the failure result into the method step", () => {
+  it("restarts the update from the failure outcome block", () => {
+    resetStatus();
+    applyOpenCodeUpdateStatus({
+      state: "failed",
+      step: "",
+      detail: "upgrade command failed",
+      targetVersion: "2.0.7",
+      remediationCommands: ["nvm reshim"],
+    });
+
+    click('[data-ocu-dlg="retry"]');
+
+    expect(dialogTitle()).toBe("Select update method");
+    expect(dialogBody().querySelector("[data-ocu-method]")).not.toBeNull();
+  });
+
+  it("retries from the failed pill into the method step", () => {
     resetStatus();
     applyOpenCodeUpdateStatus({
       state: "failed",
@@ -426,9 +505,9 @@ describe("OpenCode update UI (webview)", () => {
       targetVersion: "2.0.7",
     });
 
-    click('[data-ocu-dlg="retry"]');
+    pill().click();
 
-    expect(dialogTitle()).toBe("Update OpenCode CLI to 2.0.7");
+    expect(dialogTitle()).toBe("Select update method");
     expect(dialogBody().querySelector("[data-ocu-method]")).not.toBeNull();
   });
 
@@ -464,8 +543,9 @@ describe("OpenCode update UI (webview)", () => {
 
     pill().click();
 
-    expect(dialogTitle()).toBe("Install OpenCode CLI");
+    expect(dialogTitle()).toBe("Select install method");
     expect(dialogBody().querySelector('[data-ocu-method="npm"]')).not.toBeNull();
+    expect(dialogFoot().querySelector('[data-ocu-dlg="confirm"]')).not.toBeNull();
     expect(dialogFoot().querySelector('[data-ocu-dlg="back-notes"]')).toBeNull();
   });
 
@@ -478,6 +558,7 @@ describe("OpenCode update UI (webview)", () => {
     });
     pill().click();
     click('[data-ocu-method="npm"]');
+    click('[data-ocu-dlg="confirm"]');
 
     applyOpenCodeUpdateStatus({
       state: "updating",
@@ -612,7 +693,7 @@ describe("OpenCode update UI (webview)", () => {
     expect(isInstallPromptVisible()).toBe(false);
   });
 
-  it("keeps restart as the only success action", () => {
+  it("keeps a single confirm action once the flow finishes", () => {
     resetStatus();
     applyOpenCodeUpdateStatus({
       state: "success",
@@ -622,7 +703,7 @@ describe("OpenCode update UI (webview)", () => {
 
     const actions = Array.from(dialogFoot().querySelectorAll("button"));
     expect(actions).toHaveLength(1);
-    expect(actions[0].getAttribute("data-ocu-dlg")).toBe("restart");
-    expect(actions[0].textContent).toBe("Restart now");
+    expect(actions[0].getAttribute("data-ocu-dlg")).toBe("finish");
+    expect(actions[0].textContent).toBe("Confirm");
   });
 });

@@ -1561,6 +1561,7 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   align-items: center;
   justify-content: center;
   padding: 16px;
+  overflow-y: auto;
   background: var(--vscode-widget-shadow, rgba(0, 0, 0, 0.45));
 }
 .ocu-dlg-overlay.hidden { display: none; }
@@ -1570,8 +1571,9 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   box-sizing: border-box;
   width: min(560px, calc(100vw - 32px));
   max-width: 100%;
-  max-height: min(78vh, 680px);
-  min-height: 0;
+  margin: auto 0;
+  /* 固定高度：切换步骤时弹窗不随内容伸缩，多出的内容由正文区滚动 */
+  height: 640px;
   background: var(--vscode-editorWidget-background, #1e1e1e);
   border: 1px solid var(--vscode-editorWidget-border, #3c3c3c);
   border-radius: 8px;
@@ -1693,14 +1695,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   white-space: nowrap;
 }
 
-/* 版本跨度提示：位于更新日志正文首行，弱化但保持可读 */
-.ocu-dlg-delta {
-  margin: 0 0 2px;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--vscode-descriptionForeground, #9d9d9d);
-}
-
 /* 更新方式列表：正文内的整宽选项，键盘焦点由 .is-focused 表达 */
 .ocu-dlg-methods {
   display: flex;
@@ -1814,50 +1808,91 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   color: var(--vscode-descriptionForeground, #9d9d9d);
 }
 
-/* 输出日志：可折叠详情，等宽小字，限高滚动避免撑高对话框 */
-.ocu-dlg-log {
-  margin-top: 12px;
-  border: 1px solid var(--vscode-editorWidget-border, #3c3c3c);
-  border-radius: 4px;
-  background: var(--vscode-input-background, #1a1a1a);
-}
-.ocu-dlg-log summary {
+/* 进度步骤：正文上下分区，上方步骤固定高度、下方输出占满剩余空间 */
+.ocu-dlg-body.is-progress {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 10px;
-  font-size: 11px;
-  color: var(--vscode-descriptionForeground, #9d9d9d);
-  cursor: pointer;
-  list-style: none;
+  flex-direction: column;
+  overflow: hidden;
 }
-.ocu-dlg-log summary:hover { color: var(--vscode-foreground, #cccccc); }
-.ocu-dlg-log summary::-webkit-details-marker { display: none; }
-.ocu-dlg-log summary::after {
-  content: "+";
-  color: inherit;
+.ocu-dlg-progress {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
-.ocu-dlg-log[open] summary::after { content: "−"; }
-.ocu-dlg-log-lines {
+/* 上方状态区固定占 40%，步骤多或失败说明长时自己滚动 */
+.ocu-dlg-status {
+  flex: 0 0 40%;
   box-sizing: border-box;
-  max-height: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+.ocu-dlg-progress > .ocu-dlg-status > .ocu-dlg-steps {
+  flex: none;
+}
+/* 输出：终端样式的整宽面板，固定占 60%，贴近对话框下沿 */
+.ocu-dlg-output {
+  flex: 0 0 60%;
+  box-sizing: border-box;
+  min-height: 0;
+  margin: 0 -14px -14px;
+  padding: 8px 14px 10px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 6px 10px 8px;
-  border-top: 1px solid var(--vscode-editorWidget-border, #3c3c3c);
+  background: var(--vscode-terminal-background, rgba(0, 0, 0, 0.28));
+  color: var(--vscode-terminal-foreground, #cccccc);
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 11px;
-  line-height: 1.55;
-  color: var(--vscode-descriptionForeground, #9d9d9d);
+  line-height: 1.5;
 }
-.ocu-dlg-log-lines:empty { display: none; }
+/* 结果横幅：成功后立刻给结论，失败同样在步骤上方点明 */
+.ocu-dlg-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.ocu-dlg-result svg { flex: none; width: 13px; height: 13px; }
+.ocu-dlg-result.is-ok { color: var(--vscode-charts-green, #89d185); }
+.ocu-dlg-result.is-bad { color: var(--vscode-errorForeground, #f14c4c); }
+/* 失败收尾：步骤与输出之间的说明与手动修复命令 */
+.ocu-dlg-outcome {
+  flex: none;
+}
+.ocu-dlg-outcome-msg {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+/* 失败态的次要动作：页脚只有确认，重试就近放在失败说明下方 */
+.ocu-dlg-retry {
+  appearance: none;
+  margin-top: 2px;
+  padding: 3px 10px;
+  background: none;
+  border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, #3c3c3c));
+  border-radius: 4px;
+  color: var(--vscode-foreground, #cccccc);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.ocu-dlg-retry:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.14));
+}
 .ocu-dlg-log-line {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.ocu-dlg-log:first-child { margin-top: 0; }
 
 /* 中止更新：脚注级的克制危险操作，仅悬停时转为错误色 */
 .ocu-dlg-danger {
@@ -1921,17 +1956,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   outline-offset: -1px;
 }
 
-/* 更新日志：方式页返回更新日志的文字入口 */
-.ocu-pop-link {
-  background: none;
-  border: none;
-  padding: 0;
-  font-size: 10px;
-  color: var(--vscode-textLink-foreground, #4daafc);
-  cursor: pointer;
-}
-.ocu-pop-link:hover { text-decoration: underline; }
-.ocu-pop-link.hidden { display: none; }
 /* 更新日志正文：在对话框正文里复用，外层已负责滚动与内边距 */
 .ocu-dlg-body .ocu-cl-body { padding: 0; overflow: visible; }
 .ocu-cl-body {
@@ -2033,7 +2057,7 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   .ocu-pill.is-entry,
   .ocu-pill.is-updating { display: inline-flex; }
   .ocu-dlg-overlay { padding: 8px; }
-  .ocu-dlg { width: 100%; max-height: min(82vh, 680px); }
+  .ocu-dlg { width: 100%; }
 }
 
 @media (max-width: 420px) {
@@ -2165,6 +2189,49 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   color: var(--vscode-button-foreground, #fff);
 }
 .ocu-ip-btn-primary:hover {
+  background: var(--vscode-button-hoverBackground, #007fd4);
+}
+
+/* ── OpenCode 更新完成后的重启确认（ocu-rp-）：与 ocu-ip- 同一套 overlay/alertdialog 视觉 ── */
+.ocu-rp-overlay {
+  position: fixed; inset: 0; z-index: 1350;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--vscode-widget-shadow, rgba(0, 0, 0, 0.55));
+}
+.ocu-rp-overlay.hidden { display: none; }
+.ocu-rp-dialog {
+  position: relative;
+  width: min(360px, 92vw);
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background, #161616));
+  border: 1px solid var(--vscode-panel-border, #2e2e2e);
+  border-radius: 8px;
+  padding: 16px 18px;
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+}
+.ocu-rp-title { font-size: 13px; font-weight: 600; line-height: 1.5; }
+.ocu-rp-body {
+  font-size: 12px; line-height: 1.6; margin-top: 6px;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+.ocu-rp-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.ocu-rp-btn {
+  appearance: none;
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.12));
+  border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, #2e2e2e));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground, #d4d4d4));
+  border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; font-family: inherit;
+}
+.ocu-rp-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.2));
+}
+.ocu-rp-btn-primary {
+  background: var(--vscode-button-background, #007fd4);
+  border-color: var(--vscode-button-background, #007fd4);
+  color: var(--vscode-button-foreground, #fff);
+}
+.ocu-rp-btn-primary:hover {
   background: var(--vscode-button-hoverBackground, #007fd4);
 }
 

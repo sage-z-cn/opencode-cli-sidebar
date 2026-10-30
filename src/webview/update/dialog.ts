@@ -235,22 +235,15 @@ export class UpdateDialogShell {
   }
 
   private render(content: UpdateDialogContent): void {
-    // Status pushes re-render the whole body; keep the output pane's
-    // expanded state so a step change does not collapse it under the user.
-    const logWasOpen =
-      this.bodyEl.querySelector<HTMLDetailsElement>(".ocu-dlg-log")?.open ===
-      true;
     this.content = content;
     this.titleEl.textContent = content.title;
     this.actionsEl.innerHTML = content.headActions ?? "";
     this.bodyEl.innerHTML = content.body;
+    this.bodyEl.classList.toggle(
+      "is-progress",
+      this.bodyEl.querySelector(".ocu-dlg-progress") !== null,
+    );
     this.footEl.innerHTML = content.foot;
-    if (logWasOpen) {
-      const log = this.bodyEl.querySelector<HTMLDetailsElement>(
-        ".ocu-dlg-log",
-      );
-      if (log) log.open = true;
-    }
     const closeButton = this.el.querySelector<HTMLButtonElement>(
       ".ocu-dlg-x",
     );

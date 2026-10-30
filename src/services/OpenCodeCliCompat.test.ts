@@ -19,6 +19,8 @@ import {
   resetOpenCodeCliVersionCaches,
   resolveOpenCodeV2Service,
   runOpenCodeCliCommand,
+  readOutputLines,
+  sanitizeOutputLine,
   streamOpenCodeCliCommand,
   toCmdShellCommand,
   setOpenCodeCliCompatDiagnostics,
@@ -370,6 +372,130 @@ describe("OpenCodeCliCompat", () => {
   });
 
   describe("streamOpenCodeCliCommand", () => {
+    it("collapses in-place spinner redraws into one line", () => {
+      const out = readOutputLines(
+        "",
+        "T  Upgrade\n│\n•  Using method: npm\n│\n" +
+          "\u001b[1G•  Upgradingo\u001b[2K\u001b[1G•  UpgradingO\u001b[1G•  Upgrade complete\n",
+      );
+
+      expect(out.lines).toEqual([
+        "T  Upgrade",
+        "│",
+        "•  Using method: npm",
+        "│",
+        "•  Upgrade complete",
+      ]);
+      expect(out.carry).toBe("");
+    });
+
+    it("keeps a partially received escape sequence for the next chunk", () => {
+      const first = readOutputLines("", "step \u001b[3");
+      expect(first.lines).toEqual([]);
+      expect(first.carry).toBe("step \u001b[3");
+
+      const second = readOutputLines(first.carry, "5mok\u001b[0m\n");
+      expect(second.lines).toEqual(["step ok"]);
+    });
+
+    it("collapses clack spinner frames that repaint with cursor.to + erase.down", () => {
+      const frame = (glyph: string, text: string) =>
+        `\u001b[35m${glyph}\u001b[39m  ${text}`;
+      const repaint = "\u001b[1G\u001b[J";
+      const out = readOutputLines(
+        "",
+        "\u001b[90m│\u001b[39m\n" +
+          frame("◒", "Upgrading") +
+          repaint +
+          frame("◐", "Upgrading.") +
+          repaint +
+          frame("◓", "Upgrading..") +
+          repaint +
+          `\u001b[32m◇\u001b[39m  Upgrade complete\n`,
+      );
+
+      expect(out.lines).toEqual(["│", "◇  Upgrade complete"]);
+    });
+
+    it("keeps the text before an erase-to-end-of-line sequence", () => {
+      const out = readOutputLines("", "added 12 packages\u001b[K\n");
+
+      expect(out.lines).toEqual(["added 12 packages"]);
+    });
+
+    it("collapses backspace-erased spinner frames", () => {
+      const first = "◒  Upgrading";
+      const erase = "\b".repeat(first.length);
+      const out = readOutputLines(
+        "",
+        `${first}${erase}◐  Upgrading${erase}◇  Upgrade complete\n`,
+      );
+
+      expect(out.lines).toEqual(["◇  Upgrade complete"]);
+    });
+
+    it("honours cursor-left moves when a frame is shorter than the last", () => {
+      const out = readOutputLines(
+        "",
+        "◑  Upgrading...\u001b[16D◇  Done\n",
+      );
+
+      expect(out.lines).toEqual(["◇  Done"]);
+    });
+
+    it("collapses spinner frames that arrive across chunk boundaries", async () => {
+      __setWindowsShellRetryForTests(false);
+      const child = fakeChild();
+      mockSpawn.mockImplementation(() => asChildProcess(child));
+      const lines: string[] = [];
+
+      const pending = streamOpenCodeCliCommand("opencode", ["upgrade"], {
+        onLine: (line) => lines.push(line),
+      });
+      const repaint = "\u001b[1G\u001b[J";
+      child.stdout.emit("data", "\u001b[35m◒\u001b[39m  Upgrading");
+      child.stdout.emit("data", `${repaint}\u001b[35m◐\u001b[39m  Upgrading.`);
+      // 转义序列被切断在 chunk 边界上
+      child.stdout.emit("data", "\u001b[1G\u001b[");
+      child.stdout.emit("data", "J\u001b[32m◇\u001b[39m  Upgrade complete\n");
+      child.emit("close", 0);
+
+      await pending;
+
+      expect(lines).toEqual(["◇  Upgrade complete"]);
+    });
+
+    it("strips ANSI escapes and progress rewrites from streamed lines", async () => {
+      __setWindowsShellRetryForTests(false);
+      const child = fakeChild();
+      mockSpawn.mockImplementation(() => asChildProcess(child));
+      const lines: string[] = [];
+
+      const pending = streamOpenCodeCliCommand("opencode", ["upgrade"], {
+        timeoutMs: 1000,
+        onLine: (line) => lines.push(line),
+      });
+      child.stdout.emit(
+        "data",
+        "\u001b[?9001h\u001b[?25l\u001b[35mUpgrading…\u001b[0m\u001b[?25h\n",
+      );
+      child.stdout.emit("data", "0%\r50%\r\u001b[32mUpgrade complete\u001b[0m\n");
+      // spinner 逐帧原行重写：只应留下最后一帧的内容
+      child.stdout.emit(
+        "data",
+        "\u001b[1GUpgradingo\u001b[1GUpgradingO\u001b[1GUpgrade complete\n",
+      );
+      child.emit("close", 0);
+
+      await pending;
+
+      expect(lines).toEqual([
+        "Upgrading…",
+        "Upgrade complete",
+        "Upgrade complete",
+      ]);
+    });
+
     it("streams stdout and stderr lines and resolves with stdout", async () => {
       __setWindowsShellRetryForTests(false);
       const child = fakeChild();

@@ -307,13 +307,85 @@ interface StreamOutcome {
   stderr: string;
 }
 
-function splitLines(
+/**
+ * 终端重绘控制符：换行、回车、退格、CSI、OSC、字符集指定与双字节转义。
+ * 实时输出（spinner、进度条）靠这些序列原地重写同一行，直接当文本渲染就会
+ * 出现一长串重复内容。
+ */
+const CONTROL_TOKEN =
+  /\r\n|\r|\n|\u0008|\u001b\[[0-9;?]*[a-zA-Z]|\u001b\][^\u0007]*(?:\u0007|\u001b\\)|\u001b[()#][0-9A-Za-z]|\u001b[@-_]/g;
+
+/** 末尾被截断的转义序列，留到下一批数据再解析。 */
+const INCOMPLETE_ESCAPE = /\u001b(?:\[[0-9;?]*|])?$/;
+
+/**
+ * 把原始输出切成可见行，并按终端语义处理原地重写：`\r` 与光标归位
+ * （`ESC[nG`）回到行首、`ESC[2K`/`ESC[2J` 清行、退格与 `ESC[nD` 回删字符。
+ * 这样 spinner 的每一帧只会覆盖上一帧，日志里留下的是最终内容。
+ */
+export function readOutputLines(
   carry: string,
   chunk: string,
 ): { lines: string[]; carry: string } {
-  const parts = (carry + chunk).split(/\r?\n/);
-  const rest = parts.pop() ?? "";
-  return { lines: parts, carry: rest };
+  let text = carry + chunk;
+  let pending = "";
+  const tail = INCOMPLETE_ESCAPE.exec(text);
+  if (tail) {
+    pending = text.slice(tail.index);
+    text = text.slice(0, tail.index);
+  }
+
+  const lines: string[] = [];
+  let line = "";
+  let offset = 0;
+  for (const match of text.matchAll(CONTROL_TOKEN)) {
+    const index = match.index ?? 0;
+    line += text.slice(offset, index);
+    const token = match[0];
+    offset = index + token.length;
+    if (token === "\n" || token === "\r\n") {
+      lines.push(line);
+      line = "";
+    } else if (token === "\r") {
+      line = "";
+    } else if (token === "\u0008") {
+      line = line.slice(0, -1);
+    } else if (token.startsWith("\u001b[")) {
+      const final = token.charAt(token.length - 1);
+      const paramText = token.slice(2, -1);
+      const param = Number(paramText || "1");
+      if (final === "G" || final === "H" || final === "f") {
+        line = final === "G" && param > 1 ? line.slice(0, param - 1) : "";
+      } else if (final === "K" || final === "J") {
+        // 擦到行尾/屏尾：光标恒在行末，已有文本必须保留；只有整行/整屏
+        // 擦除（2、3）才清空，否则 `文本 + ESC[K` 会把整行吞掉。
+        if (param === 2 || param === 3) {
+          line = "";
+        }
+      } else if (final === "D") {
+        line = line.slice(0, Math.max(0, line.length - param));
+      } else if (final === "C") {
+        line += " ".repeat(Math.max(0, param));
+      }
+    }
+    // 其余序列（颜色、光标上下移动、隐藏光标等）不参与纯文本行
+  }
+  line += text.slice(offset);
+  return { lines, carry: line + pending };
+}
+
+/**
+ * Strips leftover control characters from one output line. `readOutputLines`
+ * already resolves in-place rewrites; this is the final guard before the
+ * dialog renders the text.
+ */
+export function sanitizeOutputLine(line: string): string {
+  return line
+    .replace(/\u001b\[[0-9;?]*[a-zA-Z]/g, "")
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b[@-_]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .trimEnd();
 }
 
 function spawnOnce(
@@ -349,30 +421,41 @@ function spawnOnce(
       // stdout/stderr already hold the raw chunks; flush only the pending
       // line fragments through onLine.
       if (outCarry) {
-        onLine?.(outCarry, "stdout");
+        emitLine(outCarry, "stdout");
       }
       if (errCarry) {
-        onLine?.(errCarry, "stderr");
+        emitLine(errCarry, "stderr");
       }
       resolve({ error, stdout, stderr });
+    };
+
+    /** Hands one clean, non-empty line to the listener. */
+    const emitLine = (line: string, stream: OpenCodeCliStream): void => {
+      if (!onLine) {
+        return;
+      }
+      const clean = sanitizeOutputLine(line);
+      if (clean) {
+        onLine(clean, stream);
+      }
     };
 
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
       stdout += chunk;
-      const split = splitLines(outCarry, chunk);
+      const split = readOutputLines(outCarry, chunk);
       outCarry = split.carry;
       for (const line of split.lines) {
-        onLine?.(line, "stdout");
+        emitLine(line, "stdout");
       }
     });
     child.stderr?.on("data", (chunk: string) => {
       stderr += chunk;
-      const split = splitLines(errCarry, chunk);
+      const split = readOutputLines(errCarry, chunk);
       errCarry = split.carry;
       for (const line of split.lines) {
-        onLine?.(line, "stderr");
+        emitLine(line, "stderr");
       }
     });
     child.on("error", (error: Error) => finish(error));
@@ -399,7 +482,17 @@ export async function streamOpenCodeCliCommand(
   options: OpenCodeCliStreamOptions = {},
 ): Promise<string> {
   const timeoutMs = options.timeoutMs ?? 4000;
-  const spawnOptions: SpawnOptions = { timeout: timeoutMs };
+  const spawnOptions: SpawnOptions = {
+    timeout: timeoutMs,
+    // 关闭颜色与交互式动画：升级命令在无终端环境下只需要纯文本行
+    env: {
+      ...process.env,
+      TERM: "dumb",
+      NO_COLOR: "1",
+      FORCE_COLOR: "0",
+      CI: "1",
+    },
+  };
   if (options.signal) {
     spawnOptions.signal = options.signal;
   }

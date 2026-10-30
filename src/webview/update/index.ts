@@ -96,7 +96,7 @@ let card: HTMLElement | null = null;
 let liveRegion: HTMLElement | null = null;
 let dialog: UpdateDialogShell | null = null;
 
-type DialogStep = "notes" | "methods" | "progress" | "result";
+type DialogStep = "notes" | "methods" | "progress";
 
 let dialogStep: DialogStep | null = null;
 /** Install flows have no release notes and start at the method step. */
@@ -194,6 +194,11 @@ export function applyOpenCodeUpdateStatus(next: OpenCodeUpdateUiStatus): void {
   status = status ? { ...status, ...next } : { ...next };
   const st = status;
 
+  // 重启确认只在成功态有意义；任何把流程推走的状态都顺手收掉它
+  if (st.state !== "success") {
+    hideRestartPrompt();
+  }
+
   maybeShowInstallPrompt();
   finishInstallPromptRetry();
   renderPill();
@@ -216,13 +221,14 @@ export function applyOpenCodeUpdateStatus(next: OpenCodeUpdateUiStatus): void {
     }
   } else if (st.state === "success" || st.state === "failed") {
     startingUpdate = false;
-    const entered = dialogStep !== "result";
-    dialogStep = "result";
+    // 成功和失败都在步骤弹窗内收尾：步骤列表与输出保留，页脚换成确认
+    const stepChanged = dialogStep !== "progress";
+    dialogStep = "progress";
     minimized = false;
-    renderDialog(entered);
+    renderDialog(stepChanged);
   } else if (st.state === "available") {
     startingUpdate = false;
-    if (dialogStep === "progress" || dialogStep === "result") {
+    if (dialogStep === "progress") {
       dialogStep = null;
       dialog?.hide();
     }
@@ -234,14 +240,14 @@ export function applyOpenCodeUpdateStatus(next: OpenCodeUpdateUiStatus): void {
   } else if (st.state === "idle") {
     startingUpdate = false;
     minimized = false;
-    if (dialogStep === "progress" || dialogStep === "result") {
+    if (dialogStep === "progress") {
       dialogStep = null;
       dialog?.hide();
     }
   } else if (st.state === "installable") {
     startingUpdate = false;
     minimized = false;
-    if (dialogStep === "progress" || dialogStep === "result") {
+    if (dialogStep === "progress") {
       dialogStep = null;
       dialog?.hide();
     }
@@ -513,7 +519,7 @@ function dismissDialog(): void {
   checkPending = false;
   checkUpToDate = false;
   checkFailed = false;
-  if (dialogStep === "result" && status?.state === "success") {
+  if (status?.state === "success") {
     postMessage({ type: "dismissOpenCodeUpdate" });
   }
   closeDialog();
@@ -579,8 +585,8 @@ function openMethodStep(): void {
   renderDialog(true);
 }
 
-function openResultStep(): void {
-  dialogStep = "result";
+function openOutcomeStep(): void {
+  dialogStep = "progress";
   minimized = false;
   renderDialog(true);
 }
@@ -625,8 +631,6 @@ function buildDialogContent(): {
       return buildMethodsContent();
     case "progress":
       return buildProgressContent();
-    case "result":
-      return buildResultContent();
     default:
       return {
         title: t("changelogLabel", "Changelog"),
@@ -635,6 +639,25 @@ function buildDialogContent(): {
         closeLabel: t("closeLabel", "Close"),
       };
   }
+}
+
+function headActionButton(
+  action: string,
+  label: string,
+  glyph: string,
+): string {
+  const text = escapeHtml(label);
+  return (
+    '<button type="button" class="ocu-dlg-head-btn" data-ocu-dlg="' +
+    action +
+    '" aria-label="' +
+    text +
+    '" title="' +
+    text +
+    '">' +
+    glyph +
+    "</button>"
+  );
 }
 
 function buildNotesContent(): {
@@ -651,42 +674,22 @@ function buildNotesContent(): {
 
   const openUrl = notesPayload?.fallbackUrl || notesUrl;
   const browserButton = openUrl
-    ? '<button type="button" class="ocu-dlg-head-btn" data-ocu-dlg="open" aria-label="' +
-      escapeHtml(t("changelogOpenInBrowser", "Open in browser")) +
-      '" title="' +
-      escapeHtml(t("changelogOpenInBrowser", "Open in browser")) +
-      '">' +
-      ICONS.browser +
-      "</button>"
+    ? headActionButton(
+        "open",
+        t("changelogOpenInBrowser", "Open in browser"),
+        ICONS.browser,
+      )
     : "";
   const headActions =
     (notesState === "ready"
-      ? '<button type="button" class="ocu-dlg-head-btn" data-ocu-dlg="copy">' +
-        ICONS.copy +
-        '<span class="ocu-copy-label">' +
-        escapeHtml(t("copy", "Copy")) +
-        "</span></button>" +
-        '<button type="button" class="ocu-dlg-head-btn" data-ocu-dlg="send">' +
-        ICONS.send +
-        '<span class="ocu-copy-label">' +
-        escapeHtml(t("changelogSend", "Send to OpenCode")) +
-        "</span></button>"
+      ? headActionButton(
+          "send",
+          t("changelogSend", "Send to OpenCode"),
+          ICONS.send,
+        ) + headActionButton("copy", t("copy", "Copy"), ICONS.copy)
       : "") + browserButton;
 
-  const delta =
-    upcoming && version
-      ? '<p class="ocu-dlg-delta">' +
-        escapeHtml(
-          format(
-            t("versionDelta", "Current {0}, new {1}"),
-            status?.currentVersion || installedVersion(),
-            version,
-          ),
-        ) +
-        "</p>"
-      : "";
-
-  let body = delta;
+  let body = "";
   if (notesState === "ready" && notesPayload?.ok) {
     body +=
       (notesPayload.date
@@ -718,12 +721,7 @@ function buildNotesContent(): {
     foot =
       '<div class="ocu-dlg-foot-main">' +
       '<button type="button" class="ocu-btn ocu-btn-primary" data-ocu-dlg="update">' +
-      escapeHtml(
-        format(
-          t("updateNotesCta", "Update to {0}"),
-          version || t("latestLabel", "latest"),
-        ),
-      ) +
+      escapeHtml(t("updateAction", "Update")) +
       "</button></div>";
   } else {
     const stateText = checkPending
@@ -775,11 +773,10 @@ function buildMethodsContent(): {
   focus?: string;
   closeLabel?: string;
 } {
-  const target = updateTargetVersion();
-  const updating = flowKind === "update";
-  const title = updating
-    ? format(t("updatePopoverTitle", "Update OpenCode CLI to {0}"), target || "")
-    : t("installPopoverTitle", "Install OpenCode CLI");
+  const title =
+    flowKind === "install"
+      ? t("installMethodTitle", "Select install method")
+      : t("updateMethodTitle", "Select update method");
 
   const det = status?.detectedMethod ?? "";
   const last = status?.lastUsedMethod ?? "";
@@ -834,22 +831,16 @@ function buildMethodsContent(): {
       "</button>";
   });
 
-  const back = updating
-    ? '<button type="button" class="ocu-pop-link" data-ocu-dlg="back-notes">' +
-      escapeHtml(t("backToNotes", "Release notes")) +
-      "</button>"
-    : "";
-
   return {
     title,
     body: '<div class="ocu-dlg-methods" role="listbox">' + rows + "</div>",
     foot:
       '<div class="ocu-dlg-foot-main"><span class="ocu-pop-hint">' +
       escapeHtml(t("hintConfirm", "Enter to confirm")) +
-      "</span>" +
-      back +
-      '<button type="button" class="ocu-btn" data-ocu-dlg="cancel">' +
-      escapeHtml(t("cancelLabel", "Cancel")) +
+      '</span><button type="button" class="ocu-btn ocu-btn-primary" data-ocu-dlg="confirm"' +
+      (startingUpdate ? " disabled" : "") +
+      ">" +
+      escapeHtml(t("confirmLabel", "Confirm")) +
       "</button></div>",
     focus: "[data-ocu-method]",
     closeLabel: t("closeLabel", "Close"),
@@ -865,15 +856,22 @@ function buildProgressContent(): {
   focus?: string;
   closeLabel?: string;
 } {
+  const st = status;
+  const busy = isBusyState(st?.state ?? "");
   const target = updateTargetVersion();
-  const title =
-    flowKind === "install"
+  // 收尾标题只认真正装上去了的版本；失败时不能拿目标版本冒充已安装
+  const installed = st?.installedVersion ?? "";
+  const title = busy
+    ? flowKind === "install"
       ? t("installProgressTitle", "Installing OpenCode")
       : target
         ? format(t("updateProgressTitle", "Updating OpenCode to {0}"), target)
-        : t("updateProgressPlainTitle", "Updating OpenCode");
+        : t("updateProgressPlainTitle", "Updating OpenCode")
+    : installed
+      ? "OpenCode " + installed
+      : t("updateProgressPlainTitle", "Updating OpenCode");
 
-  const history = status?.history ?? [];
+  const history = st?.history ?? [];
   let steps = "";
   for (const entry of history) {
     steps +=
@@ -885,102 +883,124 @@ function buildProgressContent(): {
       escapeHtml(entry.label || STEP_LABELS[entry.step] || entry.step) +
       "</li>";
   }
-  steps +=
-    '<li class="ocu-dlg-step is-active"><span class="ocu-dlg-step-spin">' +
-    ICONS.sync +
-    "</span>" +
-    escapeHtml(progressStepText()) +
-    '<span class="ocu-dlg-step-count">' +
-    escapeHtml(progressStepCount()) +
-    "</span></li>";
+  if (busy) {
+    steps +=
+      '<li class="ocu-dlg-step is-active"><span class="ocu-dlg-step-spin">' +
+      ICONS.sync +
+      "</span>" +
+      escapeHtml(progressStepText()) +
+      '<span class="ocu-dlg-step-count">' +
+      escapeHtml(progressStepCount()) +
+      "</span></li>";
+  }
 
   const logLines = outputLines
     .map((line) => '<div class="ocu-dlg-log-line">' + escapeHtml(line) + "</div>")
     .join("");
 
   const body =
+    '<div class="ocu-dlg-progress"><div class="ocu-dlg-status">' +
+    resultBanner(st) +
     '<ul class="ocu-dlg-steps">' +
     steps +
     "</ul>" +
-    '<details class="ocu-dlg-log">' +
-    "<summary>" +
-    escapeHtml(t("outputTitle", "Output")) +
-    "</summary>" +
-    '<div class="ocu-dlg-log-lines" data-ocu-log>' +
+    failureOutcome(st) +
+    "</div>" +
+    '<div class="ocu-dlg-output" data-ocu-log>' +
     logLines +
-    "</div></details>";
+    "</div></div>";
 
   return {
     title,
-    headActions:
-      '<button type="button" class="ocu-dlg-head-btn" data-ocu-dlg="minimize">' +
-      escapeHtml(t("minimize", "Minimize")) +
-      "</button>",
+    headActions: busy
+      ? '<button type="button" class="ocu-dlg-head-btn" data-ocu-dlg="minimize">' +
+        escapeHtml(t("minimize", "Minimize")) +
+        "</button>"
+      : "",
     body,
-    foot:
-      '<div class="ocu-dlg-foot-main"><button type="button" class="ocu-dlg-danger" data-ocu-dlg="abort"' +
-      (abortArmed ? ' data-armed="true"' : "") +
-      ">" +
-      escapeHtml(
-        abortArmed
-          ? t("abortConfirm", "Click again to abort")
-          : flowKind === "install"
-            ? t("abandonUpdate", "Abandon install")
-            : t("abortUpdate", "Abort update"),
-      ) +
-      "</button></div>",
-    progress: true,
+    foot: busy ? abortFoot() : finishFoot(),
+    progress: busy,
     focus: ".ocu-dlg-body",
-    closeLabel: t("minimize", "Minimize"),
+    closeLabel: busy
+      ? t("minimize", "Minimize")
+      : t("closeLabel", "Close"),
   };
 }
 
-function buildResultContent(): {
-  title: string;
-  body: string;
-  foot: string;
-  focus?: string;
-  closeLabel?: string;
-} {
-  const st = status;
-  if (st?.state === "success") {
-    const version = st.installedVersion ?? st.targetVersion ?? "";
-    const message = st.sessionAutoStarted
-      ? t("sessionAutoStarted", "OpenCode session started automatically.")
-      : t("successMessage", "Restart the terminal now?");
-    const actions = st.sessionAutoStarted
-      ? '<button type="button" class="ocu-btn" data-ocu-dlg="changelog">' +
-        escapeHtml(t("changelogLabel", "Changelog")) +
-        "</button>"
-      : '<button type="button" class="ocu-btn ocu-btn-primary" data-ocu-dlg="restart">' +
-        escapeHtml(t("restartNow", "Restart now")) +
-        "</button>";
-    return {
-      title: format(t("successTitle", "OpenCode {0} installed."), version),
-      body: '<p class="ocu-card-msg">' + escapeHtml(message) + "</p>",
-      foot: '<div class="ocu-dlg-foot-main">' + actions + "</div>",
-      focus: st.sessionAutoStarted
-        ? '[data-ocu-dlg="changelog"]'
-        : '[data-ocu-dlg="restart"]',
-      closeLabel: t("closeLabel", "Close"),
-    };
-  }
+/** 进行中：左下角的二次确认中止按钮 */
+function abortFoot(): string {
+  return (
+    '<div class="ocu-dlg-foot-main"><button type="button" class="ocu-dlg-danger" data-ocu-dlg="abort"' +
+    (abortArmed ? ' data-armed="true"' : "") +
+    ">" +
+    escapeHtml(
+      abortArmed
+        ? t("abortConfirm", "Click again to abort")
+        : flowKind === "install"
+          ? t("abandonUpdate", "Abandon install")
+          : t("abortUpdate", "Abort update"),
+    ) +
+    "</button></div>"
+  );
+}
 
-  const commands = status?.manualCommands?.length
-    ? status.manualCommands
-    : status?.remediationCommands ?? [];
-  const title = commands.length
-    ? t("blockedTitle", "npm install blocked by nvm security policy")
-    : t("updateFailedTitle", "Update did not finish");
+/** 收尾：步骤弹窗右下角只留一个确认按钮 */
+function finishFoot(): string {
+  return (
+    '<div class="ocu-dlg-foot-main"><button type="button" class="ocu-btn ocu-btn-primary" data-ocu-dlg="finish">' +
+    escapeHtml(t("confirmLabel", "Confirm")) +
+    "</button></div>"
+  );
+}
 
-  let body = "";
-  if (!commands.length && st?.detail) {
-    body +=
-      '<p class="ocu-card-msg">' + escapeHtml(st.detail) + "</p>";
+/**
+ * 结果横幅：成功或失败在步骤列表上方直接给一句结论，不必让用户从步骤
+ * 图标或日志里推断。
+ */
+function resultBanner(st: OpenCodeUpdateUiStatus | null): string {
+  if (!st || isBusyState(st.state)) return "";
+  const installing = flowKind === "install";
+  if (st.state === "success") {
+    const version = firstNonEmpty(st.installedVersion, st.targetVersion);
+    const text = installing
+      ? format(t("installSucceeded", "OpenCode {0} installed"), version)
+      : format(t("updateSucceeded", "OpenCode {0} updated"), version);
+    return (
+      '<p class="ocu-dlg-result is-ok">' +
+      ICONS.check +
+      "<span>" +
+      escapeHtml(text.replace(/\s+/g, " ").trim()) +
+      "</span></p>"
+    );
   }
+  if (st.state === "failed") {
+    return (
+      '<p class="ocu-dlg-result is-bad">' +
+      ICONS.error +
+      "<span>" +
+      escapeHtml(
+        installing
+          ? t("installFailedResult", "Installation failed")
+          : t("updateFailedResult", "Update failed"),
+      ) +
+      "</span></p>"
+    );
+  }
+  return "";
+}
+
+/**
+ * 失败时在步骤与输出之间补一行说明，并保留需要手动执行的修复命令。
+ */
+function failureOutcome(st: OpenCodeUpdateUiStatus | null): string {
+  if (st?.state !== "failed") return "";
+  const commands = st.manualCommands?.length
+    ? st.manualCommands
+    : st.remediationCommands ?? [];
+  let inner = "";
   if (commands.length) {
-    body +=
-      '<p class="ocu-card-msg">' +
+    inner +=
+      '<p class="ocu-dlg-outcome-msg">' +
       escapeHtml(
         t(
           "remediateFailed",
@@ -989,7 +1009,7 @@ function buildResultContent(): {
       ) +
       "</p>";
     for (const cmd of commands) {
-      body +=
+      inner +=
         '<div class="ocu-cmd-row"><code>' +
         escapeHtml(cmd) +
         '</code><button type="button" class="ocu-copy" data-ocu-copy="' +
@@ -1000,35 +1020,16 @@ function buildResultContent(): {
         escapeHtml(t("copy", "Copy")) +
         "</span></button></div>";
     }
+  } else if (st.detail) {
+    inner +=
+      '<p class="ocu-dlg-outcome-msg">' + escapeHtml(st.detail) + "</p>";
   }
-  if (outputLines.length) {
-    body +=
-      '<details class="ocu-dlg-log"><summary>' +
-      escapeHtml(t("outputTitle", "Output")) +
-      '</summary><div class="ocu-dlg-log-lines" data-ocu-log>' +
-      outputLines
-        .map(
-          (line) =>
-            '<div class="ocu-dlg-log-line">' + escapeHtml(line) + "</div>",
-        )
-        .join("") +
-      "</div></details>";
-  }
-
-  return {
-    title,
-    body,
-    foot:
-      '<div class="ocu-dlg-foot-main">' +
-      '<button type="button" class="ocu-btn" data-ocu-dlg="cancel">' +
-      escapeHtml(t("resultClose", "Close")) +
-      "</button>" +
-      '<button type="button" class="ocu-btn ocu-btn-primary" data-ocu-dlg="retry">' +
-      escapeHtml(t("resultRetry", "Retry")) +
-      "</button></div>",
-    focus: '[data-ocu-dlg="retry"]',
-    closeLabel: t("closeLabel", "Close"),
-  };
+  // 失败态页脚只有确认，重试放在这里，避免用户关掉弹窗后无处重新开始
+  inner +=
+    '<button type="button" class="ocu-dlg-retry" data-ocu-dlg="retry">' +
+    escapeHtml(t("retryAction", "Retry")) +
+    "</button>";
+  return '<div class="ocu-dlg-outcome">' + inner + "</div>";
 }
 
 // ── Dialog: actions ──
@@ -1066,7 +1067,6 @@ function handleDialogAction(action: string, element: HTMLElement): void {
             notesPayload?.version ?? "",
           ),
       });
-      flashSendLabel(element);
       closeDialog();
       return;
     }
@@ -1078,24 +1078,21 @@ function handleDialogAction(action: string, element: HTMLElement): void {
       renderDialog(false);
       postMessage({ type: "checkOpenCodeUpdates" });
       return;
-    case "back-notes":
-      notesState = notesPayload?.ok ? "ready" : notesState;
-      dialogStep = "notes";
-      notesMode = "upcoming";
-      renderDialog(true);
-      if (notesState === "loading") {
-        requestNotes(updateTargetVersion(), "upcoming");
-      }
-      return;
     case "method": {
       if (startingUpdate) return;
-      const method = element.dataset.ocuMethod ?? "";
-      if (!method) return;
-      startingUpdate = true;
-      renderDialog(false);
-      postMessage({ type: "startOpenCodeUpdate", method });
+      const rows = Array.from(
+        dialog?.root.querySelectorAll<HTMLElement>("[data-ocu-method]") ?? [],
+      );
+      const index = rows.findIndex(
+        (row) => row.dataset.ocuMethod === element.dataset.ocuMethod,
+      );
+      if (index < 0) return;
+      setMethodFocused(index, rows);
       return;
     }
+    case "confirm":
+      startUpdateWithFocusedMethod();
+      return;
     case "minimize":
       minimizeDialog();
       return;
@@ -1120,19 +1117,17 @@ function handleDialogAction(action: string, element: HTMLElement): void {
       showHintCard(t("abandonedHint", "Install abandoned"));
       closeDialog();
       return;
-    case "restart":
-      closeDialog();
-      postMessage({ type: "restartAfterUpdate" });
+    case "finish": {
+      // 成功后另开确认弹窗问是否重启；自动启动过则无需重启
+      if (status?.state === "success" && !status.sessionAutoStarted) {
+        showRestartPrompt();
+        return;
+      }
+      dismissDialog();
       return;
-    case "changelog":
-      closeDialog();
-      openInstalledNotes();
-      return;
+    }
     case "retry":
       openMethodStep();
-      return;
-    case "cancel":
-      dismissDialog();
       return;
     default:
       return;
@@ -1167,13 +1162,20 @@ function handleDialogKeyDown(event: KeyboardEvent): boolean {
   }
   if (event.key === "Enter") {
     event.preventDefault();
-    const row = rows[methodFocused];
-    if (row) {
-      handleDialogAction("method", row);
-    }
+    startUpdateWithFocusedMethod();
     return true;
   }
   return false;
+}
+
+/** Starts the update with the method currently marked as selected. */
+function startUpdateWithFocusedMethod(): void {
+  if (startingUpdate || dialogStep !== "methods") return;
+  const method = methods()[methodFocused];
+  if (!method) return;
+  startingUpdate = true;
+  renderDialog(false);
+  postMessage({ type: "startOpenCodeUpdate", method });
 }
 
 function setMethodFocused(index: number, rows: HTMLElement[]): void {
@@ -1187,7 +1189,7 @@ function setMethodFocused(index: number, rows: HTMLElement[]): void {
     row.querySelector(".ocu-pop-ok")?.classList.toggle("hidden", !on);
   });
   rows[methodFocused].focus();
-  rows[methodFocused].scrollIntoView({ block: "nearest" });
+  rows[methodFocused].scrollIntoView?.({ block: "nearest" });
 }
 
 // ── Changelog payload ──
@@ -1222,6 +1224,8 @@ export function appendOpenCodeUpdateOutput(lines: string[]): void {
 // ── Missing-CLI install confirmation (srp-overlay pattern) ──
 
 let installPrompt: HTMLDivElement | null = null;
+/** 更新成功后的重启确认 overlay */
+let restartPrompt: HTMLDivElement | null = null;
 /** True while the install prompt's re-detect round-trip is in flight. */
 let installPromptRetryActive = false;
 let installPromptLastPending = false;
@@ -1363,19 +1367,95 @@ function answerInstallPrompt(action: CliInstallPromptAction): void {
   }
 }
 
+// ── Restart confirmation after a successful update ──
+
+function buildRestartPrompt(): HTMLDivElement {
+  const el = document.createElement("div");
+  el.className = "ocu-rp-overlay hidden";
+  el.id = "ocu-restart-prompt";
+  el.innerHTML =
+    '<div class="ocu-rp-dialog" role="alertdialog" aria-modal="true" aria-labelledby="ocu-rp-title" aria-describedby="ocu-rp-body">' +
+    '<div class="ocu-rp-title" id="ocu-rp-title">' +
+    escapeHtml(t("restartPromptTitle", "Restart the terminal?")) +
+    "</div>" +
+    '<div class="ocu-rp-body" id="ocu-rp-body">' +
+    escapeHtml(
+      t(
+        "restartPromptBody",
+        "Restart the terminal to start using the new version.",
+      ),
+    ) +
+    "</div>" +
+    '<div class="ocu-rp-actions">' +
+    '<button type="button" class="ocu-rp-btn" data-ocu-rp="later">' +
+    escapeHtml(t("later", "Later")) +
+    "</button>" +
+    '<button type="button" class="ocu-rp-btn ocu-rp-btn-primary" data-ocu-rp="restart">' +
+    escapeHtml(t("restartNow", "Restart now")) +
+    "</button>" +
+    "</div></div>";
+
+  el.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    const action = target.closest<HTMLElement>("[data-ocu-rp]")?.dataset
+      .ocuRp;
+    if (action === "restart") {
+      answerRestartPrompt(true);
+      return;
+    }
+    // "Later" and a backdrop click both leave the running session alone.
+    if (action === "later" || e.target === el) {
+      answerRestartPrompt(false);
+    }
+  });
+
+  document.body.appendChild(el);
+  return el;
+}
+
+function showRestartPrompt(): void {
+  if (!restartPrompt) restartPrompt = buildRestartPrompt();
+  restartPrompt.classList.remove("hidden");
+  restartPrompt
+    .querySelector<HTMLButtonElement>('[data-ocu-rp="restart"]')
+    ?.focus();
+}
+
+function hideRestartPrompt(): void {
+  restartPrompt?.classList.add("hidden");
+}
+
+/** True while the restart confirmation overlay is visible. */
+function isRestartPromptVisible(): boolean {
+  return Boolean(restartPrompt && !restartPrompt.classList.contains("hidden"));
+}
+
+function answerRestartPrompt(restart: boolean): void {
+  hideRestartPrompt();
+  if (restart) {
+    closeDialog();
+    postMessage({ type: "restartAfterUpdate" });
+    // 触发重启动作的按钮随弹窗一起隐藏，焦点交回工具栏
+    if (pill && !pill.disabled) pill.focus();
+    return;
+  }
+  dismissDialog();
+}
+
 // ── Clipboard ──
 
 function copyText(text: string, button: HTMLElement): void {
   const label = button.querySelector(".ocu-copy-label");
   const done = (ok: boolean): void => {
-    if (label) {
-      label.textContent = ok
-        ? t("copied", "Copied")
-        : t("copyFailed", "Copy failed");
-      setTimeout(() => {
-        label.textContent = t("copy", "Copy");
-      }, 1600);
+    const message = ok ? t("copied", "Copied") : t("copyFailed", "Copy failed");
+    if (!label) {
+      flashHeadButton(button, message, ok);
+      return;
     }
+    label.textContent = message;
+    setTimeout(() => {
+      label.textContent = t("copy", "Copy");
+    }, 1600);
   };
   const fallback = (): void => {
     try {
@@ -1402,13 +1482,28 @@ function copyText(text: string, button: HTMLElement): void {
   }
 }
 
-/** Brief "Sent" feedback on the send button label. */
-function flashSendLabel(button: HTMLElement): void {
-  const label = button.querySelector(".ocu-copy-label");
-  if (!label) return;
-  label.textContent = t("changelogSentLabel", "Sent");
+/**
+ * Icon-only head buttons have no room for a text swap, so a copy result
+ * flashes a check or error glyph and temporarily repoints the tooltip.
+ */
+function flashHeadButton(
+  button: HTMLElement,
+  message: string,
+  ok: boolean,
+): void {
+  if (button.dataset.ocuFlash === "1") return;
+  const restoreGlyph = button.innerHTML;
+  const restoreLabel = button.getAttribute("aria-label") ?? "";
+  const restoreTitle = button.getAttribute("title") ?? "";
+  button.dataset.ocuFlash = "1";
+  button.innerHTML = ok ? ICONS.check : ICONS.error;
+  button.setAttribute("aria-label", message);
+  button.setAttribute("title", message);
   setTimeout(() => {
-    label.textContent = t("changelogSend", "Send to OpenCode");
+    delete button.dataset.ocuFlash;
+    button.innerHTML = restoreGlyph;
+    button.setAttribute("aria-label", restoreLabel);
+    button.setAttribute("title", restoreTitle);
   }, 1600);
 }
 
@@ -1428,8 +1523,20 @@ function bindEvents(): void {
       openUpcomingNotes();
       return;
     }
-    if (status.state === "failed" || status.state === "success") {
-      openResultStep();
+    if (status.state === "failed") {
+      // 有需要手动执行的命令时先展示失败现场；否则直接回到方式选择重试
+      const hasRecovery = Boolean(
+        status.manualCommands?.length || status.remediationCommands?.length,
+      );
+      if (hasRecovery) {
+        openOutcomeStep();
+      } else {
+        openMethodStep();
+      }
+      return;
+    }
+    if (status.state === "success") {
+      openOutcomeStep();
       return;
     }
     if (status.state === "installable") {
@@ -1462,6 +1569,15 @@ function bindGlobalKeys(): void {
         answerInstallPrompt("notNow");
       } else if (e.key === "Tab") {
         trapFocus(installPrompt, e);
+      }
+      return;
+    }
+    if (isRestartPromptVisible() && restartPrompt) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        answerRestartPrompt(false);
+      } else if (e.key === "Tab") {
+        trapFocus(restartPrompt, e);
       }
       return;
     }
