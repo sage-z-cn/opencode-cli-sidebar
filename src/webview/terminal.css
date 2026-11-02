@@ -1437,13 +1437,15 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   text-overflow: ellipsis;
 }
 
-/* 面板内卡片：进度 / 成功 / 错误 / 自动处理 / 瞬时提示 */
+/* 面板内卡片：进度 / 成功 / 错误 / 自动处理 / 瞬时提示。
+   层级须高于更新对话框遮罩（1200），否则从版本日志弹窗内检查更新后，
+   提示卡片会被遮罩压住；仍低于安装/重启确认弹窗（1300）。 */
 .ocu-card {
   position: absolute;
   top: 8px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 320;
+  z-index: 1250;
   background: var(--vscode-editorWidget-background, #252526);
   border: 1px solid var(--vscode-editorWidget-border, #454545);
   border-radius: 6px;
