@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Update**: Confirm restarts in a dedicated in-webview dialog after an update succeeds, instead of restarting on confirm or using a native modal.
 - **Update**: Keep a retry action in the failed step view and stop advertising the target version as installed when an update fails.
 
+#### 5.6.6
+**New Features**
+- **Update**: Translate changelogs via the OpenCode generate client.
+
+**Bug Fixes**
+- **Webview**: Raise the update card z-index above the update dialog mask.
+
 #### 5.6.5
 **Bug Fixes**
 - **Update**: Clean up the install output during updates.
