@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { l10n } from "../i18n";
 import { OutputCaptureManager } from "../services/OutputCaptureManager";
 import { OpenCodeApiClient } from "../services/OpenCodeApiClient";
+import type { OpenCodeGenerateConnection } from "../services/OpenCodeGenerateClient";
 import { PortManager } from "../services/PortManager";
 import { ContextSharingService } from "../services/ContextSharingService";
 import { OutputChannelService } from "../services/OutputChannelService";
@@ -65,6 +66,8 @@ export class SessionRuntime {
   private isStarted = false;
   private isStarting = false;
   private apiClient?: OpenCodeApiClient;
+  /** Live endpoint used for text generation (changelog translation). */
+  private translationConnection?: OpenCodeGenerateConnection;
   private httpAvailable = false;
   private dataListener?: vscode.Disposable;
   private exitListener?: vscode.Disposable;
@@ -147,6 +150,11 @@ export class SessionRuntime {
     return this.apiClient;
   }
 
+  /** Connection used for text generation, or undefined when HTTP is unavailable. */
+  public getGenerateConnection(): OpenCodeGenerateConnection | undefined {
+    return this.translationConnection;
+  }
+
   public getActiveBackend(): TerminalBackendType {
     return this.activeBackend;
   }
@@ -221,6 +229,14 @@ export class SessionRuntime {
                 directory,
               })
             : undefined;
+          this.translationConnection = v2Service
+            ? {
+                protocol: "v2",
+                baseUrl: v2Service.url,
+                password: v2Service.password,
+                directory,
+              }
+            : undefined;
         } else {
           this.apiClient = new OpenCodeApiClient(
             existingTerminal.port,
@@ -229,6 +245,11 @@ export class SessionRuntime {
             httpTimeout,
             directory,
           );
+          this.translationConnection = {
+            protocol: "v1",
+            baseUrl: `http://localhost:${existingTerminal.port}`,
+            directory,
+          };
         }
         if (this.apiClient) {
           await this.pollForHttpReadiness();
@@ -370,6 +391,7 @@ export class SessionRuntime {
             }
           }
         } catch (error) {
+          this.translationConnection = undefined;
           this.logger.error(
             `[TerminalProvider] Failed to assign port: ${error instanceof Error ? error.message : String(error)}`,
           );
@@ -489,6 +511,12 @@ export class SessionRuntime {
             timeoutMs: httpTimeout,
             directory: workspacePath,
           });
+          this.translationConnection = {
+            protocol: "v2",
+            baseUrl: v2Service.url,
+            password: v2Service.password,
+            directory: workspacePath,
+          };
         } else {
           // Pass the resolved workspace path so the client can emit
           // x-opencode-directory on instance-scoped routes. Required by
@@ -500,9 +528,15 @@ export class SessionRuntime {
             httpTimeout,
             workspacePath,
           );
+          this.translationConnection = {
+            protocol: "v1",
+            baseUrl: `http://localhost:${port}`,
+            directory: workspacePath,
+          };
         }
         await this.pollForHttpReadiness();
       } else {
+        this.translationConnection = undefined;
         this.logger.info(
           "[TerminalProvider] HTTP API disabled or unavailable, using message passing fallback",
         );
@@ -640,6 +674,7 @@ export class SessionRuntime {
     this.isStarting = false;
     this.httpAvailable = false;
     this.apiClient = undefined;
+    this.translationConnection = undefined;
     this.openCodeCliMajor = undefined;
     if (this.openCodeMajorRetryTimer) {
       clearTimeout(this.openCodeMajorRetryTimer);
@@ -882,6 +917,12 @@ export class SessionRuntime {
                 timeoutMs: 5000,
                 directory: this.resolveStartupWorkspacePath().workspacePath,
               });
+              this.translationConnection = {
+                protocol: "v2",
+                baseUrl: service.url,
+                password: service.password,
+                directory: this.resolveStartupWorkspacePath().workspacePath,
+              };
               void this.pollForHttpReadiness();
             });
           }
@@ -972,6 +1013,7 @@ export class SessionRuntime {
     this.isStarting = false;
     this.httpAvailable = false;
     this.apiClient = undefined;
+    this.translationConnection = undefined;
     this.activeLaunchCommand = undefined;
   }
 

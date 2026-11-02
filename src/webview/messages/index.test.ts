@@ -116,6 +116,33 @@ describe("createMessageHandler", () => {
     });
   });
 
+  it("dispatches openCodeChangelogTranslation to the optional callback", () => {
+    const onOpenCodeChangelogTranslation = vi.fn();
+    const handler = createMessageHandler({
+      onActiveSession: vi.fn(),
+      onOpenCodeChangelogTranslation,
+    });
+
+    handler.handleEvent(
+      new MessageEvent("message", {
+        data: {
+          type: "openCodeChangelogTranslation",
+          requestId: "clt-1",
+          ok: true,
+          translations: { b0: "你好" },
+        },
+      }),
+    );
+
+    expect(onOpenCodeChangelogTranslation).toHaveBeenCalledTimes(1);
+    expect(onOpenCodeChangelogTranslation).toHaveBeenCalledWith({
+      type: "openCodeChangelogTranslation",
+      requestId: "clt-1",
+      ok: true,
+      translations: { b0: "你好" },
+    });
+  });
+
   it("dispatches showServiceRestartPrompt to the optional callback", () => {
     const onShowServiceRestartPrompt = vi.fn();
     const handler = createMessageHandler({

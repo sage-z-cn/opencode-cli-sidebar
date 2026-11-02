@@ -54,6 +54,9 @@ export interface MessageHandlerCallbacks {
   onOpenCodeChangelog?: (
     message: Extract<HostMessage, { type: "openCodeChangelog" }>,
   ) => void;
+  onOpenCodeChangelogTranslation?: (
+    message: Extract<HostMessage, { type: "openCodeChangelogTranslation" }>,
+  ) => void;
   onOpenCodeUpdateOutput?: (
     message: Extract<HostMessage, { type: "openCodeUpdateOutput" }>,
   ) => void;
@@ -231,6 +234,10 @@ export function createMessageHandler(
 
         case "openCodeChangelog":
           callbacks.onOpenCodeChangelog?.(message);
+          break;
+
+        case "openCodeChangelogTranslation":
+          callbacks.onOpenCodeChangelogTranslation?.(message);
           break;
 
         case "openCodeUpdateOutput":

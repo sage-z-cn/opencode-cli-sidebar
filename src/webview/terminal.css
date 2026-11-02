@@ -1642,6 +1642,31 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   background: none;
   color: var(--vscode-descriptionForeground, #9d9d9d);
 }
+/* Busy head action: keep the button readable while the icon breathes. */
+.ocu-dlg-head-btn[aria-busy="true"] {
+  opacity: 1;
+  cursor: progress;
+}
+@keyframes ocu-dlg-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+.ocu-dlg-head-btn[aria-busy="true"] svg {
+  transform-origin: center;
+  animation: ocu-dlg-breathe 1.3s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ocu-dlg-head-btn[aria-busy="true"] svg {
+    animation: none;
+  }
+}
 .ocu-dlg-x {
   flex: none;
   display: flex;

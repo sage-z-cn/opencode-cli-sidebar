@@ -8,6 +8,7 @@ describe("renderTerminalHtml", () => {
       nonce: "nonce-123",
       cssUri: "terminal.css",
       scriptUri: "webview.js",
+      uiLanguage: "en",
       fontSize: "14",
       fontFamily: "monospace",
       cursorBlink: "true",
@@ -30,6 +31,7 @@ describe("renderTerminalHtml", () => {
       nonce: "abc123",
       cssUri: "style-uri",
       scriptUri: "script-uri",
+      uiLanguage: "zh-cn",
       fontSize: "16",
       fontFamily: "JetBrains Mono",
       cursorBlink: "false",
@@ -52,6 +54,7 @@ describe("renderTerminalHtml", () => {
     expect(html).toContain('data-scrollback="5000"');
     expect(html).toContain('data-focus-indicator-mode="bottomBorder"');
     expect(html).toContain('data-focus-indicator-border-width="3"');
+    expect(html).toContain('window.__OC_UPDATE_LANG__="zh-cn"');
     expect(html).not.toContain("{{");
   });
 
@@ -61,6 +64,7 @@ describe("renderTerminalHtml", () => {
       nonce: "nonce-123",
       cssUri: "terminal.css",
       scriptUri: "webview.js",
+      uiLanguage: "en",
       fontSize: "14",
       fontFamily: "monospace",
       cursorBlink: "true",

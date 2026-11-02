@@ -101,6 +101,17 @@ export type WebviewMessage =
       mode?: "upcoming" | "installed";
     }
   | { type: "sendChangelogToOpenCode"; text: string }
+  /** Asks the host to translate extracted changelog text blocks. */
+  | {
+      type: "translateOpenCodeChangelog";
+      requestId: string;
+      version: string;
+      htmlHash: string;
+      targetLanguage: string;
+      blocks: ChangelogTextBlock[];
+    }
+  /** Cancels an in-flight translation when the dialog closes or re-renders. */
+  | { type: "cancelOpenCodeChangelogTranslation"; requestId: string }
   /* ===================== WebDAV config sync ===================== */
   /** Webview boot / sync panel open: request the full sync snapshot. */
   | { type: "requestWebdavSyncData" }
@@ -290,6 +301,15 @@ export type HostMessage =
   /** Single push channel driving the OpenCode self-update UI. */
   | { type: "openCodeUpdateStatus"; status: OpenCodeUpdateUiStatus }
   | { type: "openCodeChangelog"; payload: OpenCodeChangelogPayload }
+  /** Translation result for one request; failures carry a short reason. */
+  | {
+      type: "openCodeChangelogTranslation";
+      requestId: string;
+      ok: boolean;
+      translations?: Record<string, string>;
+      /** Host-localized failure reason shown next to the failure label. */
+      error?: string;
+    }
   /** Batched upgrade/install output lines for the progress dialog log pane. */
   | { type: "openCodeUpdateOutput"; lines: string[] }
   /* ===================== WebDAV config sync ===================== */
@@ -452,12 +472,21 @@ export interface WebDavConnectionDraft {
   acceptSelfSigned: boolean;
 }
 
+/** One translatable text block extracted from changelog HTML by the webview. */
+export interface ChangelogTextBlock {
+  id: string;
+  /** Text with `⟦n⟧` placeholders for inline code and version-like tokens. */
+  text: string;
+}
+
 /** Release-notes payload for the in-webview update dialog. */
 export interface OpenCodeChangelogPayload {
   version: string;
   ok: boolean;
   date?: string;
   html?: string;
+  /** Stable hash of `html`, used as part of the translation cache key. */
+  htmlHash?: string;
   fallbackUrl: string;
   /** Echo of the request: upcoming notes carry the update action. */
   mode?: "upcoming" | "installed";

@@ -38,6 +38,7 @@ import {
 import {
   applyOpenCodeUpdateStatus,
   applyOpenCodeChangelog,
+  applyOpenCodeChangelogTranslation,
   appendOpenCodeUpdateOutput,
   initOpenCodeUpdateUi,
 } from "./update";
@@ -124,6 +125,10 @@ const callbacks: MessageHandlerCallbacks = {
 
   onOpenCodeChangelog(message) {
     applyOpenCodeChangelog(message.payload);
+  },
+
+  onOpenCodeChangelogTranslation(message) {
+    applyOpenCodeChangelogTranslation(message);
   },
 
   onOpenCodeUpdateOutput(message) {

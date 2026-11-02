@@ -21,6 +21,7 @@ import {
   OpenCodeUpdateService,
 } from "../services/OpenCodeUpdateService";
 import { OpenCodeChangelogService } from "../services/OpenCodeChangelogService";
+import { ChangelogTranslationService } from "../services/ChangelogTranslationService";
 import { ConfigSyncService } from "../services/sync/ConfigSyncService";
 import { setActiveConfigSyncService } from "../services/sync/syncServiceRegistry";
 import { IdeContextServer } from "../services/ideContext/IdeContextServer";
@@ -242,6 +243,11 @@ export class ExtensionLifecycle {
         context.globalState,
         { logger },
       );
+      const changelogTranslationService = new ChangelogTranslationService(
+        context.globalState,
+        () => this.tuiProvider?.getGenerateConnection(),
+        logger,
+      );
 
       context.subscriptions.push(this.contextManager);
       context.subscriptions.push(this.instanceDiscoveryService);
@@ -281,6 +287,7 @@ export class ExtensionLifecycle {
         ideContextServer,
         this.opencodeUpdateService,
         openCodeChangelogService,
+        changelogTranslationService,
       );
 
       this.tuiProviderRegistration?.dispose();

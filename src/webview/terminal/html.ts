@@ -18,6 +18,8 @@ export interface TerminalHtmlParams extends TerminalContainerParams {
   nonce: string;
   cssUri: string;
   scriptUri: string;
+  /** VS Code display language (`vscode.env.language`), read by the update UI. */
+  uiLanguage: string;
 }
 
 export function renderTerminalHtml({
@@ -25,6 +27,7 @@ export function renderTerminalHtml({
   nonce,
   cssUri,
   scriptUri,
+  uiLanguage,
   fontSize,
   fontFamily,
   cursorBlink,
@@ -38,6 +41,7 @@ export function renderTerminalHtml({
   const keymapL10nScript = `<script nonce="${nonce}">window.__KEYMAP_L10N__=${JSON.stringify(keymapL10nStrings)};</script>`;
   const ocCliSettingsL10nScript = `<script nonce="${nonce}">window.__OC_CLI_SETTINGS_L10N__=${JSON.stringify(openCodeCliSettingsL10nStrings)};</script>`;
   const ocUpdateL10nScript = `<script nonce="${nonce}">window.__OC_UPDATE_L10N__=${JSON.stringify(openCodeUpdateL10nStrings)};</script>`;
+  const uiLanguageScript = `<script nonce="${nonce}">window.__OC_UPDATE_LANG__=${JSON.stringify(uiLanguage)};</script>`;
   const serviceRestartPromptL10nScript = `<script nonce="${nonce}">window.__SERVICE_RESTART_L10N__=${JSON.stringify(serviceRestartPromptL10nStrings)};</script>`;
   const syncL10nScript = `<script nonce="${nonce}">window.__OC_SYNC_L10N__=${JSON.stringify(syncL10nStrings)};</script>`;
   return `<!doctype html>
@@ -56,6 +60,7 @@ export function renderTerminalHtml({
     ${keymapL10nScript}
     ${ocCliSettingsL10nScript}
     ${ocUpdateL10nScript}
+    ${uiLanguageScript}
     ${serviceRestartPromptL10nScript}
     ${syncL10nScript}
   </head>

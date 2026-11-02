@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("../shared/vscode-api", () => ({
   postMessage: vi.fn(),
@@ -10,11 +10,16 @@ import { postMessage } from "../shared/vscode-api";
 import {
   appendOpenCodeUpdateOutput,
   applyOpenCodeChangelog,
+  applyOpenCodeChangelogTranslation,
   applyOpenCodeUpdateStatus,
   initOpenCodeUpdateUi,
   isInstallPromptVisible,
   notifyOpenCodeUpdateCheckRequested,
 } from "./index";
+
+afterEach(() => {
+  delete window.__OC_UPDATE_LANG__;
+});
 
 /**
  * The module keeps singleton state (initialized flag + merged status), so
@@ -98,6 +103,53 @@ function notesPayload(version = "2.0.7", html = '<p class="markdown">Notes</p>')
 
 function latestPosts(): unknown[] {
   return vi.mocked(postMessage).mock.calls.map((call) => call[0]);
+}
+
+interface TranslateRequest {
+  type: string;
+  requestId: string;
+  version: string;
+  htmlHash: string;
+  targetLanguage: string;
+  blocks: unknown[];
+}
+
+function translateRequests(): TranslateRequest[] {
+  return latestPosts().filter(
+    (message): message is TranslateRequest =>
+      (message as { type?: string }).type === "translateOpenCodeChangelog",
+  );
+}
+
+function setLanguage(value: string | undefined): void {
+  if (value === undefined) {
+    delete window.__OC_UPDATE_LANG__;
+  } else {
+    window.__OC_UPDATE_LANG__ = value;
+  }
+}
+
+function headAction(name: string): HTMLElement | null {
+  return (
+    document
+      .getElementById("ocu-dlg-head-actions")
+      ?.querySelector<HTMLElement>(`[data-ocu-dlg="${name}"]`) ?? null
+  );
+}
+
+/** Opens the upcoming release notes with a given UI language. */
+function openNotes(html: string, language: string | undefined): void {
+  resetStatus();
+  setLanguage(language);
+  applyOpenCodeUpdateStatus({
+    state: "available",
+    step: "",
+    currentVersion: "3.0.0",
+    latestVersion: "3.1.0",
+  });
+  vi.mocked(postMessage).mockClear();
+  pill().click();
+  applyOpenCodeChangelog(notesPayload("3.1.0", html));
 }
 
 describe("OpenCode update UI (webview)", () => {
@@ -705,5 +757,98 @@ describe("OpenCode update UI (webview)", () => {
     expect(actions).toHaveLength(1);
     expect(actions[0].getAttribute("data-ocu-dlg")).toBe("finish");
     expect(actions[0].textContent).toBe("Confirm");
+  });
+
+  it("offers the translate action only for non-English UIs", () => {
+    openNotes("<p>Notes</p>", "zh-cn");
+    const button = headAction("translate");
+    expect(button).not.toBeNull();
+    expect(button?.getAttribute("aria-label")).toBe("Translate release notes");
+    expect(button?.hasAttribute("aria-busy")).toBe(false);
+
+    openNotes("<p>Notes</p>", "en");
+    expect(headAction("translate")).toBeNull();
+
+    openNotes("<p>Notes</p>", undefined);
+    expect(headAction("translate")).toBeNull();
+  });
+
+  it("sends the extracted blocks and shows a loading button", () => {
+    openNotes("<p>Run <code>npm i</code></p>", "zh-cn");
+
+    click('[data-ocu-dlg="translate"]');
+
+    const button = headAction("translate") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(button.getAttribute("aria-label")).toBe("Translating…");
+
+    const requests = translateRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      type: "translateOpenCodeChangelog",
+      version: "3.1.0",
+      htmlHash: "",
+      targetLanguage: "zh-cn",
+      blocks: [{ id: "b0", text: "Run ⟦0⟧" }],
+    });
+
+    // A second click while the request is in flight is ignored.
+    click('[data-ocu-dlg="translate"]');
+    expect(translateRequests()).toHaveLength(1);
+  });
+
+  it("switches to the translated notes and back to the original", () => {
+    openNotes("<p>Run <code>npm i</code></p>", "zh-cn");
+    click('[data-ocu-dlg="translate"]');
+    const request = translateRequests()[0];
+
+    applyOpenCodeChangelogTranslation({
+      type: "openCodeChangelogTranslation",
+      requestId: request.requestId,
+      ok: true,
+      translations: { b0: "运行 ⟦0⟧" },
+    });
+
+    expect(dialogBody().textContent).toContain("运行 npm i");
+    expect(headAction("translate")?.getAttribute("aria-label")).toBe(
+      "Show original",
+    );
+
+    click('[data-ocu-dlg="translate"]');
+    expect(dialogBody().textContent).toContain("Run npm i");
+    expect(headAction("translate")?.getAttribute("aria-label")).toBe(
+      "Show translation",
+    );
+
+    click('[data-ocu-dlg="translate"]');
+    expect(dialogBody().textContent).toContain("运行 npm i");
+  });
+
+  it("shows one failure line without any recovery action", () => {
+    openNotes("<p>Notes</p>", "zh-cn");
+    click('[data-ocu-dlg="translate"]');
+    const request = translateRequests()[0];
+
+    applyOpenCodeChangelogTranslation({
+      type: "openCodeChangelogTranslation",
+      requestId: request.requestId,
+      ok: false,
+      error: "Model quota exhausted or rate limited",
+    });
+
+    const body = dialogBody();
+    expect(body.textContent).toContain(
+      "Translation failed: Model quota exhausted or rate limited",
+    );
+    expect(body.querySelector(".ocu-cl-body")?.firstElementChild?.className).toBe(
+      "ocu-cl-msg",
+    );
+    expect(body.textContent).toContain("Notes");
+    expect(body.querySelector("button")).toBeNull();
+    expect(headAction("translate")?.getAttribute("aria-label")).toBe(
+      "Translate release notes",
+    );
+    expect(headAction("retry")).toBeNull();
   });
 });

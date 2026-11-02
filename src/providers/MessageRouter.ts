@@ -80,6 +80,10 @@ export interface MessageRouterProviderBridge {
     version?: string,
     mode?: "upcoming" | "installed",
   ): Promise<void>;
+  translateOpenCodeChangelog(
+    request: Extract<WebviewMessage, { type: "translateOpenCodeChangelog" }>,
+  ): Promise<void>;
+  cancelOpenCodeChangelogTranslation(requestId: string): void;
   sendChangelogToOpenCode(text: string): Promise<void>;
 }
 
@@ -286,6 +290,22 @@ export class MessageRouter {
       case "sendChangelogToOpenCode":
         if (typeof message.text === "string" && message.text) {
           await this.provider.sendChangelogToOpenCode(message.text);
+        }
+        break;
+      case "translateOpenCodeChangelog":
+        if (
+          typeof message.requestId === "string" &&
+          typeof message.version === "string" &&
+          typeof message.htmlHash === "string" &&
+          typeof message.targetLanguage === "string" &&
+          Array.isArray(message.blocks)
+        ) {
+          await this.provider.translateOpenCodeChangelog(message);
+        }
+        break;
+      case "cancelOpenCodeChangelogTranslation":
+        if (typeof message.requestId === "string") {
+          this.provider.cancelOpenCodeChangelogTranslation(message.requestId);
         }
         break;
       /* ===================== WebDAV config sync ===================== */

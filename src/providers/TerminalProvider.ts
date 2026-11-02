@@ -1,5 +1,6 @@
 
 import * as vscode from "vscode";
+import { createHash } from "crypto";
 import { l10n } from "../i18n";
 import { TerminalManager } from "../terminals/TerminalManager";
 import { OutputCaptureManager } from "../services/OutputCaptureManager";
@@ -11,6 +12,12 @@ import {
   changelogPageUrl,
   OpenCodeChangelogService,
 } from "../services/OpenCodeChangelogService";
+import {
+  ChangelogTranslationError,
+  type ChangelogTranslationFailure,
+  type ChangelogTranslationService,
+} from "../services/ChangelogTranslationService";
+import type { OpenCodeGenerateConnection } from "../services/OpenCodeGenerateClient";
 import { DataThrottleService } from "../services/DataThrottleService";
 import { InstanceId, InstanceStore } from "../services/InstanceStore";
 import { isVersionNewer } from "../services/semver";
@@ -22,6 +29,7 @@ import {
   ServiceRestartPromptAction,
   TerminalBackendType,
   CliInstallPromptAction,
+  WebviewMessage,
 } from "../types";
 import {
   OpenCodeFileReference,
@@ -67,6 +75,12 @@ export class TerminalProvider
   private readonly disposables: vscode.Disposable[] = [];
   private readonly opencodeUpdateService?: OpenCodeUpdateService;
   private readonly changelogService?: OpenCodeChangelogService;
+  private readonly changelogTranslationService?: ChangelogTranslationService;
+  /** In-flight translation requests, keyed by the webview's request id. */
+  private readonly changelogTranslationRequests = new Map<
+    string,
+    AbortController
+  >();
   /** Current self-update UI snapshot; pushed in full on every change. */
   private updateUi: OpenCodeUpdateUiStatus = { state: "idle", step: "" };
   /** Completed update steps for the progress card and log drawer. */
@@ -92,11 +106,13 @@ export class TerminalProvider
     private readonly ideContextServer?: IdeContextServer,
     opencodeUpdateService?: OpenCodeUpdateService,
     changelogService?: OpenCodeChangelogService,
+    changelogTranslationService?: ChangelogTranslationService,
   ) {
     this.contextSharingService = new ContextSharingService();
     this.opencodeOperator = new OpenCodeToolOperator();
     this.opencodeUpdateService = opencodeUpdateService;
     this.changelogService = changelogService;
+    this.changelogTranslationService = changelogTranslationService;
     this.dataThrottleService = new DataThrottleService((batch) => {
       for (const item of batch) {
         this.postWebviewMessageNow({
@@ -176,6 +192,10 @@ export class TerminalProvider
         this.answerCliInstallPrompt(action),
       requestOpenCodeChangelog: (version, mode) =>
         this.requestOpenCodeChangelog(version, mode),
+      translateOpenCodeChangelog: (request) =>
+        this.translateOpenCodeChangelog(request),
+      cancelOpenCodeChangelogTranslation: (requestId) =>
+        this.cancelOpenCodeChangelogTranslation(requestId),
       sendChangelogToOpenCode: (text) =>
         this.sendPrompt(text, { asPaste: true }),
     };
@@ -426,6 +446,11 @@ export class TerminalProvider
 
   public getApiClient(): OpenCodeApiClient | undefined {
     return this.sessionRuntime.getApiClient();
+  }
+
+  /** Live generation endpoint for the active session, when HTTP is ready. */
+  public getGenerateConnection(): OpenCodeGenerateConnection | undefined {
+    return this.sessionRuntime.getGenerateConnection();
   }
 
   public isHttpAvailable(): boolean {
@@ -888,11 +913,143 @@ export class TerminalProvider
             ok: true,
             date: result.date,
             html: result.html,
+            htmlHash: createHash("sha256")
+              .update(result.html)
+              .digest("hex")
+              .slice(0, 16),
             fallbackUrl,
             mode,
           }
         : { version: resolved, ok: false, fallbackUrl, mode },
     });
+  }
+
+  /**
+   * Translates the changelog blocks the webview extracted. Failures reply
+   * with `ok: false` and no detail; the reason stays in the log. A cancelled
+   * request produces no reply because the webview is no longer listening.
+   */
+  public async translateOpenCodeChangelog(
+    request: Extract<WebviewMessage, { type: "translateOpenCodeChangelog" }>,
+  ): Promise<void> {
+    const { requestId } = request;
+    const service = this.changelogTranslationService;
+    if (!service) {
+      this.postWebviewMessage({
+        type: "openCodeChangelogTranslation",
+        requestId,
+        ok: false,
+        error: l10n.t("Not connected to an OpenCode session"),
+      });
+      return;
+    }
+
+    const controller = new AbortController();
+    this.changelogTranslationRequests.get(requestId)?.abort();
+    this.changelogTranslationRequests.set(requestId, controller);
+
+    try {
+      const translations = await service.translate(
+        {
+          version: request.version,
+          htmlHash: request.htmlHash,
+          targetLanguage: request.targetLanguage,
+          blocks: request.blocks,
+        },
+        controller.signal,
+      );
+      if (controller.signal.aborted) {
+        return;
+      }
+      this.postWebviewMessage({
+        type: "openCodeChangelogTranslation",
+        requestId,
+        ok: true,
+        translations,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        this.logger.debug(
+          `[TerminalProvider] changelog translation cancelled (${requestId})`,
+        );
+        return;
+      }
+      this.logger.debug(
+        `[TerminalProvider] changelog translation failed (${requestId}): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      this.postWebviewMessage({
+        type: "openCodeChangelogTranslation",
+        requestId,
+        ok: false,
+        error: this.describeTranslationFailure(error),
+      });
+    } finally {
+      if (this.changelogTranslationRequests.get(requestId) === controller) {
+        this.changelogTranslationRequests.delete(requestId);
+      }
+    }
+  }
+
+  /** Aborts one in-flight translation; used when the dialog closes. */
+  public cancelOpenCodeChangelogTranslation(requestId: string): void {
+    const controller = this.changelogTranslationRequests.get(requestId);
+    if (!controller) {
+      return;
+    }
+    this.changelogTranslationRequests.delete(requestId);
+    controller.abort();
+  }
+
+  /** Maps a translation failure to a short reason shown in the dialog. */
+  private describeTranslationFailure(error: unknown): string {
+    if (!(error instanceof ChangelogTranslationError)) {
+      return l10n.t("Unknown error");
+    }
+    const failure: ChangelogTranslationFailure = error.failure;
+    switch (failure) {
+      case "no-connection":
+        return l10n.t("Not connected to an OpenCode session");
+      case "rate-limit": {
+        if (error.providerID === "opencode") {
+          return error.model
+            ? l10n.t(
+                'The OpenCode free model {0} has no quota left. Switch to another model; if you still use the built-in default, set a top-level "model" in ~/.config/opencode/opencode.json.',
+                error.model,
+              )
+            : l10n.t(
+                'The OpenCode free model has no quota left. Switch to another model; if you still use the built-in default, set a top-level "model" in ~/.config/opencode/opencode.json.',
+              );
+        }
+        return error.model
+          ? l10n.t(
+              "Model {0} is rate limited or out of quota. Switch models or retry later.",
+              error.model,
+            )
+          : l10n.t(
+              "Model quota exhausted or rate limited. Switch models or retry later.",
+            );
+      }
+      case "timeout":
+        return l10n.t("Request timed out");
+      case "service-unavailable":
+        return l10n.t("OpenCode service is not ready");
+      case "unreachable":
+        return l10n.t("Cannot reach the OpenCode service");
+      case "invalid-response":
+        return l10n.t("Model response could not be parsed");
+      case "empty-response":
+        return l10n.t("Model returned no content");
+      case "http":
+        return typeof error.status === "number"
+          ? l10n.t("OpenCode service returned error {0}", String(error.status))
+          : l10n.t("OpenCode service returned an error");
+      case "aborted":
+        return l10n.t("Translation was cancelled");
+      case "unknown":
+        return l10n.t("Unknown error");
+    }
   }
 
   /**
@@ -1670,6 +1827,7 @@ export class TerminalProvider
       focusIndicatorBorderWidth: String(
         terminalConfig.focusIndicatorBorderWidth ?? 2,
       ),
+      uiLanguage: vscode.env.language,
     });
 
     return html;
@@ -1745,6 +1903,10 @@ export class TerminalProvider
   public dispose(): void {
     this.disposables.forEach((disposable) => disposable.dispose());
     this.disposables.length = 0;
+    for (const controller of this.changelogTranslationRequests.values()) {
+      controller.abort();
+    }
+    this.changelogTranslationRequests.clear();
     this.resetUpdateOutput();
     this.dataThrottleService.dispose();
     this.sessionRuntime.dispose();

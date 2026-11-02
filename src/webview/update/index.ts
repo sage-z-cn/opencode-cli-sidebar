@@ -9,12 +9,18 @@
  */
 import type {
   CliInstallPromptAction,
+  HostMessage,
   OpenCodeChangelogPayload,
   OpenCodeUpdateUiStatus,
 } from "../../types";
 import { postMessage } from "../shared/vscode-api";
 import { ICONS as LUCIDE_ICONS, icon } from "../shared/icons";
 import { UpdateDialogShell, trapFocus } from "./dialog";
+import {
+  extractChangelog,
+  translationLanguage,
+  type ExtractedChangelog,
+} from "./translation";
 
 // ── Strings (injected host-side; see update/l10n.ts) ──
 
@@ -73,6 +79,7 @@ const ICONS = {
   copy: icon(LUCIDE_ICONS.copy, 13),
   send: icon(LUCIDE_ICONS.send, 13),
   browser: icon(LUCIDE_ICONS.globe, 13),
+  translate: icon(LUCIDE_ICONS.languages, 13),
 };
 
 function escapeHtml(s: string): string {
@@ -106,6 +113,23 @@ let notesMode: "upcoming" | "installed" = "upcoming";
 let notesState: "loading" | "ready" | "failed" = "loading";
 let notesPayload: OpenCodeChangelogPayload | null = null;
 let notesUrl = "";
+
+type TranslationState = "idle" | "loading" | "ready" | "failed";
+/** Release-notes translation status; only the notes step reads it. */
+let translationState: TranslationState = "idle";
+/** Rebuilt HTML from the translated blocks; null until a request succeeds. */
+let translatedHtml: string | null = null;
+/** Which version of the notes body the dialog shows. */
+let showTranslation = false;
+/** Non-null while a translation request is waiting for the host. */
+let activeTranslationRequestId: string | null = null;
+/** Blocks extracted for the request, reused to rebuild the HTML. */
+let extractedChangelog: ExtractedChangelog | null = null;
+/** Host-provided reason for the last failed translation request. */
+let translationError: string | null = null;
+/** `version::htmlHash` of the payload the cached translation belongs to. */
+let translationKey = "";
+let translationRequestSeq = 0;
 /** True when the progress dialog is collapsed to the toolbar line. */
 let minimized = false;
 /** Upgrade/install output tail for the dialog log pane. */
@@ -512,7 +536,29 @@ function closeDialog(): void {
     clearTimeout(abortTimer);
     abortTimer = null;
   }
+  cancelActiveTranslation();
   dialog?.hide();
+}
+
+/** Drops an in-flight translation request and its loading state. */
+function cancelActiveTranslation(): void {
+  const requestId = activeTranslationRequestId;
+  activeTranslationRequestId = null;
+  if (translationState === "loading") {
+    translationState = "idle";
+  }
+  if (requestId) {
+    postMessage({ type: "cancelOpenCodeChangelogTranslation", requestId });
+  }
+}
+
+/** Forgets the cached translation; the next click starts a new request. */
+function resetTranslation(): void {
+  translatedHtml = null;
+  extractedChangelog = null;
+  showTranslation = false;
+  translationState = "idle";
+  translationError = null;
 }
 
 function dismissDialog(): void {
@@ -543,6 +589,9 @@ function openUpcomingNotes(): void {
   notesState = "loading";
   notesPayload = null;
   notesUrl = "";
+  cancelActiveTranslation();
+  resetTranslation();
+  translationKey = "";
   checkPending = false;
   checkFailed = false;
   checkUpToDate = false;
@@ -557,6 +606,9 @@ function openInstalledNotes(): void {
   notesState = "loading";
   notesPayload = null;
   notesUrl = "";
+  cancelActiveTranslation();
+  resetTranslation();
+  translationKey = "";
   checkPending = false;
   checkFailed = false;
   checkUpToDate = false;
@@ -581,6 +633,7 @@ function openMethodStep(): void {
   dialogStep = "methods";
   startingUpdate = false;
   minimized = false;
+  cancelActiveTranslation();
   methodFocused = preferredMethodIndex();
   renderDialog(true);
 }
@@ -645,6 +698,7 @@ function headActionButton(
   action: string,
   label: string,
   glyph: string,
+  attributes = "",
 ): string {
   const text = escapeHtml(label);
   return (
@@ -654,10 +708,34 @@ function headActionButton(
     text +
     '" title="' +
     text +
-    '">' +
+    '"' +
+    attributes +
+    ">" +
     glyph +
     "</button>"
   );
+}
+
+/**
+ * Translate affordance: loading, show-original and idle all share one
+ * head button so the notes step keeps exactly one extra action.
+ */
+function translateHeadButton(): string {
+  if (translationState === "loading") {
+    return headActionButton(
+      "translate",
+      t("changelogTranslating", "Translating…"),
+      ICONS.sync,
+      ' disabled aria-busy="true"',
+    );
+  }
+  const label =
+    translationState === "ready" && showTranslation
+      ? t("changelogShowOriginal", "Show original")
+      : translationState === "ready"
+        ? t("changelogShowTranslation", "Show translation")
+        : t("changelogTranslate", "Translate release notes");
+  return headActionButton("translate", label, ICONS.translate);
 }
 
 function buildNotesContent(): {
@@ -680,21 +758,46 @@ function buildNotesContent(): {
         ICONS.browser,
       )
     : "";
+  const translateReady =
+    notesState === "ready" && Boolean(notesPayload?.ok);
+  const translateButton =
+    translateReady && translationLanguage() ? translateHeadButton() : "";
   const headActions =
+    translateButton +
     (notesState === "ready"
       ? headActionButton(
           "send",
           t("changelogSend", "Send to OpenCode"),
           ICONS.send,
         ) + headActionButton("copy", t("copy", "Copy"), ICONS.copy)
-      : "") + browserButton;
+      : "") +
+    browserButton;
 
   let body = "";
   if (notesState === "ready" && notesPayload?.ok) {
+    if (translationState === "failed") {
+      body +=
+        '<p class="ocu-cl-msg">' +
+        escapeHtml(
+          translationError
+            ? format(
+                t(
+                  "changelogTranslateFailedReason",
+                  "Translation failed: {0}",
+                ),
+                translationError,
+              )
+            : t("changelogTranslateFailed", "Translation failed"),
+        ) +
+        "</p>";
+    }
     body +=
       (notesPayload.date
         ? '<p class="ocu-cl-date">' + escapeHtml(notesPayload.date) + "</p>"
-        : "") + (notesPayload.html ?? "");
+        : "") +
+      (showTranslation && translatedHtml !== null
+        ? translatedHtml
+        : notesPayload.html ?? "");
   } else if (notesState === "failed") {
     body +=
       '<p class="ocu-cl-msg">' +
@@ -1051,6 +1154,9 @@ function handleDialogAction(action: string, element: HTMLElement): void {
     case "copy":
       copyText(dialog?.plainText() ?? "", element);
       return;
+    case "translate":
+      handleTranslateAction();
+      return;
     case "send": {
       const text = dialog?.plainText() ?? "";
       if (!text) return;
@@ -1134,6 +1240,43 @@ function handleDialogAction(action: string, element: HTMLElement): void {
   }
 }
 
+/**
+ * One click either toggles between original and translation or starts a
+ * request for the extracted text blocks. Translation is never automatic.
+ */
+function handleTranslateAction(): void {
+  if (!notesPayload?.ok) return;
+  if (translationState === "loading") return;
+
+  if (translationState === "ready" && translatedHtml !== null) {
+    showTranslation = !showTranslation;
+    renderDialog(false);
+    return;
+  }
+
+  const language = translationLanguage();
+  if (!language) return;
+
+  const extracted = extractChangelog(notesPayload.html ?? "");
+  extractedChangelog = extracted;
+  translationRequestSeq += 1;
+  const requestId = `clt-${translationRequestSeq}`;
+  activeTranslationRequestId = requestId;
+  translationState = "loading";
+  translationError = null;
+  translatedHtml = null;
+  showTranslation = false;
+  renderDialog(false);
+  postMessage({
+    type: "translateOpenCodeChangelog",
+    requestId,
+    version: notesPayload.version,
+    htmlHash: notesPayload.htmlHash ?? "",
+    targetLanguage: language,
+    blocks: extracted.blocks,
+  });
+}
+
 function handleDialogKeyDown(event: KeyboardEvent): boolean {
   if (dialogStep !== "methods") return false;
   const rows = Array.from(
@@ -1199,6 +1342,12 @@ export function applyOpenCodeChangelog(payload: OpenCodeChangelogPayload): void 
   if (dialogStep !== "notes") {
     return;
   }
+  cancelActiveTranslation();
+  const key = payload.version + "::" + (payload.htmlHash ?? "");
+  if (key !== translationKey) {
+    translationKey = key;
+    resetTranslation();
+  }
   notesPayload = payload;
   notesState = payload.ok ? "ready" : "failed";
   notesUrl = payload.fallbackUrl;
@@ -1209,6 +1358,32 @@ export function applyOpenCodeChangelog(payload: OpenCodeChangelogPayload): void 
   if (payload.ok) {
     announce("OpenCode " + payload.version);
   }
+}
+
+/**
+ * Host answer for one translation request. Stale answers are ignored; a
+ * failure only flips the flag, the notes body stays original.
+ */
+export function applyOpenCodeChangelogTranslation(
+  payload: Extract<HostMessage, { type: "openCodeChangelogTranslation" }>,
+): void {
+  if (!activeTranslationRequestId || payload.requestId !== activeTranslationRequestId) {
+    return;
+  }
+  activeTranslationRequestId = null;
+
+  if (payload.ok && extractedChangelog) {
+    translatedHtml = extractedChangelog.render(payload.translations ?? {});
+    translationState = "ready";
+    showTranslation = true;
+  } else {
+    translationState = "failed";
+    translatedHtml = null;
+    showTranslation = false;
+    extractedChangelog = null;
+    translationError = payload.error ?? null;
+  }
+  renderDialog(false);
 }
 
 /** Streamed upgrade/install output for the progress log pane. */
