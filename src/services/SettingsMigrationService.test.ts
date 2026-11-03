@@ -99,7 +99,7 @@ describe("SettingsMigrationService", () => {
       },
     ]);
     expect(result.migratedKeys).toEqual(["opencode-cli-sidebar.fontSize"]);
-    expect(result.skippedCount).toBe(24);
+    expect(result.skippedCount).toBe(23);
     expect(result.failedKeys).toEqual([]);
   });
 
@@ -153,7 +153,7 @@ describe("SettingsMigrationService", () => {
 
     expect(updates).toEqual([]);
     expect(result.migratedKeys).toEqual([]);
-    expect(result.skippedCount).toBe(25);
+    expect(result.skippedCount).toBe(24);
     expect(memento.get(SETTINGS_MIGRATED_FLAG_KEY)).toBe(true);
   });
 
@@ -169,7 +169,7 @@ describe("SettingsMigrationService", () => {
     }).migrate();
 
     expect(updates).toEqual([]);
-    expect(result.skippedCount).toBe(25);
+    expect(result.skippedCount).toBe(24);
   });
 
   it("performs no configuration work when the migration flag already exists", async () => {
@@ -228,7 +228,7 @@ describe("SettingsMigrationService", () => {
     }).migrate();
 
     expect(updates).toEqual([]);
-    expect(result.skippedCount).toBe(25);
+    expect(result.skippedCount).toBe(24);
     expect(memento.get(SETTINGS_MIGRATED_FLAG_KEY)).toBe(true);
   });
 
@@ -241,7 +241,7 @@ describe("SettingsMigrationService", () => {
       expect.stringContaining("Migrated 1 setting(s): opencode-cli-sidebar.fontSize"),
     );
     expect(logger.info).toHaveBeenCalledWith(
-      expect.stringContaining("skipped 24"),
+      expect.stringContaining("skipped 23"),
     );
   });
 

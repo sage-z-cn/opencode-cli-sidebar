@@ -81,7 +81,6 @@ describe("SessionRuntime (native-only)", () => {
 
     const configuration = {
       get: vi.fn((key: string, defaultValue?: unknown) => {
-        if (key === "enableHttpApi") return false;
         if (key === "logLevel") return "error";
         if (key === "httpTimeout") return 5000;
         return defaultValue;
@@ -103,8 +102,10 @@ describe("SessionRuntime (native-only)", () => {
   function createSessionRuntime(overrides?: {
     instanceStore?: InstanceStore;
     ideContextServer?: IdeContextServer;
+    /** Leave the real readiness poll loop in place. */
+    stubHttpPolling?: boolean;
   }): SessionRuntime {
-    return new SessionRuntime(
+    const runtime = new SessionRuntime(
       terminalManager,
       captureManager,
       undefined,
@@ -122,6 +123,13 @@ describe("SessionRuntime (native-only)", () => {
       nativeTerminalManager,
       overrides?.ideContextServer,
     );
+    // The HTTP API has no opt-out setting, so every start enters the
+    // readiness path. Nothing listens on the assigned port in unit tests;
+    // stub the poll loop instead of waiting out its real backoff.
+    if (overrides?.stubHttpPolling !== false) {
+      vi.spyOn(runtime, "pollForHttpReadiness").mockResolvedValue(undefined);
+    }
+    return runtime;
   }
 
   it("constructs and returns default active instance id", () => {
@@ -158,7 +166,6 @@ describe("SessionRuntime (native-only)", () => {
     sessionRuntime = createSessionRuntime();
     vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
       get: vi.fn((key: string, defaultValue?: unknown) => {
-        if (key === "enableHttpApi") return false;
         return defaultValue;
       }),
       update: vi.fn(),
@@ -265,7 +272,6 @@ describe("SessionRuntime (native-only)", () => {
     sessionRuntime = createSessionRuntime();
     vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
       get: vi.fn((key: string, defaultValue?: unknown) => {
-        if (key === "enableHttpApi") return false;
         if (key === "opencode.args") return launchArgs ?? [];
         if (key === "httpTimeout") return 5000;
         return defaultValue;
@@ -430,7 +436,6 @@ describe("SessionRuntime (native-only)", () => {
     let opencodeArgs: string[] = [];
     vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
       get: vi.fn((key: string, defaultValue?: unknown) => {
-        if (key === "enableHttpApi") return false;
         if (key === "opencode.args") return opencodeArgs;
         if (key === "httpTimeout") return 5000;
         return defaultValue;
@@ -531,7 +536,6 @@ describe("SessionRuntime (native-only)", () => {
 
     vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
       get: vi.fn((key: string, defaultValue?: unknown) => {
-        if (key === "enableHttpApi") return false;
         return defaultValue;
       }),
       update: vi.fn(),
@@ -632,7 +636,7 @@ describe("SessionRuntime (native-only)", () => {
         runtime: { terminalKey: "default" },
         state: "disconnected",
       });
-      sessionRuntime = createSessionRuntime();
+      sessionRuntime = createSessionRuntime({ stubHttpPolling: false });
       stubSleep(sessionRuntime);
     });
 
@@ -755,10 +759,8 @@ describe("SessionRuntime (native-only)", () => {
       undefined,
     );
 
-    let enableHttpApi = true;
     vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
       get: vi.fn((key: string, defaultValue?: unknown) => {
-        if (key === "enableHttpApi") return enableHttpApi;
         if (key === "httpTimeout") return 5000;
         return defaultValue;
       }),
@@ -799,13 +801,6 @@ describe("SessionRuntime (native-only)", () => {
     } as any);
     await restartSession();
     expect(lastActiveSession()?.openCodeV2).toBe(false);
-
-    // OpenCode v2 with the HTTP API disabled: flag must still turn on.
-    vi.mocked(resolveOpenCodeV2Service).mockResolvedValue(undefined);
-    vi.mocked(detectOpenCodeMajorVersion).mockResolvedValue(2);
-    enableHttpApi = false;
-    await restartSession();
-    expect(lastActiveSession()?.openCodeV2).toBe(true);
   });
 
   it("recovers the keymap flag when the v2 service appears after launch", async () => {
@@ -826,15 +821,17 @@ describe("SessionRuntime (native-only)", () => {
       );
       vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
         get: vi.fn((key: string, defaultValue?: unknown) => {
-          if (key === "enableHttpApi") return false;
           if (key === "httpTimeout") return 5000;
           return defaultValue;
         }),
         update: vi.fn(),
       } as any);
 
-      const { detectOpenCodeMajorVersion, resolveOpenCodeV2Service } =
-        await import("../services/OpenCodeCliCompat");
+      const {
+        detectOpenCodeMajorVersion,
+        detectOpenCodeApiProtocol,
+        resolveOpenCodeV2Service,
+      } = await import("../services/OpenCodeCliCompat");
       const sessions = () =>
         mockPostMessage.mock.calls
           .map((c) => c[0] as { type?: string; openCodeV2?: boolean })
@@ -842,10 +839,13 @@ describe("SessionRuntime (native-only)", () => {
 
       // Both probes fail before launch (fresh machine: CLI not on the
       // extension host PATH, no service file yet). The delayed retry then
-      // sees the started TUI report v2.
+      // sees the started TUI report v2. The start path probes the major
+      // twice, so both pre-launch calls stay undefined.
       vi.mocked(detectOpenCodeMajorVersion)
         .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(2);
+      vi.mocked(detectOpenCodeApiProtocol).mockResolvedValue("v1");
       vi.mocked(resolveOpenCodeV2Service).mockResolvedValue(undefined);
       await sessionRuntime.startOpenCode();
       expect(sessions().at(-1)?.openCodeV2).toBe(false);

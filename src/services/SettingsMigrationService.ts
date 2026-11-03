@@ -31,7 +31,6 @@ const CONFIG_KEY_SUFFIXES: readonly string[] = [
   "sendKeybindingsToShell",
   "autoShareContext",
   "httpTimeout",
-  "enableHttpApi",
   "logLevel",
   "contextDebounceMs",
   "maxDiagnosticLength",

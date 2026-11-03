@@ -2204,6 +2204,80 @@ describe("ConfigSyncService engine", () => {
     });
   });
 
+  it("waits for the OpenCode startup before the startup pass", async () => {
+    settings["sync.autoSyncEnabled"] = true;
+    settings["sync.autoSyncOnStartup"] = true;
+    writeLocal("cli.json", "one");
+
+    let releaseReady: () => void = () => undefined;
+    const readinessWaited = new Promise<void>((resolve) => {
+      releaseReady = resolve;
+    });
+    let gateCalls = 0;
+    const gated = new ConfigSyncService(makeContext(storageDir), {
+      logger,
+      postWebviewMessage: () => undefined,
+      isWebviewVisible: () => true,
+      clientFactory: () => {
+        clientFactoryCalls += 1;
+        return client;
+      },
+      waitForOpenCodeReady: async () => {
+        gateCalls += 1;
+        await readinessWaited;
+      },
+    });
+    try {
+      gated.initialize();
+
+      await vi.waitFor(() => {
+        if (gateCalls === 0) {
+          throw new Error("waiting for the OpenCode readiness gate");
+        }
+      }, 5_000);
+      // Nothing may reach the WebDAV server while OpenCode is still booting.
+      expect(client.calls.put).toEqual([]);
+
+      releaseReady();
+      await vi.waitFor(() => {
+        if (client.calls.put.length === 0) {
+          throw new Error("waiting for the startup pass");
+        }
+      }, 5_000);
+    } finally {
+      gated.dispose();
+    }
+  });
+
+  it("still runs the startup pass when the readiness wait fails", async () => {
+    settings["sync.autoSyncEnabled"] = true;
+    settings["sync.autoSyncOnStartup"] = true;
+    writeLocal("cli.json", "one");
+
+    const gated = new ConfigSyncService(makeContext(storageDir), {
+      logger,
+      postWebviewMessage: () => undefined,
+      isWebviewVisible: () => true,
+      clientFactory: () => {
+        clientFactoryCalls += 1;
+        return client;
+      },
+      waitForOpenCodeReady: async () => {
+        throw new Error("readiness probe exploded");
+      },
+    });
+    try {
+      gated.initialize();
+      await vi.waitFor(() => {
+        if (client.calls.put.length === 0) {
+          throw new Error("waiting for the startup pass");
+        }
+      }, 5_000);
+    } finally {
+      gated.dispose();
+    }
+  });
+
   it("releases the lock when the circuit breaker pauses auto sync", async () => {
     settings["sync.autoSyncEnabled"] = true;
     writeLocal("cli.json", "v1");

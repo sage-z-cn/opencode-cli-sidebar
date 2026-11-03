@@ -67,10 +67,20 @@ export type CustomItemValidation =
 const BLACKLIST_EXACT = new Set(["auth.json"]);
 const BLACKLIST_SUFFIXES = [".db", ".token"];
 const BLACKLIST_PREFIXES = ["credentials", "secret"];
+/**
+ * OpenCode's service configuration, including per-channel variants such as
+ * `service-local.json`. It carries the background-service password and is
+ * rewritten while the daemon runs, so syncing it would leak a credential and
+ * race the writer.
+ */
+const SERVICE_CONFIG_NAME = /^service(?:-[a-z0-9._-]+)?\.json$/;
 
 function isBlacklistedSegment(segment: string): boolean {
   const lowered = segment.toLowerCase();
   if (BLACKLIST_EXACT.has(lowered)) {
+    return true;
+  }
+  if (SERVICE_CONFIG_NAME.test(lowered)) {
     return true;
   }
   if (BLACKLIST_SUFFIXES.some((suffix) => lowered.endsWith(suffix))) {

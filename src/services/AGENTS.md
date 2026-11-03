@@ -33,6 +33,12 @@
 - OpenCode-specific behavior lives in `src/services/aiTools/OpenCodeToolOperator`; the extension runs OpenCode only, so there is no registry or per-tool dispatch.
 - Formatting file refs, dropped files, pasted images, and the launch command built from the `opencode.commandPath` / `opencode.args` settings belongs there rather than in command/provider conditionals.
 
+## Startup Coordination
+
+- `OpenCodeReadiness` reports the machine-wide background-service state (`down` / `starting` / `ready` / `failed`) by combining the registration file with `GET /api/info`; every window shares one daemon, so this state is global, not per-session.
+- `StartupCoordinator` serializes the first start across windows through a lease file under `globalStorage/startup`. The lease owner starts the service through its own TUI; the others wait for readiness instead of spawning a contender. Call it only for v2 launches that do not pass `--standalone` / `--server`.
+- The gate must never block a launch indefinitely: every wait is bounded and falls through to a direct start. Do not add an unbounded loop to `acquire()`; the lease delete can fail on Windows while another handle is open.
+
 ## Config Sync
 
 - WebDAV config sync lives in `src/services/sync`: `ConfigSyncService` owns the sync state machine, `WebDavClient` the HTTP layer, `syncItems` item/path/exclusion rules, `SyncManifest` the remote baseline manifest.

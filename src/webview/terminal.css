@@ -34,6 +34,57 @@ html {
   background-color: inherit;
 }
 
+/* Startup indicator: covers the empty terminal area while the shared
+   background service boots, so a restored window never looks idle.
+   pointer-events stays off so it can never swallow terminal input. */
+.startup-status {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  text-align: center;
+  background: var(--terminal-background, #0a0a0a);
+  color: var(--vscode-descriptionForeground, #999);
+  font-family: var(--vscode-font-family);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.startup-status.hidden {
+  display: none;
+}
+
+.startup-status-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--vscode-progressBar-background, #0e70c0);
+  border-top-color: transparent;
+  animation: startup-status-spin 900ms linear infinite;
+}
+
+.startup-status-text {
+  color: var(--vscode-foreground, #cccccc);
+  max-width: 28em;
+}
+
+@keyframes startup-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-status-spinner {
+    animation-duration: 2.4s;
+  }
+}
+
 /* xterm 6.0.0 keeps a legacy `.xterm-viewport` shell (absolute, inset 0) that
    no longer hosts any content — scrolling moved to `.xterm-scrollable-element`.
    Its native `overflow-y: scroll` still paints a classic Windows scrollbar with

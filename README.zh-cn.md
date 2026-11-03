@@ -197,7 +197,6 @@
 
 | 设置                                   | 类型    | 默认值  | 描述                                        |
 | -------------------------------------- | ------- | ------- | ------------------------------------------- |
-| `opencode-cli-sidebar.enableHttpApi`    | boolean | `true`  | 启用 HTTP API 通信                          |
 | `opencode-cli-sidebar.httpTimeout`      | number  | `5000`  | HTTP API 请求超时（毫秒，1000-30000）        |
 | `opencode-cli-sidebar.autoShareContext` | boolean | `true`  | 自动共享编辑器上下文给 OpenCode           |
 | `opencode-cli-sidebar.contextDebounceMs` | number  | `500`   | 上下文更新防抖延迟（毫秒，100-5000）        |
@@ -210,6 +209,7 @@
 | `opencode-cli-sidebar.opencode.args`         | array   | `[]`         | 传给 OpenCode CLI 的额外参数                |
 | `opencode-cli-sidebar.opencode.continueLastSession` | boolean | `true` | 终端启动时续接上一次 OpenCode 会话   |
 | `opencode-cli-sidebar.enableAutoSpawn`       | boolean | `true`       | OpenCode 未运行时自动拉起                  |
+| `opencode-cli-sidebar.startup.coordinate`    | boolean | `true`       | 在多个 VS Code 窗口之间协调 OpenCode 后台服务的启动 |
 
 ### 高级设置
 
@@ -228,9 +228,9 @@
   "opencode-cli-sidebar.cursorBlink": true,
   "opencode-cli-sidebar.cursorStyle": "block",
   "opencode-cli-sidebar.scrollback": 10000,
-  "opencode-cli-sidebar.enableHttpApi": true,
   "opencode-cli-sidebar.httpTimeout": 5000,
   "opencode-cli-sidebar.autoShareContext": true,
+  "opencode-cli-sidebar.startup.coordinate": true,
   "opencode-cli-sidebar.opencode.commandPath": "opencode"
 }
 ```

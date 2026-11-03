@@ -235,6 +235,11 @@ export type HostMessage =
   | { type: "clearTerminal" }
   | { type: "focusTerminal" }
   | { type: "webviewVisible" }
+  /**
+   * Startup gate progress. `starting` means the shared OpenCode background
+   * service is not up yet, `idle` hides the in-sidebar indicator.
+   */
+  | { type: "startupPhase"; phase: "starting" | "idle" }
   | {
       type: "platformInfo";
       platform: string;
@@ -614,7 +619,6 @@ export interface ExtensionConfig {
   shellArgs: string[];
   autoShareContext: boolean;
   httpTimeout: number;
-  enableHttpApi: boolean;
   logLevel: LogLevel;
   contextDebounceMs: number;
   maxDiagnosticLength: number;

@@ -70,13 +70,11 @@ describe("TerminalProvider", () => {
 
   function mockConfiguration(options?: {
     autoStartOnOpen?: boolean;
-    enableHttpApi?: boolean;
     focusIndicatorMode?: string;
     focusIndicatorBorderWidth?: number;
   }) {
     const {
       autoStartOnOpen = false,
-      enableHttpApi = false,
       focusIndicatorMode = "bottomBorder",
       focusIndicatorBorderWidth,
     } = options ?? {};
@@ -85,9 +83,6 @@ describe("TerminalProvider", () => {
       get: vi.fn((key: string, defaultValue?: unknown) => {
         if (key === "autoStartOnOpen") {
           return autoStartOnOpen;
-        }
-        if (key === "enableHttpApi") {
-          return enableHttpApi;
         }
         if (key === "httpTimeout") {
           return 5000;

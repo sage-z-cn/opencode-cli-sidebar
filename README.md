@@ -162,7 +162,6 @@ The extension communicates with OpenCode CLI via an HTTP API for reliable bidire
 
 ```json
 {
-  "opencode-cli-sidebar.enableHttpApi": true,
   "opencode-cli-sidebar.httpTimeout": 5000,
   "opencode-cli-sidebar.autoShareContext": true
 }
@@ -207,7 +206,6 @@ Available settings in VS Code settings (`Cmd+,` / `Ctrl+,`):
 
 | Setting                                  | Type    | Default | Description                                      |
 | ---------------------------------------- | ------- | ------- | ------------------------------------------------ |
-| `opencode-cli-sidebar.enableHttpApi`      | boolean | `true`  | Enable HTTP API for OpenCode communication       |
 | `opencode-cli-sidebar.httpTimeout`        | number  | `5000`  | HTTP API request timeout in ms (1000-30000)      |
 | `opencode-cli-sidebar.autoShareContext`   | boolean | `true`  | Auto-share editor context with OpenCode           |
 | `opencode-cli-sidebar.contextDebounceMs`  | number  | `500`   | Debounce delay for context updates (100-5000 ms) |
@@ -220,6 +218,7 @@ Available settings in VS Code settings (`Cmd+,` / `Ctrl+,`):
 | `opencode-cli-sidebar.opencode.args`           | array   | `[]`         | Extra arguments passed to the OpenCode CLI             |
 | `opencode-cli-sidebar.opencode.continueLastSession` | boolean | `true`   | Continue the last OpenCode session when the terminal starts |
 | `opencode-cli-sidebar.enableAutoSpawn`         | boolean | `true`       | Auto-spawn OpenCode if it is not running               |
+| `opencode-cli-sidebar.startup.coordinate`      | boolean | `true`       | Coordinate OpenCode background service startup across VS Code windows |
 
 ### Advanced Settings
 
@@ -238,9 +237,9 @@ Available settings in VS Code settings (`Cmd+,` / `Ctrl+,`):
   "opencode-cli-sidebar.cursorBlink": true,
   "opencode-cli-sidebar.cursorStyle": "block",
   "opencode-cli-sidebar.scrollback": 10000,
-  "opencode-cli-sidebar.enableHttpApi": true,
   "opencode-cli-sidebar.httpTimeout": 5000,
   "opencode-cli-sidebar.autoShareContext": true,
+  "opencode-cli-sidebar.startup.coordinate": true,
   "opencode-cli-sidebar.opencode.commandPath": "opencode"
 }
 ```

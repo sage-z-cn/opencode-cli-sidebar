@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import * as path from "node:path";
 import { l10n } from "../i18n";
 import { TerminalProvider } from "../providers/TerminalProvider";
 import { OpenCodeCodeActionProvider } from "../providers/CodeActionProvider";
@@ -24,6 +25,8 @@ import { OpenCodeChangelogService } from "../services/OpenCodeChangelogService";
 import { ChangelogTranslationService } from "../services/ChangelogTranslationService";
 import { ConfigSyncService } from "../services/sync/ConfigSyncService";
 import { setActiveConfigSyncService } from "../services/sync/syncServiceRegistry";
+import { OpenCodeReadiness } from "../services/OpenCodeReadiness";
+import { StartupCoordinator } from "../services/StartupCoordinator";
 import { IdeContextServer } from "../services/ideContext/IdeContextServer";
 import { PortManager } from "../services/PortManager";
 import { ConnectionResolver } from "../services/ConnectionResolver";
@@ -42,6 +45,21 @@ import {
  * carries a timestamp.
  */
 const UPDATE_SYNC_SECRET_KEY = "opencode-cli-sidebar.updateSync";
+
+/**
+ * Grace period before the startup sync pass decides nothing is starting
+ * OpenCode. A restored window reveals its sidebar a moment after activation,
+ * so the pass must not run before that decision is meaningful.
+ */
+const SYNC_STARTUP_SETTLE_MS = 5_000;
+/** Upper bound on the startup sync wait so a broken CLI cannot stall sync. */
+const SYNC_STARTUP_WAIT_MS = 60_000;
+/**
+ * How long a window waits before showing the in-sidebar startup indicator.
+ * The common case is a service that is already warm, so showing it
+ * immediately would only flicker.
+ */
+const STARTUP_PROGRESS_DELAY_MS = 1_500;
 
 /**
  * Manages extension activation, service initialization, and cleanup.
@@ -64,6 +82,12 @@ export class ExtensionLifecycle {
   private ideContextServer: IdeContextServer | undefined;
   private opencodeUpdateService: OpenCodeUpdateService | undefined;
   private configSyncService: ConfigSyncService | undefined;
+  private openCodeReadiness: OpenCodeReadiness | undefined;
+  private startupCoordinator: StartupCoordinator | undefined;
+  /** Startup indicator state posted to the webview, plus its delayed timer. */
+  private startupPhase: "starting" | "idle" = "idle";
+  private startupPhaseVisible = false;
+  private startupPhaseTimer: NodeJS.Timeout | undefined;
   private activated = false;
   private tuiProviderRegistration: vscode.Disposable | undefined;
   private context?: vscode.ExtensionContext;
@@ -276,6 +300,51 @@ export class ExtensionLifecycle {
         }),
       );
 
+      // Several windows restore at once and each one would spawn its own
+      // contender for the same background service port. One window warms the
+      // service through an on-disk lease; the rest attach once it answers.
+      const readStartupCli = () =>
+        vscode.workspace
+          .getConfiguration("opencode-cli-sidebar")
+          .get<string>("opencode.commandPath", "opencode");
+      this.openCodeReadiness = new OpenCodeReadiness({
+        logger,
+        command: readStartupCli,
+      });
+      this.startupCoordinator = new StartupCoordinator({
+        storageDir: path.join(context.globalStorageUri.fsPath, "startup"),
+        readiness: this.openCodeReadiness,
+        logger,
+        launchCommand: () => {
+          const config = vscode.workspace.getConfiguration(
+            "opencode-cli-sidebar",
+          );
+          const commandPath = config.get<string>(
+            "opencode.commandPath",
+            "opencode",
+          );
+          const args = config.get<string[]>("opencode.args", []);
+          return [commandPath, ...args].join(" ");
+        },
+        isEnabled: () =>
+          vscode.workspace
+            .getConfiguration("opencode-cli-sidebar")
+            .get<boolean>("startup.coordinate", true),
+        // A slow first start would otherwise leave the sidebar blank with no
+        // hint that the shared service is still starting.
+        onPhase: (phase) => {
+          if (phase === "starting") {
+            this.showStartupProgress(phase);
+          } else {
+            this.hideStartupProgress();
+          }
+        },
+      });
+      context.subscriptions.push(
+        this.startupCoordinator,
+        this.openCodeReadiness,
+      );
+
       this.tuiProvider = new TerminalProvider(
         context,
         this.terminalManager,
@@ -288,6 +357,7 @@ export class ExtensionLifecycle {
         this.opencodeUpdateService,
         openCodeChangelogService,
         changelogTranslationService,
+        this.startupCoordinator,
       );
 
       this.tuiProviderRegistration?.dispose();
@@ -331,6 +401,17 @@ export class ExtensionLifecycle {
             isWebviewVisible?: () => boolean;
           } | undefined;
           return provider?.isWebviewVisible?.() ?? true;
+        },
+        // OpenCode rewrites its own config directory while it boots, so the
+        // startup sync pass waits for the background service to settle first.
+        waitForOpenCodeReady: async () => {
+          await this.openCodeReadiness?.waitUntilReady({
+            settleMs: SYNC_STARTUP_SETTLE_MS,
+            timeoutMs: SYNC_STARTUP_WAIT_MS,
+            stopWhenIdle: true,
+            isStartInFlight: () =>
+              this.startupCoordinator?.isWarmupInFlight() ?? false,
+          });
         },
       });
       context.subscriptions.push(this.configSyncService);
@@ -687,6 +768,49 @@ export class ExtensionLifecycle {
     }
   }
 
+  /**
+   * Posts the startup phase to the sidebar after a short delay.
+   *
+   * The gate blocks before the terminal exists, so without this the sidebar
+   * looks idle while another window warms the shared background service. The
+   * delay keeps a fast start from flashing the indicator.
+   */
+  private showStartupProgress(phase: "starting"): void {
+    this.startupPhase = phase;
+    if (this.startupPhaseVisible) {
+      this.tuiProvider?.postWebviewMessage({ type: "startupPhase", phase });
+      return;
+    }
+    if (this.startupPhaseTimer) {
+      return;
+    }
+    this.startupPhaseTimer = setTimeout(() => {
+      this.startupPhaseTimer = undefined;
+      if (this.startupPhase === "idle") {
+        return;
+      }
+      this.startupPhaseVisible = true;
+      this.tuiProvider?.postWebviewMessage({
+        type: "startupPhase",
+        phase: this.startupPhase,
+      });
+    }, STARTUP_PROGRESS_DELAY_MS);
+    this.startupPhaseTimer.unref?.();
+  }
+
+  private hideStartupProgress(): void {
+    if (this.startupPhaseTimer) {
+      clearTimeout(this.startupPhaseTimer);
+      this.startupPhaseTimer = undefined;
+    }
+    const wasVisible = this.startupPhaseVisible;
+    this.startupPhase = "idle";
+    this.startupPhaseVisible = false;
+    if (wasVisible) {
+      this.tuiProvider?.postWebviewMessage({ type: "startupPhase", phase: "idle" });
+    }
+  }
+
   async deactivate(): Promise<void> {
     this.outputChannelService?.info("Deactivating OpenCode CLI Sidebar...");
     this.activated = false;
@@ -761,6 +885,10 @@ export class ExtensionLifecycle {
       setActiveConfigSyncService(undefined);
       this.configSyncService = undefined;
     }
+
+    this.startupCoordinator = undefined;
+    this.openCodeReadiness = undefined;
+    this.hideStartupProgress();
 
     this.codeActionProvider = undefined;
 

@@ -25,6 +25,7 @@
 - xterm instances and drag/drop handling: `terminal-manager.ts`.
 - Toolbar/pill UI: `toolbar/` (the AI tool pill is a static OpenCode badge; no selector or dropdown).
 - Host message handling: `messages/index.ts`.
+- Startup indicator: `startup-status/` (rendered over the empty terminal while the shared service boots; `l10n.ts` is host-side).
 - Clipboard: `clipboard/`.
 
 ## Verification

@@ -24,6 +24,7 @@ import {
   extractCliBinary,
   commandBypassesSharedService,
   runOpenCodeCliCommand,
+  type OpenCodeApiProtocol,
 } from "../services/OpenCodeCliCompat";
 import { TerminalBackendRegistry } from "../services/terminalBackends";
 import type { IdeContextServer } from "../services/ideContext/IdeContextServer";
@@ -31,6 +32,7 @@ import type {
   BackendLaunchPlan,
 } from "../services/terminalBackends";
 import { NativeTerminalManager } from "../services/NativeTerminalManager";
+import type { StartupGate } from "../services/StartupCoordinator";
 
 interface StartupWorkspaceResolution {
   workspacePath: string;
@@ -100,6 +102,7 @@ export class SessionRuntime {
     private readonly callbacks: SessionRuntimeCallbacks,
     private readonly nativeTerminalManager?: NativeTerminalManager,
     private readonly ideContextServer?: IdeContextServer,
+    private readonly startupGate?: StartupGate,
   ) {
     if (this.instanceStore) {
       this.subscribeToActiveInstanceChanges();
@@ -211,8 +214,7 @@ export class SessionRuntime {
       this.syncActiveInstance(instanceId);
 
       const config = vscode.workspace.getConfiguration("opencode-cli-sidebar");
-      const enableHttpApi = config.get<boolean>("enableHttpApi", true);
-      if (enableHttpApi && existingTerminal.port) {
+      if (existingTerminal.port) {
         const httpTimeout = config.get<number>("httpTimeout", 5000);
         // OpenCode v1 requires x-opencode-directory on instance-scoped
         // routes (/tui/append-prompt, /session/*). Resolve the workspace path
@@ -292,7 +294,6 @@ export class SessionRuntime {
       this.disposeListeners();
 
       const config = vscode.workspace.getConfiguration("opencode-cli-sidebar");
-      const enableHttpApi = config.get<boolean>("enableHttpApi", true);
       const httpTimeout = config.get<number>("httpTimeout", 5000);
 
       const { workspacePath } = this.resolveStartupWorkspacePath();
@@ -336,18 +337,19 @@ export class SessionRuntime {
 
       let port: number | undefined;
       let openCodeCliMajor: number | undefined;
+      let apiProtocol: OpenCodeApiProtocol | undefined;
       let v2Service: Awaited<ReturnType<typeof resolveOpenCodeV2Service>>;
-      // Keymap flag: resolve the CLI major for OpenCode regardless of the
-      // HTTP setting (cached per binary; falls back to the v2 service file).
+      // Keymap flag: resolve the CLI major for OpenCode (cached per binary;
+      // falls back to the v2 service file).
       this.openCodeCliMajor = await this.resolveOpenCodeMajorForKeymap(command);
-      if (enableHttpApi && command) {
+      if (command) {
         // OpenCode v1 hosts HTTP on `--port=N`. OpenCode v2 rejects `--port`
         // on the TUI and talks to a background service instead.
         openCodeCliMajor =
           this.openCodeCliMajor ??
           (await detectOpenCodeMajorVersion(command));
         this.openCodeCliMajor = openCodeCliMajor;
-        const apiProtocol =
+        apiProtocol =
           openCodeCliMajor !== undefined
             ? openCodeCliMajor >= 2
               ? "v2"
@@ -367,7 +369,7 @@ export class SessionRuntime {
               );
             } else {
               this.logger.warn(
-                "[TerminalProvider] OpenCode v2 detected but background service was not found; HTTP features disabled",
+                "[TerminalProvider] OpenCode v2 detected but the background service is not up yet",
               );
             }
           } else {
@@ -418,6 +420,14 @@ export class SessionRuntime {
         } else {
           await this.startEditorContextWs();
         }
+      }
+
+      // Multiple VS Code windows restore at once and would otherwise each
+      // spawn a contender for the same fixed service port. Only v2 has a
+      // shared service; v1 binds its own port per window and needs no gate.
+      if (apiProtocol === "v2" && this.startupGate) {
+        const outcome = await this.startupGate.beforeStart();
+        this.logger.info(`[TerminalProvider] OpenCode startup gate: ${outcome}`);
       }
 
       this.terminalManager.createTerminal(
@@ -503,7 +513,7 @@ export class SessionRuntime {
         this.scheduleOpenCodeMajorRetry(command);
       }
 
-      if (enableHttpApi && port) {
+      if (port) {
         if (v2Service) {
           this.apiClient = OpenCodeApiClient.fromV2Service(v2Service, {
             maxRetries: 10,

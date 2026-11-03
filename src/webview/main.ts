@@ -9,6 +9,7 @@ import {
 import { postMessage } from "./shared/vscode-api";
 import { showServiceRestartPrompt } from "./service-restart-prompt";
 import { initTerminal } from "./terminal";
+import { applyStartupPhase, initStartupStatus } from "./startup-status";
 import { readTerminalConfig } from "./terminal/config";
 import { createFocusIndicator } from "./terminal/focus-indicator";
 import { createMessageHandler, type MessageHandlerCallbacks } from "./messages";
@@ -158,6 +159,10 @@ const callbacks: MessageHandlerCallbacks = {
   onFocusIndicatorConfig(mode, width) {
     focusIndicator.update(mode, width);
   },
+
+  onStartupPhase(message) {
+    applyStartupPhase(message.phase);
+  },
 };
 
 const messageHandler = createMessageHandler(callbacks);
@@ -197,6 +202,8 @@ function initApp(): void {
   terminalManager = new TerminalManager();
   terminalManager.init(container);
   terminalManager.register(instance?.terminal ?? null, instance?.fitAddon ?? null, container);
+  // Mounted after xterm so the indicator sits on top of the terminal layers.
+  initStartupStatus(container);
 
   container.addEventListener(
     "paste",

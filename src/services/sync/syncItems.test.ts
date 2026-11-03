@@ -84,6 +84,8 @@ describe("syncItems", () => {
       "secret-keys.md",
       "dir/SECRET.pem",
       "state.db",
+      "service.json",
+      "service-local.json",
     ]) {
       expect(validateCustomItemPath(blacklisted)).toMatchObject({
         ok: false,

@@ -12,6 +12,7 @@ import { openCodeUpdateL10nStrings } from "../update/l10n";
 import { serviceRestartPromptL10nStrings } from "../service-restart-prompt/l10n";
 import { syncL10nStrings } from "../sync/l10n";
 import { renderSyncUi } from "../sync/markup";
+import { startupL10nStrings } from "../startup-status/l10n";
 
 export interface TerminalHtmlParams extends TerminalContainerParams {
   cspSource: string;
@@ -44,6 +45,7 @@ export function renderTerminalHtml({
   const uiLanguageScript = `<script nonce="${nonce}">window.__OC_UPDATE_LANG__=${JSON.stringify(uiLanguage)};</script>`;
   const serviceRestartPromptL10nScript = `<script nonce="${nonce}">window.__SERVICE_RESTART_L10N__=${JSON.stringify(serviceRestartPromptL10nStrings)};</script>`;
   const syncL10nScript = `<script nonce="${nonce}">window.__OC_SYNC_L10N__=${JSON.stringify(syncL10nStrings)};</script>`;
+  const startupL10nScript = `<script nonce="${nonce}">window.__OC_STARTUP_L10N__=${JSON.stringify(startupL10nStrings)};</script>`;
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -63,6 +65,7 @@ export function renderTerminalHtml({
     ${uiLanguageScript}
     ${serviceRestartPromptL10nScript}
     ${syncL10nScript}
+    ${startupL10nScript}
   </head>
   <body>
     ${renderToolbar()}

@@ -263,11 +263,6 @@
           "maximum": 30000,
           "description": "%configuration.opencode-cli-sidebar.httpTimeout.description%"
         },
-        "opencode-cli-sidebar.enableHttpApi": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.opencode-cli-sidebar.enableHttpApi.description%"
-        },
         "opencode-cli-sidebar.logLevel": {
           "type": "string",
           "enum": [
@@ -297,6 +292,11 @@
           "type": "boolean",
           "default": true,
           "description": "%configuration.opencode-cli-sidebar.enableAutoSpawn.description%"
+        },
+        "opencode-cli-sidebar.startup.coordinate": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.opencode-cli-sidebar.startup.coordinate.description%"
         },
         "opencode-cli-sidebar.codeActionSeverities": {
           "type": "array",

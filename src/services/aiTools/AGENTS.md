@@ -11,7 +11,7 @@
 `OpenCodeToolOperator` implements:
 
 - `getLaunchCommand({ commandPath, args })` — builds the shell command string from the `opencode.commandPath` / `opencode.args` settings; command = `commandPath` + `args`.
-- `supportsHttpApi()` / `supportsAutoContext()` — constant `true`; `SessionRuntime` still honours the `enableHttpApi` and `autoShareContext` settings around them.
+- `supportsHttpApi()` / `supportsAutoContext()` — constant `true`; `SessionRuntime` still honours the `autoShareContext` setting around them. The HTTP API has no opt-out setting, so `supportsHttpApi()` only documents intent.
 - `buildPortArg(port, options?)` — v1 emits `--port=N`; v2 (`options.cliMajorVersion >= 2`) returns `undefined` because the TUI rejects `--port`.
 - `formatFileReference(OpenCodeFileReference)` — `@path` / `@path#42` / `@path#37-42` syntax with bare line numbers.
 - `formatDroppedFiles(paths, { useAtSyntax })`

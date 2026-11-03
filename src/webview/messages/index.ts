@@ -21,6 +21,9 @@ export interface MessageHandlerCallbacks {
     message: Extract<HostMessage, { type: "terminalConfig" }>,
   ) => void;
   onFocusIndicatorConfig?: (mode: FocusIndicatorMode, width: number) => void;
+  onStartupPhase?: (
+    message: Extract<HostMessage, { type: "startupPhase" }>,
+  ) => void;
   onKeymapData?: (
     message: Extract<HostMessage, { type: "keymapData" }>,
   ) => void;
@@ -141,6 +144,10 @@ export function createMessageHandler(
               postTerminalResize(terminal);
             }
           }, 50);
+          break;
+
+        case "startupPhase":
+          callbacks.onStartupPhase?.(message);
           break;
 
         case "platformInfo":

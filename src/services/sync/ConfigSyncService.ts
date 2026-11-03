@@ -304,6 +304,14 @@ export interface ConfigSyncServiceDeps {
   clientFactory?: (options: WebDavClientOptions) => WebDavClientLike;
   /** Overridable config dir for tests. */
   configDirProvider?: () => string;
+  /**
+   * Waits until the OpenCode background service settles before the startup
+   * pass runs. OpenCode rewrites its own config directory while it boots, so
+   * a parallel sync pass would race those writes. Omitted in tests and when
+   * startup coordination is off; the service decides its own timeout and must
+   * never throw.
+   */
+  waitForOpenCodeReady?: () => Promise<unknown>;
 }
 
 interface RemoteTree {
@@ -337,6 +345,7 @@ export class ConfigSyncService implements vscode.Disposable {
     options: WebDavClientOptions,
   ) => WebDavClientLike;
   private readonly configDirProvider: () => string;
+  private readonly waitForOpenCodeReady?: () => Promise<unknown>;
 
   private readonly disposables: vscode.Disposable[] = [];
   private readonly _onDidChange = new vscode.EventEmitter<WebDavSyncStatusDelta>();
@@ -412,6 +421,7 @@ export class ConfigSyncService implements vscode.Disposable {
       deps.clientFactory ?? ((options) => new WebDavClient(options));
     this.configDirProvider =
       deps.configDirProvider ?? (() => resolveOpenCodeConfigDir());
+    this.waitForOpenCodeReady = deps.waitForOpenCodeReady;
     this.syncLock = new SyncProcessLock(
       path.join(syncStorageDir(this.globalStoragePath()), "lock.json"),
     );
@@ -469,11 +479,40 @@ export class ConfigSyncService implements vscode.Disposable {
       // pass entirely — the leader's watcher and polls already cover
       // the machine, and a parallel startup pass from every window
       // would race the manifest read-modify-write.
-      void this.whenLeadershipSettled().then(() => {
+      void this.whenLeadershipSettled().then(async () => {
+        // A follower window runs no startup pass, so it must not pay for the
+        // readiness wait either.
+        if (this.disposed || !this.isLeader) {
+          return;
+        }
+        await this.awaitOpenCodeStartup();
         if (!this.disposed && this.isLeader) {
           void this.triggerAuto("startup");
         }
       });
+    }
+  }
+
+  /**
+   * Holds the startup pass until the OpenCode background service settles.
+   *
+   * OpenCode reads and rewrites its own config directory while it boots, so a
+   * pass that writes `opencode.json` at that moment competes for the same
+   * files. The injected waiter owns the timeout and never throws; a missing
+   * CLI or a failed start must not stall sync.
+   */
+  private async awaitOpenCodeStartup(): Promise<void> {
+    if (!this.waitForOpenCodeReady) {
+      return;
+    }
+    try {
+      await this.waitForOpenCodeReady();
+    } catch (error) {
+      this.logger.warn(
+        `[WebDavSync] OpenCode readiness wait failed; syncing anyway: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 

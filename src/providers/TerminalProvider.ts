@@ -41,6 +41,7 @@ import { SessionRuntime, type ServiceRestartPolicy } from "./SessionRuntime";
 import { toRelativeReference } from "./relativeReference";
 import { renderTerminalHtml } from "../webview/terminal/html";
 import { NativeTerminalManager } from "../services/NativeTerminalManager";
+import type { StartupGate } from "../services/StartupCoordinator";
 import { TerminalBackendRegistry } from "../services/terminalBackends";
 import { OpenCodeKeymapService } from "../services/OpenCodeKeymapService";
 import { OpenCodeCliSettingsService } from "../services/OpenCodeCliSettingsService";
@@ -107,6 +108,7 @@ export class TerminalProvider
     opencodeUpdateService?: OpenCodeUpdateService,
     changelogService?: OpenCodeChangelogService,
     changelogTranslationService?: ChangelogTranslationService,
+    startupGate?: StartupGate,
   ) {
     this.contextSharingService = new ContextSharingService();
     this.opencodeOperator = new OpenCodeToolOperator();
@@ -141,6 +143,7 @@ export class TerminalProvider
       },
       this.nativeTerminalManager,
       this.ideContextServer,
+      startupGate,
     );
 
     const routerBridge: MessageRouterProviderBridge = {

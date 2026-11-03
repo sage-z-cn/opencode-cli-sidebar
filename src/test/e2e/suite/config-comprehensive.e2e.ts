@@ -103,7 +103,6 @@ const configurationSpecs: Record<string, ConfigurationSpec> = {
     minimum: 1000,
     maximum: 30000,
   },
-  "opencode-cli-sidebar.enableHttpApi": { type: "boolean", defaultValue: true },
   "opencode-cli-sidebar.logLevel": {
     type: "string",
     defaultValue: "info",
@@ -213,7 +212,6 @@ suite("Runtime configuration defaults", () => {
     assert.deepStrictEqual(defaultValue("opencode.args"), []);
     assert.strictEqual(defaultValue("opencode.continueLastSession"), true);
     assert.strictEqual(defaultValue("autoStartOnOpen"), true);
-    assert.strictEqual(defaultValue("enableHttpApi"), true);
     assert.strictEqual(defaultValue("fontSize"), 12);
   });
 });
