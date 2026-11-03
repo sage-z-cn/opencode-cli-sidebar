@@ -7,7 +7,7 @@ vi.mock("../shared/vscode-api", () => ({
 }));
 
 import toolbarHtml from "../terminal/toolbar.html?raw";
-import { setKeymapOpenCodeV2 } from "../keymap";
+import { setKeymapOpenCodeV2, setOpenCodeSlimAvailable } from "../keymap";
 
 // Minimal keymap DOM (markup.ts pulls host-side i18n; not needed here).
 const keymapDom = `
@@ -40,6 +40,7 @@ describe("static OpenCode pill + keymap visibility wiring", () => {
     const cli = document.getElementById("btn-oc-cli-settings")!;
     const sepFont = document.getElementById("toolbar-sep-font-oc")!;
     const sepSettings = document.getElementById("toolbar-sep-oc-settings")!;
+    const sepFiles = document.getElementById("toolbar-sep-oc-files")!;
 
     // OpenCode v1: global file buttons + separators visible; v2-only stay hidden.
     setKeymapOpenCodeV2(false);
@@ -49,6 +50,8 @@ describe("static OpenCode pill + keymap visibility wiring", () => {
     expect(cli.classList.contains("hidden")).toBe(true);
     expect(sepFont.classList.contains("hidden")).toBe(false);
     expect(sepSettings.classList.contains("hidden")).toBe(false);
+    // No v2-only buttons follow the file group, so no divider either.
+    expect(sepFiles.classList.contains("hidden")).toBe(true);
 
     // OpenCode v2: all four OpenCode buttons visible.
     setKeymapOpenCodeV2(true);
@@ -56,5 +59,24 @@ describe("static OpenCode pill + keymap visibility wiring", () => {
     expect(configJson.classList.contains("hidden")).toBe(false);
     expect(keymap.classList.contains("hidden")).toBe(false);
     expect(cli.classList.contains("hidden")).toBe(false);
+    // File buttons are split from the settings/keymap buttons.
+    expect(sepFiles.classList.contains("hidden")).toBe(false);
+  });
+
+  it("shows the oh-my-opencode-slim config button only when the plugin exists", () => {
+    const slim = document.getElementById("btn-oc-slim-config")!;
+    expect(slim).toBeTruthy();
+    expect(slim.classList.contains("hidden")).toBe(true);
+
+    setOpenCodeSlimAvailable(true);
+    expect(slim.classList.contains("hidden")).toBe(false);
+    expect(slim.getAttribute("aria-hidden")).toBe("false");
+
+    // A later session signal keeps the button in step with the plugin.
+    setKeymapOpenCodeV2(false);
+    expect(slim.classList.contains("hidden")).toBe(false);
+
+    setOpenCodeSlimAvailable(false);
+    expect(slim.classList.contains("hidden")).toBe(true);
   });
 });

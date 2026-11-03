@@ -21,6 +21,7 @@ import type { OpenCodeGenerateConnection } from "../services/OpenCodeGenerateCli
 import { DataThrottleService } from "../services/DataThrottleService";
 import { InstanceId, InstanceStore } from "../services/InstanceStore";
 import { isVersionNewer } from "../services/semver";
+import { isOhMyOpenCodeSlimAvailable } from "../services/openCodeConfigPath";
 import {
   FocusIndicatorMode,
   HostMessage,
@@ -1743,6 +1744,7 @@ export class TerminalProvider
       type: "activeSession",
       backend: "native" as TerminalBackendType,
       openCodeV2: this.sessionRuntime.isOpenCodeV2Active(),
+      hasOhMyOpenCodeSlim: isOhMyOpenCodeSlimAvailable(),
     });
 
     // Session switches re-sync the self-update pill.

@@ -26,6 +26,7 @@ import {
   openKeymapModal,
   showKeymapError,
   setKeymapOpenCodeV2,
+  setOpenCodeSlimAvailable,
 } from "./keymap";
 import {
   applyOpenCodeCliSettingsData,
@@ -63,6 +64,7 @@ const callbacks: MessageHandlerCallbacks = {
     }
 
     setKeymapOpenCodeV2(Boolean(message.openCodeV2));
+    setOpenCodeSlimAvailable(Boolean(message.hasOhMyOpenCodeSlim));
   },
 
   onShowServiceRestartPrompt(message) {
@@ -251,6 +253,9 @@ function initApp(): void {
   });
   document.getElementById("btn-oc-config-json")?.addEventListener("click", () => {
     postMessage({ type: "openOpenCodeGlobalFile", target: "opencodeJson" });
+  });
+  document.getElementById("btn-oc-slim-config")?.addEventListener("click", () => {
+    postMessage({ type: "openOpenCodeGlobalFile", target: "ohMyOpenCodeSlim" });
   });
   initKeymapUi();
   initOpenCodeCliSettingsUi();

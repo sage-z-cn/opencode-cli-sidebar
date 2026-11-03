@@ -2126,6 +2126,8 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 @media (max-width: 349px) {
   #btn-oc-agents-md,
   #btn-oc-config-json,
+  #btn-oc-slim-config,
+  #toolbar-sep-oc-files,
   #btn-oc-cli-settings,
   #btn-keymap,
   #toolbar-sep-font-oc {

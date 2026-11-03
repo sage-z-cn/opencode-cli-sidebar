@@ -31,6 +31,7 @@ import {
 import {
   ensureOpenCodeGlobalFile,
   resolveOpenCodeConfigDir,
+  type OpenCodeGlobalFileTarget,
 } from "../services/openCodeConfigPath";
 import { getActiveConfigSyncService } from "../services/sync/syncServiceRegistry";
 import { toRelativeReference } from "./relativeReference";
@@ -414,7 +415,7 @@ export class MessageRouter {
    * VS Code editor. Creates a starter file when the target does not exist yet.
    */
   private async handleOpenOpenCodeGlobalFile(
-    target: "agentsMd" | "opencodeJson" | "cliJson",
+    target: OpenCodeGlobalFileTarget,
   ): Promise<void> {
     const filePath = ensureOpenCodeGlobalFile(target);
     await vscode.window.showTextDocument(vscode.Uri.file(filePath), {

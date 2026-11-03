@@ -16,6 +16,7 @@ const titleL10nMap: Record<string, string> = {
   openCodeCliSettings: l10n.t("OpenCode CLI Config"),
   openCodeGlobalAgentsMd: l10n.t("Open Global AGENTS.md File"),
   openCodeGlobalConfig: l10n.t("Open OpenCode Config File"),
+  openCodeSlimConfig: l10n.t("Open oh-my-opencode-slim Config File"),
   openCodeUpdate: l10n.t('Install OpenCode'),
   checkOpenCodeUpdates: l10n.t('Check for OpenCode Updates'),
   davOpenPanel: l10n.t('OpenCode config sync'),

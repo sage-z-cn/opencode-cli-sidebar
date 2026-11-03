@@ -8,6 +8,7 @@ import { PortManager } from "../services/PortManager";
 import { ContextSharingService } from "../services/ContextSharingService";
 import { OutputChannelService } from "../services/OutputChannelService";
 import { InstanceId, InstanceStore } from "../services/InstanceStore";
+import { isOhMyOpenCodeSlimAvailable } from "../services/openCodeConfigPath";
 import {
   ServiceRestartPromptAction,
   TerminalBackendType,
@@ -954,6 +955,7 @@ export class SessionRuntime {
       type: "activeSession",
       backend: "native",
       openCodeV2: this.isOpenCodeV2Active(),
+      hasOhMyOpenCodeSlim: isOhMyOpenCodeSlimAvailable(),
     });
   }
 

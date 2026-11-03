@@ -570,11 +570,16 @@ export function closeKeymapModal(): void {
 }
 
 let keymapOpenCodeV2 = false;
+let openCodeSlimAvailable = false;
 
 /** OpenCode-only toolbar buttons that require a resolved v2 CLI. */
 const OC_V2_BUTTON_IDS = ["btn-keymap", "btn-oc-cli-settings"] as const;
 /** OpenCode-only toolbar buttons shown for both v1 and v2. */
 const OC_ANY_BUTTON_IDS = ["btn-oc-agents-md", "btn-oc-config-json"] as const;
+/** oh-my-opencode-slim config entry; host decides whether the plugin exists. */
+const OC_SLIM_BUTTON_IDS = ["btn-oc-slim-config"] as const;
+/** Divider between the open-file buttons and the remaining OpenCode buttons. */
+const OC_FILES_SEPARATOR_ID = "toolbar-sep-oc-files";
 /** Separators around the OpenCode button group (font | oc | settings). */
 const OC_SEPARATOR_IDS = [
   "toolbar-sep-font-oc",
@@ -604,6 +609,20 @@ function applyKeymapVisibility(): void {
   for (const id of OC_ANY_BUTTON_IDS) {
     setToolbarButtonVisible(id, showAny);
   }
+  for (const id of OC_SLIM_BUTTON_IDS) {
+    setToolbarButtonVisible(id, openCodeSlimAvailable);
+  }
+  // The file group is always visible; the divider only earns its place once
+  // another button that follows it is on screen.
+  const davEntry = document.getElementById("btn-dav-sync-panel");
+  const showFilesSep =
+    showAny &&
+    (showV2 || (davEntry !== null && !davEntry.classList.contains("hidden")));
+  const filesSep = document.getElementById(OC_FILES_SEPARATOR_ID);
+  if (filesSep) {
+    filesSep.classList.toggle("hidden", !showFilesSep);
+    filesSep.setAttribute("aria-hidden", showFilesSep ? "false" : "true");
+  }
   for (const id of OC_SEPARATOR_IDS) {
     const sep = document.getElementById(id);
     if (!sep) continue;
@@ -621,6 +640,17 @@ function applyKeymapVisibility(): void {
 export function setKeymapOpenCodeV2(openCodeV2: boolean): void {
   keymapOpenCodeV2 = openCodeV2;
   applyKeymapVisibility();
+}
+
+/**
+ * Host signal from activeSession: OpenCode carries the oh-my-opencode-slim
+ * plugin, so its config button joins the OpenCode group.
+ */
+export function setOpenCodeSlimAvailable(available: boolean): void {
+  openCodeSlimAvailable = available;
+  for (const id of OC_SLIM_BUTTON_IDS) {
+    setToolbarButtonVisible(id, available);
+  }
 }
 
 export function applyKeymapData(

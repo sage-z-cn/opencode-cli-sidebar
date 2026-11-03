@@ -52,7 +52,7 @@ export type WebviewMessage =
   | { type: "openKeyboardShortcuts" }
   | {
       type: "openOpenCodeGlobalFile";
-      target: "agentsMd" | "opencodeJson" | "cliJson";
+      target: "agentsMd" | "opencodeJson" | "cliJson" | "ohMyOpenCodeSlim";
     }
   | { type: "updateFontSize"; fontSize: number }
   | { type: "saveKeybind"; id: string; chords: string[] }
@@ -262,6 +262,8 @@ export type HostMessage =
       backend?: TerminalBackendType;
       /** True when tool is OpenCode and the resolved CLI major >= 2. */
       openCodeV2?: boolean;
+      /** True when OpenCode carries the oh-my-opencode-slim plugin. */
+      hasOhMyOpenCodeSlim?: boolean;
     }
   /** Ask the webview to show the service-restart prompt for an upcoming terminal restart. */
   | { type: "showServiceRestartPrompt" }

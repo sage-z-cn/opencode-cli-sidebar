@@ -95,19 +95,122 @@ export function resolveOpenCodeGlobalConfigPath(): string {
   return path.join(resolveOpenCodeConfigDir(), "opencode.json");
 }
 
+/** Global OpenCode files the toolbar can open directly. */
+export type OpenCodeGlobalFileTarget =
+  | "agentsMd"
+  | "opencodeJson"
+  | "cliJson"
+  | "ohMyOpenCodeSlim";
+
+/** Plugin package that owns `oh-my-opencode-slim.json`. */
+const OH_MY_OPENCODE_SLIM_PACKAGE = "oh-my-opencode-slim";
+
+/** Config file names an OpenCode config may use inside a config directory. */
+const OPENCODE_CONFIG_FILE_NAMES = ["cli.json", "opencode.json", "opencode.jsonc"];
+
+/**
+ * Resolve the oh-my-opencode-slim plugin config path.
+ * OPENCODE_CONFIG_DIR wins even if the file is missing.
+ * Returns an existing file when found; otherwise the preferred create/open path.
+ */
+export function resolveOhMyOpenCodeSlimConfigPath(): string {
+  const fileName = `${OH_MY_OPENCODE_SLIM_PACKAGE}.json`;
+  const configDir = process.env.OPENCODE_CONFIG_DIR;
+  if (configDir) {
+    return path.join(configDir, fileName);
+  }
+  for (const dir of openCodeConfigDirCandidates()) {
+    const file = path.join(dir, fileName);
+    if (fs.existsSync(file)) {
+      return file;
+    }
+  }
+  return path.join(resolveOpenCodeConfigDir(), fileName);
+}
+
+/**
+ * True when OpenCode carries the oh-my-opencode-slim plugin: its config file
+ * exists, or the plugin is declared in an OpenCode config's `plugins` list.
+ * OPENCODE_CONFIG_DIR narrows the check to that directory.
+ */
+export function isOhMyOpenCodeSlimAvailable(): boolean {
+  const dirs = process.env.OPENCODE_CONFIG_DIR
+    ? [process.env.OPENCODE_CONFIG_DIR]
+    : openCodeConfigDirCandidates();
+  const fileName = `${OH_MY_OPENCODE_SLIM_PACKAGE}.json`;
+  for (const dir of dirs) {
+    if (fs.existsSync(path.join(dir, fileName))) {
+      return true;
+    }
+  }
+  return openCodeConfigDeclaresPackage(dirs, OH_MY_OPENCODE_SLIM_PACKAGE);
+}
+
+function openCodeConfigDeclaresPackage(
+  dirs: readonly string[],
+  packageName: string,
+): boolean {
+  for (const dir of dirs) {
+    for (const name of OPENCODE_CONFIG_FILE_NAMES) {
+      const file = path.join(dir, name);
+      if (!fs.existsSync(file)) {
+        continue;
+      }
+      const plugins = readConfigPlugins(file);
+      if (plugins?.some((entry) => pluginPackageName(entry) === packageName)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function readConfigPlugins(file: string): unknown[] | undefined {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!parsed || typeof parsed !== "object") {
+      return undefined;
+    }
+    const plugins = (parsed as { plugins?: unknown }).plugins;
+    return Array.isArray(plugins) ? plugins : undefined;
+  } catch {
+    // Unreadable or JSONC configs are skipped; detection stays best-effort.
+    return undefined;
+  }
+}
+
+/** Plugin entry may be a package spec string or an object carrying `package`. */
+function pluginPackageName(entry: unknown): string | undefined {
+  const spec =
+    typeof entry === "string"
+      ? entry
+      : entry && typeof entry === "object"
+        ? (entry as { package?: unknown }).package
+        : undefined;
+  if (typeof spec !== "string") {
+    return undefined;
+  }
+  const name = spec.trim();
+  // Drop a trailing @version while keeping a leading scope (`@scope/pkg`).
+  const at = name.lastIndexOf("@");
+  return at > 0 ? name.slice(0, at) : name;
+}
+
 /**
  * Ensure a global OpenCode file exists and return its path.
  * Creates an empty starter (or `{}` for JSON config) when missing.
  */
 export function ensureOpenCodeGlobalFile(
-  target: "agentsMd" | "opencodeJson" | "cliJson",
+  target: OpenCodeGlobalFileTarget,
 ): string {
   const filePath =
     target === "agentsMd"
       ? resolveOpenCodeGlobalAgentsMdPath()
       : target === "cliJson"
         ? resolveOpenCodeCliConfigPath()
-        : resolveOpenCodeGlobalConfigPath();
+        : target === "ohMyOpenCodeSlim"
+          ? resolveOhMyOpenCodeSlimConfigPath()
+          : resolveOpenCodeGlobalConfigPath();
   if (!fs.existsSync(filePath)) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(
