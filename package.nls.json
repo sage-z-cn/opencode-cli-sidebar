@@ -9,7 +9,6 @@
   "command.opencode-cli-sidebar.sendAtMention.title": "Send to Opencode",
   "command.opencode-cli-sidebar.sendAllOpenFiles.title": "Send All Open File References",
   "command.opencode-cli-sidebar.sendToOpencode.title": "Send to Opencode",
-  "command.opencode-cli-sidebar.sendAbsoluteToOpencode.title": "Send Absolute Path to Opencode",
   "command.opencode-cli-sidebar.paste.title": "Paste",
   "command.opencode-cli-sidebar.checkOpenCodeUpdates.title": "Check for OpenCode Updates",
   "command.opencode-cli-sidebar.webdavSyncNow.title": "Sync OpenCode Config Now",

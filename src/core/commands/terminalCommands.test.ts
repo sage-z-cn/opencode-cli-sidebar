@@ -19,6 +19,7 @@ vi.mock("vscode", async () => {
 
 vi.mock("fs", () => ({
   statSync: vi.fn(),
+  readFileSync: vi.fn(),
 }));
 
 type CommandCallback = (...args: unknown[]) => unknown;
@@ -137,7 +138,7 @@ describe("registerTerminalCommands", () => {
     vi.useRealTimers();
   });
 
-  it("registers all 9 terminal commands", () => {
+  it("registers all 8 terminal commands", () => {
     const commands = registerAndGetCommands(createDependencies());
 
     expect(Array.from(commands.keys())).toEqual(
@@ -147,13 +148,12 @@ describe("registerTerminalCommands", () => {
         "opencode-cli-sidebar.sendAtMention",
         "opencode-cli-sidebar.sendAllOpenFiles",
         "opencode-cli-sidebar.sendToOpencode",
-        "opencode-cli-sidebar.sendAbsoluteToOpencode",
         "opencode-cli-sidebar.paste",
         "opencode-cli-sidebar.focus",
         "opencode-cli-sidebar.checkOpenCodeUpdates",
       ]),
     );
-    expect(commands.size).toBe(18);
+    expect(commands.size).toBe(16);
   });
 
   it("registers legacy ai-sidebar-terminal aliases for all old command IDs", () => {
@@ -167,11 +167,13 @@ describe("registerTerminalCommands", () => {
         "ai-sidebar-terminal.sendAtMention",
         "ai-sidebar-terminal.sendAllOpenFiles",
         "ai-sidebar-terminal.sendToAiTerminal",
-        "ai-sidebar-terminal.sendAbsoluteToAiTerminal",
         "ai-sidebar-terminal.paste",
         "ai-sidebar-terminal.checkOpenCodeUpdates",
       ]),
     );
+    expect(
+      commands.has("ai-sidebar-terminal.sendAbsoluteToAiTerminal"),
+    ).toBe(false);
   });
 
   it("forwards legacy alias invocations to the current command", () => {
@@ -344,6 +346,50 @@ describe("registerTerminalCommands", () => {
     expect(noEditorDeps.sendPrompt).not.toHaveBeenCalled();
   });
 
+  it("sends editor selections as line-ranged mentions when the channel is connected", () => {
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    const document = new vscode.TextDocument(
+      vscode.Uri.file("/workspace/file.ts"),
+      "content",
+    );
+    const selection = new vscode.Selection(1, 0, 3, 5);
+    vscode.window.activeTextEditor = new vscode.TextEditor(document, selection);
+
+    const commands = registerAndGetCommands(deps);
+    getCommand(commands, "opencode-cli-sidebar.sendAtMention")();
+
+    expect(sendFileMentions).toHaveBeenCalledWith([
+      { filePath: "/workspace/file.ts", lineStart: 2, lineEnd: 4 },
+    ]);
+    expect(deps.sendPrompt).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(100);
+
+    expect(deps.provider?.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the whole editor file as a mention when nothing is selected", () => {
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    const document = new vscode.TextDocument(
+      vscode.Uri.file("/workspace/file.ts"),
+      "content",
+    );
+    vscode.window.activeTextEditor = new vscode.TextEditor(
+      document,
+      new vscode.Selection(0, 0, 0, 0),
+    );
+
+    const commands = registerAndGetCommands(deps);
+    getCommand(commands, "opencode-cli-sidebar.sendAtMention")();
+
+    expect(sendFileMentions).toHaveBeenCalledWith([
+      { filePath: "/workspace/file.ts", lineStart: 0, lineEnd: 0 },
+    ]);
+    expect(deps.sendPrompt).not.toHaveBeenCalled();
+  });
+
   it("sends all open file references while filtering unsupported tabs", () => {
     const deps = createDependencies();
     const fileUri = vscode.Uri.parse("file:///workspace/a.ts");
@@ -381,6 +427,73 @@ describe("registerTerminalCommands", () => {
     vi.advanceTimersByTime(100);
 
     expect(deps.provider?.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends all open files as mentions when the channel is connected", () => {
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    vi.mocked(fs.statSync).mockImplementation(
+      () =>
+        ({
+          size: 100,
+          isDirectory: () => false,
+        }) as never,
+    );
+
+    vscode.window.tabGroups.all = [
+      {
+        tabs: [
+          {
+            input: new vscode.TabInputText(
+              vscode.Uri.parse("file:///workspace/a.ts"),
+            ),
+          },
+          {
+            input: new vscode.TabInputText(
+              vscode.Uri.parse("untitled:///scratch.ts"),
+            ),
+          },
+        ],
+      },
+    ];
+
+    const commands = registerAndGetCommands(deps);
+    getCommand(commands, "opencode-cli-sidebar.sendAllOpenFiles")();
+
+    expect(sendFileMentions).toHaveBeenCalledWith([
+      { filePath: "/workspace/a.ts", lineStart: 0, lineEnd: 0 },
+    ]);
+    expect(deps.sendPrompt).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(100);
+
+    expect(deps.provider?.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to text when the mention channel rejects open-file payloads", () => {
+    const sendFileMentions = vi.fn(() => false);
+    const deps = createDependencies({ sendFileMentions });
+    vi.mocked(deps.provider!.formatUriReference).mockReturnValueOnce(
+      "@workspace/a.ts",
+    );
+
+    vscode.window.tabGroups.all = [
+      {
+        tabs: [
+          {
+            input: new vscode.TabInputText(
+              vscode.Uri.parse("file:///workspace/a.ts"),
+            ),
+          },
+        ],
+      },
+    ];
+
+    const commands = registerAndGetCommands(deps);
+    getCommand(commands, "opencode-cli-sidebar.sendAllOpenFiles")();
+
+    expect(sendFileMentions).toHaveBeenCalledTimes(1);
+    expect(deps.sendPrompt).toHaveBeenCalledWith("@workspace/a.ts ");
   });
 
   it("does not send all open files when no supported file refs exist", () => {
@@ -553,68 +666,78 @@ describe("registerTerminalCommands", () => {
     expect(deps.outputChannel?.info).not.toHaveBeenCalled();
   });
 
-  it("sends absolute path references from explorer selections", () => {
-    const deps = createDependencies();
-    vi.mocked(deps.provider!.formatFileReference).mockImplementation(
-      (reference: OpenCodeFileReference) => `@${reference.path}`,
-    );
+  it("sends explorer file references as editor mentions when the channel is connected", () => {
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
     const commands = registerAndGetCommands(deps);
-    const sendAbsolute = getCommand(
+    const sendToOpencode = getCommand(
       commands,
-      "opencode-cli-sidebar.sendAbsoluteToOpencode",
+      "opencode-cli-sidebar.sendToOpencode",
     );
 
-    sendAbsolute("ignored", [
-      vscode.Uri.file("D:\\ws\\src\\file.ts"),
-      vscode.Uri.file("D:\\ws\\src\\file.ts"),
+    sendToOpencode("ignored", [
+      vscode.Uri.file("/workspace/a.ts"),
+      vscode.Uri.file("/workspace/a.ts"),
+      vscode.Uri.file("/workspace/b.ts"),
     ]);
-
-    expect(deps.sendPrompt).not.toHaveBeenCalled();
-
     vi.advanceTimersByTime(100);
 
-    expect(deps.provider?.formatFileReference).toHaveBeenCalledTimes(1);
-    expect(deps.provider?.formatFileReference).toHaveBeenCalledWith({
-      path: "D:/ws/src/file.ts",
-    });
-    expect(deps.outputChannel?.info).toHaveBeenCalledWith(
-      '[DIAG:sendAbsoluteToOpencode] terminalId="terminal-1" fileCount=1 refs="@D:/ws/src/file.ts"',
-    );
-    expect(deps.sendPrompt).toHaveBeenCalledTimes(1);
-    expect(deps.sendPrompt).toHaveBeenCalledWith("@D:/ws/src/file.ts ");
+    expect(sendFileMentions).toHaveBeenCalledTimes(1);
+    expect(sendFileMentions).toHaveBeenCalledWith([
+      { filePath: "/workspace/a.ts", lineStart: 0, lineEnd: 0 },
+      { filePath: "/workspace/b.ts", lineStart: 0, lineEnd: 0 },
+    ]);
+    expect(deps.sendPrompt).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(100);
 
     expect(deps.provider?.focus).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps absolute sends independent from relative file send batches", () => {
-    const deps = createDependencies();
+  it("falls back to terminal text when the mention channel is unavailable", () => {
+    const sendFileMentions = vi.fn(() => false);
+    const deps = createDependencies({ sendFileMentions });
     vi.mocked(deps.provider!.formatUriReference).mockReturnValueOnce(
-      "@rel/a.ts",
-    );
-    vi.mocked(deps.provider!.formatFileReference).mockImplementationOnce(
-      (reference: OpenCodeFileReference) => `@${reference.path}`,
+      "@workspace/a.ts",
     );
     const commands = registerAndGetCommands(deps);
     const sendToOpencode = getCommand(
       commands,
       "opencode-cli-sidebar.sendToOpencode",
     );
-    const sendAbsolute = getCommand(
-      commands,
-      "opencode-cli-sidebar.sendAbsoluteToOpencode",
-    );
 
-    sendToOpencode("ignored", [vscode.Uri.file("D:\\ws\\a.ts")]);
-    sendAbsolute("ignored", [vscode.Uri.file("D:\\ws\\b.ts")]);
+    sendToOpencode("ignored", [vscode.Uri.file("/workspace/a.ts")]);
     vi.advanceTimersByTime(100);
 
+    expect(sendFileMentions).toHaveBeenCalledTimes(1);
     expect(deps.provider?.formatUriReference).toHaveBeenCalledTimes(1);
-    expect(deps.provider?.formatFileReference).toHaveBeenCalledTimes(1);
-    expect(deps.sendPrompt).toHaveBeenCalledTimes(2);
-    expect(deps.sendPrompt).toHaveBeenNthCalledWith(1, "@rel/a.ts ");
-    expect(deps.sendPrompt).toHaveBeenNthCalledWith(2, "@D:/ws/b.ts ");
+    expect(deps.sendPrompt).toHaveBeenCalledWith("@workspace/a.ts ");
+  });
+
+  it("sends directories through the mention channel with the no-range sentinel", () => {
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    vi.mocked(fs.statSync).mockImplementation(((p: unknown) => ({
+      size: 100,
+      isDirectory: () => String(p).endsWith("components"),
+    })) as never);
+    const commands = registerAndGetCommands(deps);
+    const sendToOpencode = getCommand(
+      commands,
+      "opencode-cli-sidebar.sendToOpencode",
+    );
+
+    sendToOpencode("ignored", [
+      vscode.Uri.file("/workspace/components"),
+      vscode.Uri.file("/workspace/a.ts"),
+    ]);
+    vi.advanceTimersByTime(100);
+
+    expect(sendFileMentions).toHaveBeenCalledWith([
+      { filePath: "/workspace/components/", lineStart: 0, lineEnd: 0 },
+      { filePath: "/workspace/a.ts", lineStart: 0, lineEnd: 0 },
+    ]);
+    expect(deps.sendPrompt).not.toHaveBeenCalled();
   });
 
   it("requests webview paste handling and reports provider failures", async () => {

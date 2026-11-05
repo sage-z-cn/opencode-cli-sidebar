@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { l10n } from "../../i18n";
 import type { TerminalProvider } from "../../providers/TerminalProvider";
 import { toAbsoluteReference } from "../../providers/relativeReference";
+import type { EditorMentionPayload } from "../../services/ideContext/protocol";
 import type { ContextSharingService } from "../../services/ContextSharingService";
 import type { OpenCodeUpdateService } from "../../services/OpenCodeUpdateService";
 import type { OutputChannelService } from "../../services/OutputChannelService";
@@ -29,9 +30,7 @@ function isEditorCommandsContext(value: unknown): value is EditorCommandsContext
 
 /**
  * Resolves file URIs from the heterogeneous argument shapes VS Code passes
- * to `opencode-cli-sidebar.sendToOpencode` and
- * `opencode-cli-sidebar.sendAbsoluteToOpencode` across their menu
- * locations:
+ * to `opencode-cli-sidebar.sendToOpencode` across its menu locations:
  *
  * - `explorer/context`: `("ignored", [uri1, uri2])` — selected resources.
  * - Command palette / API: `(uri)` — a single URI passed directly.
@@ -76,6 +75,15 @@ export interface TerminalCommandDependencies {
   getActiveTerminalId: () => string;
   sendTerminalCwd: () => void;
   sendPrompt: (prompt: string) => Promise<void>;
+  /**
+   * Pushes `at_mentioned` payloads to connected OpenCode TUIs over the
+   * editor-context WebSocket so the files land in the TUI composer as real
+   * attachments instead of typed `@path` text. Delivers all payloads or
+   * none; `false` means the channel is unavailable (server not running, no
+   * connected TUI, or another extension owns the channel) and callers must
+   * fall back to the terminal text path.
+   */
+  sendFileMentions?: (payloads: EditorMentionPayload[]) => boolean;
 }
 
 function focusSidebarIfConfigured(
@@ -98,13 +106,12 @@ type FileSendScheduler = (
 /**
  * Creates a scheduler that batches file-reference sends: URIs from a
  * multi-select invocation are accumulated and deduplicated by fsPath, then
- * flushed through `deps.sendPrompt` after a 100ms debounce. Each scheduler
- * keeps its own accumulator so commands with different reference formats
- * never mix batches.
+ * flushed through `flush` after a 100ms debounce. Each scheduler keeps its
+ * own accumulator so commands with different flush behaviour never mix
+ * batches.
  */
 function createFileSendScheduler(
-  diagLabel: string,
-  formatReference: (provider: TerminalProvider, uri: vscode.Uri) => string,
+  flush: (deps: TerminalCommandDependencies, uris: vscode.Uri[]) => void,
 ): FileSendScheduler {
   let accumulator: vscode.Uri[] = [];
   let timeout: NodeJS.Timeout | undefined;
@@ -121,44 +128,80 @@ function createFileSendScheduler(
         return;
       }
 
-      const provider = deps.provider;
-      if (!provider) {
-        accumulator = [];
-        return;
-      }
-
-      const uniqueUris = [
-        ...new Map(
-          accumulator.map((u: vscode.Uri) => [u.fsPath, u]),
-        ).values(),
-      ];
-
-      const fileRefs = uniqueUris.map((u: vscode.Uri) =>
-        formatReference(provider, u),
-      );
-      const allRefs = fileRefs.join(" ");
-
-      const terminalId = deps.getActiveTerminalId();
-      deps.outputChannel?.info(
-        `[DIAG:${diagLabel}] terminalId="${terminalId}" fileCount=${uniqueUris.length} refs="${allRefs}"`,
-      );
-      void deps.sendPrompt(allRefs + " ");
-
-      focusSidebarIfConfigured(deps.provider);
+      flush(deps, accumulator);
       accumulator = [];
     }, 100);
   };
 }
 
-const scheduleRelativeReferenceSend = createFileSendScheduler(
-  "sendToOpencode",
-  (provider, uri) => provider.formatUriReference(uri),
-);
+/**
+ * Whole-file / directory mention payload.
+ *
+ * `(0, 0)` is a "no line range" sentinel: the TUI renders a cosmetic `#0`
+ * suffix, and the server's `positiveInt` validation drops `?start=0` from
+ * the attachment URI, so the attachment is always the complete file (or,
+ * for directories, the server-generated sorted listing).
+ */
+function wholeFileMention(uri: vscode.Uri): EditorMentionPayload {
+  return { filePath: toAbsoluteReference(uri), lineStart: 0, lineEnd: 0 };
+}
 
-const scheduleAbsoluteReferenceSend = createFileSendScheduler(
-  "sendAbsoluteToOpencode",
-  (provider, uri) =>
-    provider.formatFileReference({ path: toAbsoluteReference(uri) }),
+/**
+ * Delivers file references to the OpenCode TUI composer as `at_mentioned`
+ * attachments, falling back to typed `@path` text over the terminal
+ * whenever the mention channel is unavailable. Files and directories ride
+ * the same channel; whole-file and directory payloads carry the `(0, 0)`
+ * no-range sentinel.
+ */
+function sendUrisToOpencode(
+  deps: TerminalCommandDependencies,
+  uris: vscode.Uri[],
+): void {
+  const provider = deps.provider;
+  if (!provider) {
+    return;
+  }
+
+  const uniqueUris = [
+    ...new Map(uris.map((u: vscode.Uri) => [u.fsPath, u])).values(),
+  ];
+
+  const textRefs: string[] = [];
+  let mentionsDelivered = false;
+  if (deps.sendFileMentions) {
+    const payloads = uniqueUris.map((u) => wholeFileMention(u));
+    mentionsDelivered = deps.sendFileMentions(payloads);
+    if (mentionsDelivered) {
+      deps.outputChannel?.info(
+        `[DIAG:sendToOpencode] mention fileCount=${payloads.length} ranges="${payloads
+          .map((p) => `${p.filePath}#${p.lineStart}-${p.lineEnd}`)
+          .join(" ")}"`,
+      );
+    } else {
+      deps.outputChannel?.info(
+        "[DIAG:sendToOpencode] mention channel unavailable, falling back to terminal text",
+      );
+    }
+  }
+
+  if (!mentionsDelivered) {
+    textRefs.push(...uniqueUris.map((u) => provider.formatUriReference(u)));
+  }
+
+  if (textRefs.length > 0) {
+    const allRefs = textRefs.join(" ");
+    const terminalId = deps.getActiveTerminalId();
+    deps.outputChannel?.info(
+      `[DIAG:sendToOpencode] terminalId="${terminalId}" fileCount=${textRefs.length} refs="${allRefs}"`,
+    );
+    void deps.sendPrompt(allRefs + " ");
+  }
+
+  focusSidebarIfConfigured(provider);
+}
+
+const scheduleRelativeReferenceSend = createFileSendScheduler(
+  sendUrisToOpencode,
 );
 
 /**
@@ -179,8 +222,6 @@ const LEGACY_COMMAND_ALIASES: Readonly<Record<string, string>> = {
   "ai-sidebar-terminal.sendAllOpenFiles":
     "opencode-cli-sidebar.sendAllOpenFiles",
   "ai-sidebar-terminal.sendToAiTerminal": "opencode-cli-sidebar.sendToOpencode",
-  "ai-sidebar-terminal.sendAbsoluteToAiTerminal":
-    "opencode-cli-sidebar.sendAbsoluteToOpencode",
   "ai-sidebar-terminal.paste": "opencode-cli-sidebar.paste",
   "ai-sidebar-terminal.checkOpenCodeUpdates":
     "opencode-cli-sidebar.checkOpenCodeUpdates",
@@ -224,6 +265,26 @@ export function registerTerminalCommands(
         return;
       }
 
+      // Selection ranges ride the mention channel as exact line ranges.
+      // A single-line selection collapses to an open range (line N through
+      // EOF) in the TUI — the protocol's native behavior.
+      const selection = editor.selection;
+      const payload = selection.isEmpty
+        ? wholeFileMention(editor.document.uri)
+        : {
+            filePath: toAbsoluteReference(editor.document.uri),
+            lineStart: selection.start.line + 1,
+            lineEnd: selection.end.line + 1,
+          };
+
+      if (deps.sendFileMentions?.([payload])) {
+        deps.outputChannel?.info(
+          `[DIAG:sendAtMention] mention file="${payload.filePath}#${payload.lineStart}-${payload.lineEnd}"`,
+        );
+        focusSidebarIfConfigured(deps.provider);
+        return;
+      }
+
       const fileRef = deps.provider?.formatEditorReference(editor);
       if (!fileRef) {
         deps.outputChannel?.warn(
@@ -245,28 +306,43 @@ export function registerTerminalCommands(
   const sendAllOpenFilesCommand = vscode.commands.registerCommand(
     "opencode-cli-sidebar.sendAllOpenFiles",
     () => {
-      const fileRefs: string[] = [];
+      const provider = deps.provider;
+      if (!provider) {
+        return;
+      }
 
+      const openUris: vscode.Uri[] = [];
       for (const group of vscode.window.tabGroups.all) {
         for (const tab of group.tabs) {
-          if (tab.input instanceof vscode.TabInputText) {
-            const uri = tab.input.uri;
-            if (!uri.scheme.startsWith("untitled") && deps.provider) {
-              fileRefs.push(deps.provider.formatUriReference(uri));
-            }
+          if (
+            tab.input instanceof vscode.TabInputText &&
+            !tab.input.uri.scheme.startsWith("untitled")
+          ) {
+            openUris.push(tab.input.uri);
           }
         }
       }
-
-      const openFiles = fileRefs.join(" ");
-      if (openFiles) {
-        const terminalId = deps.getActiveTerminalId();
-        deps.outputChannel?.info(
-          `[DIAG:sendAllOpenFiles] terminalId="${terminalId}" fileCount=${fileRefs.length} refs="${openFiles}"`,
-        );
-        void deps.sendPrompt(openFiles + " ");
-        focusSidebarIfConfigured(deps.provider);
+      if (openUris.length === 0) {
+        return;
       }
+
+      if (deps.sendFileMentions?.(openUris.map((uri) => wholeFileMention(uri)))) {
+        deps.outputChannel?.info(
+          `[DIAG:sendAllOpenFiles] mention fileCount=${openUris.length}`,
+        );
+        focusSidebarIfConfigured(provider);
+        return;
+      }
+
+      const openFiles = openUris
+        .map((uri) => provider.formatUriReference(uri))
+        .join(" ");
+      const terminalId = deps.getActiveTerminalId();
+      deps.outputChannel?.info(
+        `[DIAG:sendAllOpenFiles] terminalId="${terminalId}" fileCount=${openUris.length} refs="${openFiles}"`,
+      );
+      void deps.sendPrompt(openFiles + " ");
+      focusSidebarIfConfigured(provider);
     },
   );
 
@@ -283,25 +359,6 @@ export function registerTerminalCommands(
       }
 
       scheduleRelativeReferenceSend(deps, uris);
-    },
-  );
-
-  // Explorer companion to `sendToOpencode` that sends absolute-path
-  // references instead of workspace-relative ones. Shares the argument
-  // extraction and the 100ms multi-select batching behaviour.
-  const sendAbsoluteToOpencodeCommand = vscode.commands.registerCommand(
-    "opencode-cli-sidebar.sendAbsoluteToOpencode",
-    (...args: unknown[]) => {
-      if (!deps.contextSharingService) {
-        return;
-      }
-
-      const uris = extractUrisFromSendArgs(args);
-      if (uris.length === 0) {
-        return;
-      }
-
-      scheduleAbsoluteReferenceSend(deps, uris);
     },
   );
 
@@ -398,7 +455,6 @@ export function registerTerminalCommands(
     sendAtMentionCommand,
     sendAllOpenFilesCommand,
     sendToOpencodeCommand,
-    sendAbsoluteToOpencodeCommand,
     pasteCommand,
     focusCommand,
     checkOpenCodeUpdatesCommand,

@@ -9,7 +9,6 @@
   "command.opencode-cli-sidebar.sendAtMention.title": "发送到 Opencode",
   "command.opencode-cli-sidebar.sendAllOpenFiles.title": "发送所有打开的文件引用",
   "command.opencode-cli-sidebar.sendToOpencode.title": "发送到 Opencode",
-  "command.opencode-cli-sidebar.sendAbsoluteToOpencode.title": "发送绝对路径到 Opencode",
   "command.opencode-cli-sidebar.paste.title": "粘贴",
   "command.opencode-cli-sidebar.checkOpenCodeUpdates.title": "检查 OpenCode 更新",
   "command.opencode-cli-sidebar.webdavSyncNow.title": "立即同步 OpenCode 配置",

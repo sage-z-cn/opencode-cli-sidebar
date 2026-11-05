@@ -22,7 +22,6 @@ const commandCategories = {
     "opencode-cli-sidebar.sendAtMention",
     "opencode-cli-sidebar.sendAllOpenFiles",
     "opencode-cli-sidebar.sendToOpencode",
-    "opencode-cli-sidebar.sendAbsoluteToOpencode",
   ],
   update: ["opencode-cli-sidebar.checkOpenCodeUpdates"],
 } as const satisfies Record<string, readonly string[]>;

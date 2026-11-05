@@ -501,6 +501,20 @@ export class ExtensionLifecycle {
       sendTerminalCwd: () => this.sendTerminalCwd(),
       sendPrompt: (prompt: string) =>
         this.tuiProvider?.sendPrompt(prompt) ?? Promise.resolve(),
+      sendFileMentions: (payloads) => {
+        const server = this.ideContextServer;
+        if (
+          !server ||
+          !server.isRunning() ||
+          server.getConnectedClientCount() === 0
+        ) {
+          return false;
+        }
+        for (const payload of payloads) {
+          server.notifyAtMentioned(payload);
+        }
+        return true;
+      },
     };
   }
 
