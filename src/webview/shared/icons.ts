@@ -55,12 +55,17 @@ const FileLetterA: IconNode = [
 ];
 
 /**
- * Same `FileText` frame carrying a letter `O`, marking the
+ * Same `FileText` frame carrying a letter `S`, marking the
  * oh-my-opencode-slim plugin config file.
  */
-const FileLetterO: IconNode = [
+const FileLetterS: IconNode = [
   ...FileText.slice(0, 2),
-  ["ellipse", { cx: "12", cy: "15", rx: "2.6", ry: "3.1" }],
+  [
+    "path",
+    {
+      d: "M14.3 12.8 C13.4 11.9 10.6 11.9 9.7 12.8 C8.8 13.7 10.4 14.6 12 15 C13.6 15.4 15.2 16.3 14.3 17.2 C13.4 18.1 10.6 18.1 9.7 17.2",
+    },
+  ],
 ];
 
 export const ICONS = {
@@ -82,7 +87,7 @@ export const ICONS = {
   copy: Copy,
   fileJson: FileJson,
   fileLetterA: FileLetterA,
-  fileLetterO: FileLetterO,
+  fileLetterS: FileLetterS,
   globe: Globe,
   info: Info,
   keyboard: Keyboard,
