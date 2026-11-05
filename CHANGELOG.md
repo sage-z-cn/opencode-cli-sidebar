@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Update**: Confirm restarts in a dedicated in-webview dialog after an update succeeds, instead of restarting on confirm or using a native modal.
 - **Update**: Keep a retry action in the failed step view and stop advertising the target version as installed when an update fails.
 
+#### 5.6.7
+**New Features**
+- **Sync**: Support jsonc variants for OpenCode config files.
+- **Commands**: Deliver file references as TUI attachments via at-mention.
+- **Webview**: Add detection and support for the oh-my-opencode-slim configuration.
+- **Startup**: Coordinate OpenCode service startup across multiple VS Code windows.
+
+**Improvements**
+- **Icons**: Use the letter S instead of O for the OMO-Slim config file icon.
+
 #### 5.6.6
 **New Features**
 - **Update**: Translate changelogs via the OpenCode generate client.
