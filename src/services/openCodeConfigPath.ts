@@ -102,8 +102,14 @@ export type OpenCodeGlobalFileTarget =
   | "cliJson"
   | "ohMyOpenCodeSlim";
 
-/** Plugin package that owns `oh-my-opencode-slim.json`. */
+/** Plugin package that owns the oh-my-opencode-slim config files. */
 const OH_MY_OPENCODE_SLIM_PACKAGE = "oh-my-opencode-slim";
+
+/** Config file names the oh-my-opencode-slim plugin may use, json first. */
+const OH_MY_OPENCODE_SLIM_CONFIG_NAMES = [
+  "oh-my-opencode-slim.json",
+  "oh-my-opencode-slim.jsonc",
+] as const;
 
 /** Config file names an OpenCode config may use inside a config directory. */
 const OPENCODE_CONFIG_FILE_NAMES = ["cli.json", "opencode.json", "opencode.jsonc"];
@@ -111,21 +117,29 @@ const OPENCODE_CONFIG_FILE_NAMES = ["cli.json", "opencode.json", "opencode.jsonc
 /**
  * Resolve the oh-my-opencode-slim plugin config path.
  * OPENCODE_CONFIG_DIR wins even if the file is missing.
- * Returns an existing file when found; otherwise the preferred create/open path.
+ * Prefers an existing file, json first then jsonc; otherwise defaults to
+ * oh-my-opencode-slim.json in the preferred config directory.
  */
 export function resolveOhMyOpenCodeSlimConfigPath(): string {
-  const fileName = `${OH_MY_OPENCODE_SLIM_PACKAGE}.json`;
   const configDir = process.env.OPENCODE_CONFIG_DIR;
   if (configDir) {
-    return path.join(configDir, fileName);
+    for (const name of OH_MY_OPENCODE_SLIM_CONFIG_NAMES) {
+      const file = path.join(configDir, name);
+      if (fs.existsSync(file)) {
+        return file;
+      }
+    }
+    return path.join(configDir, "oh-my-opencode-slim.json");
   }
   for (const dir of openCodeConfigDirCandidates()) {
-    const file = path.join(dir, fileName);
-    if (fs.existsSync(file)) {
-      return file;
+    for (const name of OH_MY_OPENCODE_SLIM_CONFIG_NAMES) {
+      const file = path.join(dir, name);
+      if (fs.existsSync(file)) {
+        return file;
+      }
     }
   }
-  return path.join(resolveOpenCodeConfigDir(), fileName);
+  return path.join(resolveOpenCodeConfigDir(), "oh-my-opencode-slim.json");
 }
 
 /**
@@ -137,10 +151,11 @@ export function isOhMyOpenCodeSlimAvailable(): boolean {
   const dirs = process.env.OPENCODE_CONFIG_DIR
     ? [process.env.OPENCODE_CONFIG_DIR]
     : openCodeConfigDirCandidates();
-  const fileName = `${OH_MY_OPENCODE_SLIM_PACKAGE}.json`;
   for (const dir of dirs) {
-    if (fs.existsSync(path.join(dir, fileName))) {
-      return true;
+    for (const name of OH_MY_OPENCODE_SLIM_CONFIG_NAMES) {
+      if (fs.existsSync(path.join(dir, name))) {
+        return true;
+      }
     }
   }
   return openCodeConfigDeclaresPackage(dirs, OH_MY_OPENCODE_SLIM_PACKAGE);

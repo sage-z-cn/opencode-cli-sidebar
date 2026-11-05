@@ -83,6 +83,31 @@ describe("openCodeConfigPath global files", () => {
     expect(slim).toBe(path.join(configDir, "oh-my-opencode-slim.json"));
     expect(fs.readFileSync(slim, "utf8")).toBe("{}\n");
   });
+
+  it("resolves an existing oh-my-opencode-slim.jsonc", () => {
+    const jsonc = path.join(configDir, "oh-my-opencode-slim.jsonc");
+    fs.writeFileSync(jsonc, "{}", "utf8");
+    expect(resolveOhMyOpenCodeSlimConfigPath()).toBe(jsonc);
+  });
+
+  it("prefers oh-my-opencode-slim.json when both names exist", () => {
+    const json = path.join(configDir, "oh-my-opencode-slim.json");
+    const jsonc = path.join(configDir, "oh-my-opencode-slim.jsonc");
+    fs.writeFileSync(json, "{}", "utf8");
+    fs.writeFileSync(jsonc, "{}", "utf8");
+    expect(resolveOhMyOpenCodeSlimConfigPath()).toBe(json);
+  });
+
+  it("opens an existing oh-my-opencode-slim.jsonc instead of creating a new json", () => {
+    const jsonc = path.join(configDir, "oh-my-opencode-slim.jsonc");
+    fs.writeFileSync(jsonc, "{\n}\n", "utf8");
+    const resolved = ensureOpenCodeGlobalFile("ohMyOpenCodeSlim");
+    expect(resolved).toBe(jsonc);
+    expect(fs.existsSync(path.join(configDir, "oh-my-opencode-slim.json"))).toBe(
+      false,
+    );
+    expect(fs.readFileSync(jsonc, "utf8")).toBe("{\n}\n");
+  });
 });
 
 describe("isOhMyOpenCodeSlimAvailable", () => {
@@ -111,6 +136,15 @@ describe("isOhMyOpenCodeSlimAvailable", () => {
   it("detects the plugin config file", () => {
     fs.writeFileSync(
       path.join(configDir, "oh-my-opencode-slim.json"),
+      "{}",
+      "utf8",
+    );
+    expect(isOhMyOpenCodeSlimAvailable()).toBe(true);
+  });
+
+  it("detects the plugin config file as jsonc", () => {
+    fs.writeFileSync(
+      path.join(configDir, "oh-my-opencode-slim.jsonc"),
       "{}",
       "utf8",
     );

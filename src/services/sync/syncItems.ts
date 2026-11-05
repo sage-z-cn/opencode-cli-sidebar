@@ -25,6 +25,12 @@ export const BUILTIN_SYNC_ITEMS: readonly SyncItemDefinition[] = [
     builtin: true,
   },
   {
+    id: "opencode.jsonc",
+    path: "opencode.jsonc",
+    kind: "file",
+    builtin: true,
+  },
+  {
     id: "cli.json",
     path: "cli.json",
     kind: "file",
@@ -45,6 +51,12 @@ export const BUILTIN_SYNC_ITEMS: readonly SyncItemDefinition[] = [
   {
     id: "oh-my-opencode-slim.json",
     path: "oh-my-opencode-slim.json",
+    kind: "file",
+    builtin: true,
+  },
+  {
+    id: "oh-my-opencode-slim.jsonc",
+    path: "oh-my-opencode-slim.jsonc",
     kind: "file",
     builtin: true,
   },
@@ -334,9 +346,10 @@ export function deriveSyncItems(
 }
 
 /**
- * Snapshot item list: built-in entries stay hidden until they exist locally,
- * so optional files such as oh-my-opencode-slim.json only show up on machines
- * where that plugin is actually installed.
+ * Snapshot item list: built-in entries stay hidden until they exist locally.
+ * Optional files such as oh-my-opencode-slim.json and each jsonc variant,
+ * for example opencode.jsonc or oh-my-opencode-slim.jsonc, only show up on
+ * machines where that exact file is present.
  */
 export function visibleSyncItems(
   customItems: string[],

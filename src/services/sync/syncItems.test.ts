@@ -45,15 +45,37 @@ describe("syncItems", () => {
     expect(paths).toContain("AGENTS.md");
     expect(paths).not.toContain("skills");
     expect(paths).not.toContain("oh-my-opencode-slim.json");
+    expect(paths).not.toContain("opencode.jsonc");
+    expect(paths).not.toContain("oh-my-opencode-slim.jsonc");
+  });
+
+  it("shows opencode.jsonc when only that variant exists", () => {
+    fs.writeFileSync(path.join(configDir, "opencode.jsonc"), "{}", "utf8");
+    const paths = visibleSyncItems([], [], configDir).map((item) => item.path);
+    expect(paths).toContain("opencode.jsonc");
+    expect(paths).not.toContain("opencode.json");
+  });
+
+  it("shows oh-my-opencode-slim.jsonc when only that variant exists", () => {
+    fs.writeFileSync(
+      path.join(configDir, "oh-my-opencode-slim.jsonc"),
+      "{}",
+      "utf8",
+    );
+    const paths = visibleSyncItems([], [], configDir).map((item) => item.path);
+    expect(paths).toContain("oh-my-opencode-slim.jsonc");
+    expect(paths).not.toContain("oh-my-opencode-slim.json");
   });
 
   it("keeps the fixed built-in item order", () => {
     expect(BUILTIN_SYNC_ITEMS.map((item) => item.path)).toEqual([
       "opencode.json",
+      "opencode.jsonc",
       "cli.json",
       "AGENTS.md",
       "skills",
       "oh-my-opencode-slim.json",
+      "oh-my-opencode-slim.jsonc",
     ]);
     expect(BUILTIN_SYNC_ITEMS.every((item) => item.kind === "file" || item.kind === "dir")).toBe(true);
   });
@@ -108,10 +130,12 @@ describe("syncItems", () => {
     ]);
     expect(items.map((item) => item.id)).toEqual([
       "opencode.json",
+      "opencode.jsonc",
       "cli.json",
       "AGENTS.md",
       "skills",
       "oh-my-opencode-slim.json",
+      "oh-my-opencode-slim.jsonc",
       "themes",
     ]);
     const agents = items.find((item) => item.path === "AGENTS.md");
@@ -165,6 +189,21 @@ describe("syncItems", () => {
     const items = deriveSyncItems(["themes"], ["AGENTS.md"]);
     const files = await collectItemFiles(items);
     expect(files).toEqual(["cli.json", "themes/dark.json"]);
+  });
+
+  it("collects existing jsonc built-in files without custom items", async () => {
+    fs.writeFileSync(path.join(configDir, "opencode.jsonc"), "{}", "utf8");
+    fs.writeFileSync(
+      path.join(configDir, "oh-my-opencode-slim.jsonc"),
+      "{}",
+      "utf8",
+    );
+    const items = deriveSyncItems([], []);
+    const files = await collectItemFiles(items, configDir);
+    expect(files).toContain("opencode.jsonc");
+    expect(files).toContain("oh-my-opencode-slim.jsonc");
+    expect(files).not.toContain("opencode.json");
+    expect(files).not.toContain("oh-my-opencode-slim.json");
   });
 
   it("validates exclude paths like item paths", () => {
