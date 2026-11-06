@@ -184,6 +184,7 @@
 | `opencode-cli-sidebar.cursorStyle`      | string  | `"block"`         | 光标样式：`block`、`underline`、`bar`     |
 | `opencode-cli-sidebar.scrollback`       | number  | `10000`           | 回滚缓冲区最大行数（0-100000）            |
 | `opencode-cli-sidebar.autoFocusOnSend`  | boolean | `true`            | 发送文件引用后自动聚焦侧边栏              |
+| `opencode-cli-sidebar.fileSendMode`     | string  | `"attachment"`    | 文件发送方式：`attachment` 以附件发送，失败或超限时回退路径文本；`path` 始终发送路径文本 |
 | `opencode-cli-sidebar.autoStartOnOpen`  | boolean | `true`            | 侧边栏打开时自动启动 OpenCode               |
 | `opencode-cli-sidebar.shellPath`        | string  | `""`              | 自定义 Shell 路径（空 = VS Code 默认）    |
 | `opencode-cli-sidebar.shellArgs`        | array   | `[]`              | 自定义 Shell 参数                         |

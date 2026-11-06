@@ -193,6 +193,7 @@ Available settings in VS Code settings (`Cmd+,` / `Ctrl+,`):
 | `opencode-cli-sidebar.cursorStyle`    | string  | `"block"`         | Cursor style: `block`, `underline`, or `bar`         |
 | `opencode-cli-sidebar.scrollback`     | number  | `10000`           | Maximum lines in scrollback buffer (0-100000)        |
 | `opencode-cli-sidebar.autoFocusOnSend` | boolean | `true`            | Auto-focus sidebar after sending file references     |
+| `opencode-cli-sidebar.fileSendMode` | string | `"attachment"` | File send method: `attachment` (falls back to path text) or `path` |
 | `opencode-cli-sidebar.autoStartOnOpen` | boolean | `true`            | Automatically start OpenCode when sidebar is opened     |
 | `opencode-cli-sidebar.shellPath`      | string  | `""`              | Custom shell path (empty = VS Code default)          |
 | `opencode-cli-sidebar.shellArgs`      | array   | `[]`              | Custom shell arguments                               |

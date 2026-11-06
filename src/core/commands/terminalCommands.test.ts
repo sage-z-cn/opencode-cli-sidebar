@@ -7,6 +7,7 @@ import type { TerminalProvider } from "../../providers/TerminalProvider";
 import type { OpenCodeUpdateService } from "../../services/OpenCodeUpdateService";
 import type { OutputChannelService } from "../../services/OutputChannelService";
 import type { OpenCodeFileReference } from "../../services/aiTools/OpenCodeToolOperator";
+import { MAX_ATTACHMENT_BYTES } from "../../services/ideContext/mentionLimits";
 
 const vscode = await vi.importActual<typeof vscodeTypes>(
   "../../test/mocks/vscode",
@@ -59,11 +60,13 @@ function createOutputChannelMock(): OutputChannelMock {
   };
 }
 
-function mockAutoFocusOnSend(enabled: boolean): void {
+function mockSettings(
+  overrides: { autoFocusOnSend?: boolean; fileSendMode?: string } = {},
+): void {
   const configuration = {
     get: vi.fn((key: string, defaultValue?: unknown) => {
-      if (key === "autoFocusOnSend") {
-        return enabled;
+      if (key in overrides) {
+        return (overrides as Record<string, unknown>)[key];
       }
       return defaultValue;
     }),
@@ -72,6 +75,10 @@ function mockAutoFocusOnSend(enabled: boolean): void {
   };
 
   vi.mocked(vscode.workspace.getConfiguration).mockReturnValue(configuration);
+}
+
+function mockAutoFocusOnSend(enabled: boolean): void {
+  mockSettings({ autoFocusOnSend: enabled });
 }
 
 function createDependencies(
@@ -138,7 +145,7 @@ describe("registerTerminalCommands", () => {
     vi.useRealTimers();
   });
 
-  it("registers all 8 terminal commands", () => {
+  it("registers all 9 terminal commands", () => {
     const commands = registerAndGetCommands(createDependencies());
 
     expect(Array.from(commands.keys())).toEqual(
@@ -148,12 +155,13 @@ describe("registerTerminalCommands", () => {
         "opencode-cli-sidebar.sendAtMention",
         "opencode-cli-sidebar.sendAllOpenFiles",
         "opencode-cli-sidebar.sendToOpencode",
+        "opencode-cli-sidebar.sendAbsoluteToOpencode",
         "opencode-cli-sidebar.paste",
         "opencode-cli-sidebar.focus",
         "opencode-cli-sidebar.checkOpenCodeUpdates",
       ]),
     );
-    expect(commands.size).toBe(16);
+    expect(commands.size).toBe(17);
   });
 
   it("registers legacy ai-sidebar-terminal aliases for all old command IDs", () => {
@@ -627,6 +635,7 @@ describe("registerTerminalCommands", () => {
     expect(deps.provider?.formatUriReference).toHaveBeenCalledTimes(1);
     expect(deps.provider?.formatUriReference).toHaveBeenCalledWith(
       vscode.Uri.file("/workspace/from-tab.ts"),
+      "relative",
     );
     expect(deps.sendPrompt).toHaveBeenCalledWith("@workspace/from-tab.ts ");
   });
@@ -738,6 +747,281 @@ describe("registerTerminalCommands", () => {
       { filePath: "/workspace/a.ts", lineStart: 0, lineEnd: 0 },
     ]);
     expect(deps.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("falls back to terminal text only for files above the attachment limit", () => {
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    vi.mocked(deps.provider!.formatUriReference).mockImplementation(
+      (uri) => `@${uri.fsPath}`,
+    );
+    vi.mocked(fs.statSync).mockImplementation(((p: unknown) => {
+      if (String(p) === "/workspace/huge.log") {
+        return {
+          size: MAX_ATTACHMENT_BYTES + 1,
+          isDirectory: () => false,
+        };
+      }
+      throw new Error("ENOENT");
+    }) as never);
+    const commands = registerAndGetCommands(deps);
+    const sendToOpencode = getCommand(
+      commands,
+      "opencode-cli-sidebar.sendToOpencode",
+    );
+
+    sendToOpencode("ignored", [
+      vscode.Uri.file("/workspace/a.ts"),
+      vscode.Uri.file("/workspace/huge.log"),
+    ]);
+    vi.advanceTimersByTime(100);
+
+    expect(sendFileMentions).toHaveBeenCalledTimes(1);
+    expect(sendFileMentions).toHaveBeenCalledWith([
+      { filePath: "/workspace/a.ts", lineStart: 0, lineEnd: 0 },
+    ]);
+    expect(deps.sendPrompt).toHaveBeenCalledWith("@/workspace/huge.log ");
+  });
+
+  it("sends every file as terminal text when all exceed the attachment limit", () => {
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    vi.mocked(deps.provider!.formatUriReference).mockImplementation(
+      (uri) => `@${uri.fsPath}`,
+    );
+    vi.mocked(fs.statSync).mockReturnValue({
+      size: MAX_ATTACHMENT_BYTES + 1,
+      isDirectory: () => false,
+    } as never);
+    const commands = registerAndGetCommands(deps);
+    const sendToOpencode = getCommand(
+      commands,
+      "opencode-cli-sidebar.sendToOpencode",
+    );
+
+    sendToOpencode("ignored", [
+      vscode.Uri.file("/workspace/huge-a.log"),
+      vscode.Uri.file("/workspace/huge-b.log"),
+    ]);
+    vi.advanceTimersByTime(100);
+
+    expect(sendFileMentions).not.toHaveBeenCalled();
+    expect(deps.sendPrompt).toHaveBeenCalledWith(
+      "@/workspace/huge-a.log @/workspace/huge-b.log ",
+    );
+  });
+
+  it("falls back to the editor reference when the active file exceeds the attachment limit", () => {
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    vi.mocked(fs.statSync).mockReturnValue({
+      size: MAX_ATTACHMENT_BYTES + 1,
+      isDirectory: () => false,
+    } as never);
+    vi.mocked(deps.provider!.formatEditorReference).mockReturnValue(
+      "@src/huge.log#L2",
+    );
+    const document = new vscode.TextDocument(
+      vscode.Uri.file("/workspace/huge.log"),
+      "",
+    );
+    vscode.window.activeTextEditor = new vscode.TextEditor(
+      document,
+      new vscode.Selection(1, 0, 3, 5),
+    );
+
+    const commands = registerAndGetCommands(deps);
+    getCommand(commands, "opencode-cli-sidebar.sendAtMention")();
+
+    expect(sendFileMentions).not.toHaveBeenCalled();
+    expect(deps.sendPrompt).toHaveBeenCalledWith("@src/huge.log#L2 ");
+  });
+
+  it("keeps allowed open files as mentions and falls back for oversized ones", () => {
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    vi.mocked(deps.provider!.formatUriReference).mockImplementation(
+      (uri) => `@${uri.fsPath}`,
+    );
+    vi.mocked(fs.statSync).mockImplementation(((p: unknown) => ({
+      size:
+        String(p) === "/workspace/huge.log"
+          ? MAX_ATTACHMENT_BYTES + 1
+          : 100,
+      isDirectory: () => false,
+    })) as never);
+
+    vscode.window.tabGroups.all = [
+      {
+        tabs: [
+          {
+            input: new vscode.TabInputText(
+              vscode.Uri.parse("file:///workspace/a.ts"),
+            ),
+          },
+          {
+            input: new vscode.TabInputText(
+              vscode.Uri.parse("file:///workspace/huge.log"),
+            ),
+          },
+        ],
+      },
+    ];
+
+    const commands = registerAndGetCommands(deps);
+    getCommand(commands, "opencode-cli-sidebar.sendAllOpenFiles")();
+
+    expect(sendFileMentions).toHaveBeenCalledWith([
+      { filePath: "/workspace/a.ts", lineStart: 0, lineEnd: 0 },
+    ]);
+    expect(deps.sendPrompt).toHaveBeenCalledWith("@/workspace/huge.log ");
+
+    vi.advanceTimersByTime(100);
+
+    expect(deps.provider?.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends file references as path text when fileSendMode is path", () => {
+    mockSettings({ autoFocusOnSend: true, fileSendMode: "path" });
+
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    vi.mocked(deps.provider!.formatUriReference).mockImplementation(
+      (uri) => `@${uri.fsPath}`,
+    );
+    const commands = registerAndGetCommands(deps);
+    const sendToOpencode = getCommand(
+      commands,
+      "opencode-cli-sidebar.sendToOpencode",
+    );
+
+    sendToOpencode("ignored", [
+      vscode.Uri.file("/workspace/a.ts"),
+      vscode.Uri.file("/workspace/b.ts"),
+    ]);
+    vi.advanceTimersByTime(100);
+
+    expect(sendFileMentions).not.toHaveBeenCalled();
+    expect(deps.outputChannel?.info).toHaveBeenCalledWith(
+      "[DIAG:sendToOpencode] path text fileCount=2 pathStyle=relative",
+    );
+    expect(deps.sendPrompt).toHaveBeenCalledWith(
+      "@/workspace/a.ts @/workspace/b.ts ",
+    );
+  });
+
+  it("sends absolute path references from explorer selections", () => {
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    vi.mocked(deps.provider!.formatUriReference).mockImplementation(
+      (uri, pathStyle) => `@${pathStyle}:${uri.fsPath}`,
+    );
+    const commands = registerAndGetCommands(deps);
+    const sendAbsolute = getCommand(
+      commands,
+      "opencode-cli-sidebar.sendAbsoluteToOpencode",
+    );
+
+    sendAbsolute("ignored", [
+      vscode.Uri.file("/workspace/a.ts"),
+      vscode.Uri.file("/workspace/a.ts"),
+      vscode.Uri.file("/workspace/b.ts"),
+    ]);
+    vi.advanceTimersByTime(100);
+
+    expect(sendFileMentions).not.toHaveBeenCalled();
+    expect(deps.provider?.formatUriReference).toHaveBeenCalledTimes(2);
+    expect(deps.provider?.formatUriReference).toHaveBeenCalledWith(
+      expect.anything(),
+      "absolute",
+    );
+    expect(deps.outputChannel?.info).toHaveBeenCalledWith(
+      "[DIAG:sendAbsoluteToOpencode] path text fileCount=2 pathStyle=absolute",
+    );
+    expect(deps.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(deps.sendPrompt).toHaveBeenCalledWith(
+      "@absolute:/workspace/a.ts @absolute:/workspace/b.ts ",
+    );
+  });
+
+  it("keeps absolute sends independent from relative file send batches", () => {
+    mockSettings({ autoFocusOnSend: true, fileSendMode: "path" });
+
+    const deps = createDependencies();
+    vi.mocked(deps.provider!.formatUriReference).mockImplementation(
+      (uri, pathStyle) => `@${pathStyle}:${uri.fsPath}`,
+    );
+    const commands = registerAndGetCommands(deps);
+
+    getCommand(commands, "opencode-cli-sidebar.sendToOpencode")("ignored", [
+      vscode.Uri.file("/workspace/rel.ts"),
+    ]);
+    getCommand(commands, "opencode-cli-sidebar.sendAbsoluteToOpencode")(
+      "ignored",
+      [vscode.Uri.file("/workspace/abs.ts")],
+    );
+    vi.advanceTimersByTime(100);
+
+    expect(deps.sendPrompt).toHaveBeenCalledTimes(2);
+    expect(deps.sendPrompt).toHaveBeenNthCalledWith(
+      1,
+      "@relative:/workspace/rel.ts ",
+    );
+    expect(deps.sendPrompt).toHaveBeenNthCalledWith(
+      2,
+      "@absolute:/workspace/abs.ts ",
+    );
+  });
+
+  it("sends the editor reference as path text when fileSendMode is path", () => {
+    mockSettings({ autoFocusOnSend: true, fileSendMode: "path" });
+
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    vi.mocked(deps.provider!.formatEditorReference).mockReturnValue(
+      "@src/file.ts#2-4",
+    );
+    const document = new vscode.TextDocument(
+      vscode.Uri.file("/workspace/file.ts"),
+      "",
+    );
+    vscode.window.activeTextEditor = new vscode.TextEditor(
+      document,
+      new vscode.Selection(1, 0, 3, 5),
+    );
+
+    const commands = registerAndGetCommands(deps);
+    getCommand(commands, "opencode-cli-sidebar.sendAtMention")();
+
+    expect(sendFileMentions).not.toHaveBeenCalled();
+    expect(deps.sendPrompt).toHaveBeenCalledWith("@src/file.ts#2-4 ");
+  });
+
+  it("sends all open files as path text when fileSendMode is path", () => {
+    mockSettings({ autoFocusOnSend: true, fileSendMode: "path" });
+
+    const sendFileMentions = vi.fn(() => true);
+    const deps = createDependencies({ sendFileMentions });
+    vi.mocked(deps.provider!.formatUriReference).mockImplementation(
+      (uri) => `@${uri.fsPath}`,
+    );
+    vscode.window.tabGroups.all = [
+      {
+        tabs: [
+          {
+            input: new vscode.TabInputText(
+              vscode.Uri.parse("file:///workspace/a.ts"),
+            ),
+          },
+        ],
+      },
+    ];
+
+    const commands = registerAndGetCommands(deps);
+    getCommand(commands, "opencode-cli-sidebar.sendAllOpenFiles")();
+
+    expect(sendFileMentions).not.toHaveBeenCalled();
+    expect(deps.sendPrompt).toHaveBeenCalledWith("@/workspace/a.ts ");
   });
 
   it("requests webview paste handling and reports provider failures", async () => {

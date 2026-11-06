@@ -1,7 +1,14 @@
 import * as vscode from "vscode";
 import { l10n } from "../../i18n";
 import type { TerminalProvider } from "../../providers/TerminalProvider";
-import { toAbsoluteReference } from "../../providers/relativeReference";
+import {
+  toAbsoluteReference,
+  type ReferencePathStyle,
+} from "../../providers/relativeReference";
+import {
+  isAttachmentOversize,
+  MAX_ATTACHMENT_BYTES,
+} from "../../services/ideContext/mentionLimits";
 import type { EditorMentionPayload } from "../../services/ideContext/protocol";
 import type { ContextSharingService } from "../../services/ContextSharingService";
 import type { OpenCodeUpdateService } from "../../services/OpenCodeUpdateService";
@@ -30,7 +37,9 @@ function isEditorCommandsContext(value: unknown): value is EditorCommandsContext
 
 /**
  * Resolves file URIs from the heterogeneous argument shapes VS Code passes
- * to `opencode-cli-sidebar.sendToOpencode` across its menu locations:
+ * to `opencode-cli-sidebar.sendToOpencode` and
+ * `opencode-cli-sidebar.sendAbsoluteToOpencode` across their menu
+ * locations:
  *
  * - `explorer/context`: `("ignored", [uri1, uri2])` — selected resources.
  * - Command palette / API: `(uri)` — a single URI passed directly.
@@ -98,6 +107,23 @@ function focusSidebarIfConfigured(
   }
 }
 
+type FileSendMode = "attachment" | "path";
+
+/**
+ * Reads `opencode-cli-sidebar.fileSendMode`.
+ *
+ * `path` keeps every reference off the attachment channel. `attachment` is the
+ * default and still degrades to path text on its own when the channel is
+ * unavailable or a file exceeds OpenCode's attachment size ceiling. Unknown
+ * values fall back to `attachment`.
+ */
+function getFileSendMode(): FileSendMode {
+  const configured = vscode.workspace
+    .getConfiguration("opencode-cli-sidebar")
+    .get<string>("fileSendMode", "attachment");
+  return configured === "path" ? "path" : "attachment";
+}
+
 type FileSendScheduler = (
   deps: TerminalCommandDependencies,
   uris: vscode.Uri[],
@@ -147,52 +173,115 @@ function wholeFileMention(uri: vscode.Uri): EditorMentionPayload {
 }
 
 /**
+ * Splits URIs by whether OpenCode can accept them as attachments.
+ *
+ * The mention channel hands the TUI a file URI that the OpenCode server reads
+ * and rejects when it exceeds `MAX_ATTACHMENT_BYTES`; oversized files must
+ * therefore stay on the typed `@path` text path. Directories and non-local
+ * URIs are never classified as oversize.
+ */
+function partitionByAttachmentLimit(uris: vscode.Uri[]): {
+  mentionable: vscode.Uri[];
+  oversize: vscode.Uri[];
+} {
+  const mentionable: vscode.Uri[] = [];
+  const oversize: vscode.Uri[] = [];
+
+  for (const uri of uris) {
+    if (uri.scheme === "file" && isAttachmentOversize(uri.fsPath)) {
+      oversize.push(uri);
+    } else {
+      mentionable.push(uri);
+    }
+  }
+
+  return { mentionable, oversize };
+}
+
+interface SendUrisOptions {
+  /** Skips the attachment channel and always sends typed `@path` text. */
+  textOnly?: boolean;
+  /** Path style used for typed `@path` references. Defaults to relative. */
+  pathStyle?: ReferencePathStyle;
+  /** DIAG log prefix, so each send command stays identifiable in output. */
+  logTag?: string;
+}
+
+/**
  * Delivers file references to the OpenCode TUI composer as `at_mentioned`
  * attachments, falling back to typed `@path` text over the terminal
- * whenever the mention channel is unavailable. Files and directories ride
- * the same channel; whole-file and directory payloads carry the `(0, 0)`
- * no-range sentinel.
+ * whenever the mention channel is unavailable or a file exceeds OpenCode's
+ * attachment size ceiling. Files and directories ride the same channel;
+ * whole-file and directory payloads carry the `(0, 0)` no-range sentinel.
+ *
+ * `options.textOnly` bypasses the attachment channel entirely, which the
+ * absolute-path command uses.
  */
 function sendUrisToOpencode(
   deps: TerminalCommandDependencies,
   uris: vscode.Uri[],
+  options: SendUrisOptions = {},
 ): void {
   const provider = deps.provider;
   if (!provider) {
     return;
   }
 
+  const {
+    textOnly = false,
+    pathStyle = "relative",
+    logTag = "sendToOpencode",
+  } = options;
+  const formatReference = (uri: vscode.Uri): string =>
+    provider.formatUriReference(uri, pathStyle);
+
   const uniqueUris = [
     ...new Map(uris.map((u: vscode.Uri) => [u.fsPath, u])).values(),
   ];
 
   const textRefs: string[] = [];
-  let mentionsDelivered = false;
-  if (deps.sendFileMentions) {
-    const payloads = uniqueUris.map((u) => wholeFileMention(u));
-    mentionsDelivered = deps.sendFileMentions(payloads);
-    if (mentionsDelivered) {
-      deps.outputChannel?.info(
-        `[DIAG:sendToOpencode] mention fileCount=${payloads.length} ranges="${payloads
-          .map((p) => `${p.filePath}#${p.lineStart}-${p.lineEnd}`)
-          .join(" ")}"`,
-      );
-    } else {
-      deps.outputChannel?.info(
-        "[DIAG:sendToOpencode] mention channel unavailable, falling back to terminal text",
-      );
+  if (textOnly || getFileSendMode() === "path") {
+    deps.outputChannel?.info(
+      `[DIAG:${logTag}] path text fileCount=${uniqueUris.length} pathStyle=${pathStyle}`,
+    );
+    textRefs.push(...uniqueUris.map(formatReference));
+  } else {
+    const { mentionable, oversize } = partitionByAttachmentLimit(uniqueUris);
+    let mentionsDelivered = false;
+    if (mentionable.length > 0 && deps.sendFileMentions) {
+      const payloads = mentionable.map((u) => wholeFileMention(u));
+      mentionsDelivered = deps.sendFileMentions(payloads);
+      if (mentionsDelivered) {
+        deps.outputChannel?.info(
+          `[DIAG:${logTag}] mention fileCount=${payloads.length} ranges="${payloads
+            .map((p) => `${p.filePath}#${p.lineStart}-${p.lineEnd}`)
+            .join(" ")}"`,
+        );
+      } else {
+        deps.outputChannel?.info(
+          `[DIAG:${logTag}] mention channel unavailable, falling back to terminal text`,
+        );
+      }
     }
-  }
 
-  if (!mentionsDelivered) {
-    textRefs.push(...uniqueUris.map((u) => provider.formatUriReference(u)));
+    if (!mentionsDelivered) {
+      textRefs.push(...mentionable.map(formatReference));
+    }
+
+    if (oversize.length > 0) {
+      const oversizeRefs = oversize.map(formatReference);
+      deps.outputChannel?.info(
+        `[DIAG:${logTag}] attachment limit exceeded, falling back to terminal text fileCount=${oversize.length} limitBytes=${MAX_ATTACHMENT_BYTES} refs="${oversizeRefs.join(" ")}"`,
+      );
+      textRefs.push(...oversizeRefs);
+    }
   }
 
   if (textRefs.length > 0) {
     const allRefs = textRefs.join(" ");
     const terminalId = deps.getActiveTerminalId();
     deps.outputChannel?.info(
-      `[DIAG:sendToOpencode] terminalId="${terminalId}" fileCount=${textRefs.length} refs="${allRefs}"`,
+      `[DIAG:${logTag}] terminalId="${terminalId}" fileCount=${textRefs.length} refs="${allRefs}"`,
     );
     void deps.sendPrompt(allRefs + " ");
   }
@@ -202,6 +291,20 @@ function sendUrisToOpencode(
 
 const scheduleRelativeReferenceSend = createFileSendScheduler(
   sendUrisToOpencode,
+);
+
+/**
+ * Absolute-path companion to `scheduleRelativeReferenceSend`. Always sends
+ * typed text so the reference does not depend on OpenCode's working
+ * directory, and keeps its own accumulator so it never merges with a
+ * relative batch.
+ */
+const scheduleAbsoluteReferenceSend = createFileSendScheduler((deps, uris) =>
+  sendUrisToOpencode(deps, uris, {
+    textOnly: true,
+    pathStyle: "absolute",
+    logTag: "sendAbsoluteToOpencode",
+  }),
 );
 
 /**
@@ -277,12 +380,26 @@ export function registerTerminalCommands(
             lineEnd: selection.end.line + 1,
           };
 
-      if (deps.sendFileMentions?.([payload])) {
+      // The server reads the whole file before applying the line range, so an
+      // oversized file must fall back even when only a few lines are selected.
+      const attachmentMode = getFileSendMode() === "attachment";
+      const oversize =
+        attachmentMode &&
+        editor.document.uri.scheme === "file" &&
+        isAttachmentOversize(editor.document.uri.fsPath);
+
+      if (attachmentMode && !oversize && deps.sendFileMentions?.([payload])) {
         deps.outputChannel?.info(
           `[DIAG:sendAtMention] mention file="${payload.filePath}#${payload.lineStart}-${payload.lineEnd}"`,
         );
         focusSidebarIfConfigured(deps.provider);
         return;
+      }
+
+      if (oversize) {
+        deps.outputChannel?.info(
+          `[DIAG:sendAtMention] attachment limit exceeded, falling back to terminal text limitBytes=${MAX_ATTACHMENT_BYTES}`,
+        );
       }
 
       const fileRef = deps.provider?.formatEditorReference(editor);
@@ -326,20 +443,37 @@ export function registerTerminalCommands(
         return;
       }
 
-      if (deps.sendFileMentions?.(openUris.map((uri) => wholeFileMention(uri)))) {
+      const attachmentMode = getFileSendMode() === "attachment";
+      const { mentionable, oversize } = attachmentMode
+        ? partitionByAttachmentLimit(openUris)
+        : { mentionable: [] as vscode.Uri[], oversize: [] as vscode.Uri[] };
+      const mentionsDelivered =
+        mentionable.length > 0 &&
+        (deps.sendFileMentions?.(
+          mentionable.map((uri) => wholeFileMention(uri)),
+        ) ??
+          false);
+
+      if (mentionsDelivered) {
         deps.outputChannel?.info(
-          `[DIAG:sendAllOpenFiles] mention fileCount=${openUris.length}`,
+          `[DIAG:sendAllOpenFiles] mention fileCount=${mentionable.length}`,
         );
-        focusSidebarIfConfigured(provider);
-        return;
+        if (oversize.length === 0) {
+          focusSidebarIfConfigured(provider);
+          return;
+        }
+        deps.outputChannel?.info(
+          `[DIAG:sendAllOpenFiles] attachment limit exceeded, falling back to terminal text fileCount=${oversize.length} limitBytes=${MAX_ATTACHMENT_BYTES}`,
+        );
       }
 
-      const openFiles = openUris
+      const textUris = mentionsDelivered ? oversize : openUris;
+      const openFiles = textUris
         .map((uri) => provider.formatUriReference(uri))
         .join(" ");
       const terminalId = deps.getActiveTerminalId();
       deps.outputChannel?.info(
-        `[DIAG:sendAllOpenFiles] terminalId="${terminalId}" fileCount=${openUris.length} refs="${openFiles}"`,
+        `[DIAG:sendAllOpenFiles] terminalId="${terminalId}" fileCount=${textUris.length} refs="${openFiles}"`,
       );
       void deps.sendPrompt(openFiles + " ");
       focusSidebarIfConfigured(provider);
@@ -359,6 +493,25 @@ export function registerTerminalCommands(
       }
 
       scheduleRelativeReferenceSend(deps, uris);
+    },
+  );
+
+  // Explorer companion to `sendToOpencode` that always sends absolute-path
+  // text references, so the result does not depend on OpenCode's working
+  // directory. Shares argument extraction and the 100ms multi-select batch.
+  const sendAbsoluteToOpencodeCommand = vscode.commands.registerCommand(
+    "opencode-cli-sidebar.sendAbsoluteToOpencode",
+    (...args: unknown[]) => {
+      if (!deps.contextSharingService) {
+        return;
+      }
+
+      const uris = extractUrisFromSendArgs(args);
+      if (uris.length === 0) {
+        return;
+      }
+
+      scheduleAbsoluteReferenceSend(deps, uris);
     },
   );
 
@@ -455,6 +608,7 @@ export function registerTerminalCommands(
     sendAtMentionCommand,
     sendAllOpenFilesCommand,
     sendToOpencodeCommand,
+    sendAbsoluteToOpencodeCommand,
     pasteCommand,
     focusCommand,
     checkOpenCodeUpdatesCommand,

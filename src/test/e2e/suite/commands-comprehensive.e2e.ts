@@ -22,6 +22,7 @@ const commandCategories = {
     "opencode-cli-sidebar.sendAtMention",
     "opencode-cli-sidebar.sendAllOpenFiles",
     "opencode-cli-sidebar.sendToOpencode",
+    "opencode-cli-sidebar.sendAbsoluteToOpencode",
   ],
   update: ["opencode-cli-sidebar.checkOpenCodeUpdates"],
 } as const satisfies Record<string, readonly string[]>;
@@ -54,7 +55,7 @@ suite("Comprehensive command registration", () => {
       packageJSON.contributes?.commands?.map(({ command }) => command) ?? [];
     const expectedCommands = allExpectedCommands();
 
-    assert.strictEqual(expectedCommands.length, 9);
+    assert.strictEqual(expectedCommands.length, 10);
     assert.deepStrictEqual(
       [...new Set(expectedCommands)].sort(),
       [...expectedCommands].sort(),

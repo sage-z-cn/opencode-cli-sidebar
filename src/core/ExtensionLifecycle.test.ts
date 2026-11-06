@@ -877,6 +877,15 @@ describe("ExtensionLifecycle", () => {
 
       expect(fileCall).toBeDefined();
     });
+
+    it("should register sendAbsoluteToOpencode command", () => {
+      const calls = vi.mocked(vscode.commands.registerCommand).mock.calls;
+      const fileCall = calls.find(
+        (call) => call[0] === "opencode-cli-sidebar.sendAbsoluteToOpencode",
+      );
+
+      expect(fileCall).toBeDefined();
+    });
   });
 
   describe("OpenCode update auto-check scheduling", () => {

@@ -39,7 +39,10 @@ import {
 import type { IdeContextServer } from "../services/ideContext/IdeContextServer";
 import { MessageRouter, MessageRouterProviderBridge } from "./MessageRouter";
 import { SessionRuntime, type ServiceRestartPolicy } from "./SessionRuntime";
-import { toRelativeReference } from "./relativeReference";
+import {
+  toReferencePath,
+  type ReferencePathStyle,
+} from "./relativeReference";
 import { renderTerminalHtml } from "../webview/terminal/html";
 import { NativeTerminalManager } from "../services/NativeTerminalManager";
 import type { StartupGate } from "../services/StartupCoordinator";
@@ -416,20 +419,25 @@ export class TerminalProvider
     return this.sessionRuntime.formatFileReference(reference);
   }
 
-  public formatUriReference(uri: vscode.Uri): string {
+  /**
+   * Formats a `@path` text reference. `relative` is the default and keeps
+   * references short; `absolute` is used by the dedicated absolute-path send
+   * command so references survive a session whose working directory differs
+   * from the workspace root.
+   */
+  public formatUriReference(
+    uri: vscode.Uri,
+    pathStyle: ReferencePathStyle = "relative",
+  ): string {
     return this.formatFileReference({
-      path: toRelativeReference(uri),
+      path: toReferencePath(uri, pathStyle),
     });
   }
 
   public formatEditorReference(editor: vscode.TextEditor): string {
-    const relativePath = vscode.workspace.asRelativePath(
-      editor.document.uri,
-      false,
-    );
     const selection = editor.selection;
     return this.formatFileReference({
-      path: relativePath,
+      path: toReferencePath(editor.document.uri, "relative"),
       selectionStart: selection.isEmpty ? undefined : selection.start.line + 1,
       selectionEnd: selection.isEmpty ? undefined : selection.end.line + 1,
     });

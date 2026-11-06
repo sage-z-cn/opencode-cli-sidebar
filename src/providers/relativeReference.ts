@@ -44,3 +44,26 @@ export function toAbsoluteReference(target: vscode.Uri | string): string {
   }
   return absolute;
 }
+
+/**
+ * Path style used for `@path` text references.
+ *
+ * `absolute` makes the reference independent of OpenCode's current working
+ * directory, so a session that was moved into a subproject still resolves it
+ * correctly. `relative` keeps references short but assumes the session
+ * directory is the workspace root.
+ */
+export type ReferencePathStyle = "absolute" | "relative";
+
+/**
+ * Formats `target` for a text reference using the configured style.
+ * Directories keep a trailing "/" in both styles.
+ */
+export function toReferencePath(
+  target: vscode.Uri | string,
+  style: ReferencePathStyle,
+): string {
+  return style === "relative"
+    ? toRelativeReference(target)
+    : toAbsoluteReference(target);
+}

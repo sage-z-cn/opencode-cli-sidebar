@@ -85,6 +85,11 @@
         "category": "%command.category.opencode-cli-sidebar%"
       },
       {
+        "command": "opencode-cli-sidebar.sendAbsoluteToOpencode",
+        "title": "%command.opencode-cli-sidebar.sendAbsoluteToOpencode.title%",
+        "category": "%command.category.opencode-cli-sidebar%"
+      },
+      {
         "command": "opencode-cli-sidebar.paste",
         "title": "%command.opencode-cli-sidebar.paste.title%",
         "category": "%command.category.opencode-cli-sidebar%",
@@ -113,6 +118,16 @@
           "command": "opencode-cli-sidebar.sendToOpencode",
           "group": "0_opencode_cli_sidebar@1",
           "when": "explorerResourceIsFolder"
+        },
+        {
+          "command": "opencode-cli-sidebar.sendAbsoluteToOpencode",
+          "group": "0_opencode_cli_sidebar@2",
+          "when": "!explorerResourceIsFolder && config.opencode-cli-sidebar.fileSendMode == 'path'"
+        },
+        {
+          "command": "opencode-cli-sidebar.sendAbsoluteToOpencode",
+          "group": "0_opencode_cli_sidebar@2",
+          "when": "explorerResourceIsFolder && config.opencode-cli-sidebar.fileSendMode == 'path'"
         }
       ],
       "editor/context": [
@@ -212,6 +227,19 @@
           "type": "boolean",
           "default": true,
           "description": "%configuration.opencode-cli-sidebar.autoFocusOnSend.description%"
+        },
+        "opencode-cli-sidebar.fileSendMode": {
+          "type": "string",
+          "enum": [
+            "attachment",
+            "path"
+          ],
+          "enumDescriptions": [
+            "%configuration.opencode-cli-sidebar.fileSendMode.attachment.description%",
+            "%configuration.opencode-cli-sidebar.fileSendMode.path.description%"
+          ],
+          "default": "attachment",
+          "description": "%configuration.opencode-cli-sidebar.fileSendMode.description%"
         },
         "opencode-cli-sidebar.autoStartOnOpen": {
           "type": "boolean",

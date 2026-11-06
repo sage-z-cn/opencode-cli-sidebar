@@ -106,11 +106,15 @@ suite("Package contribution metadata", () => {
       "explorer/context should include folder send command",
     );
     assert.ok(
-      !explorerContext.some(
-        ({ command }) =>
-          command === "opencode-cli-sidebar.sendAbsoluteToOpencode",
+      explorerContext.some(
+        ({ command, group, when }) =>
+          command === "opencode-cli-sidebar.sendAbsoluteToOpencode" &&
+          group === "0_opencode_cli_sidebar@2" &&
+          when?.includes(
+            "config.opencode-cli-sidebar.fileSendMode == 'path'",
+          ),
       ),
-      "explorer/context should not include the removed absolute path send command",
+      "explorer/context should gate the absolute path command behind path mode",
     );
   });
 
