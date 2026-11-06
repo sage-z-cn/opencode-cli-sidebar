@@ -5,6 +5,11 @@ All notable changes to the "OpenCode CLI Sidebar" extension will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+#### 5.7.0
+**New Features**
+- **Settings**: Add an extension settings webview panel and remove deprecated settings.
+- **Commands**: Add an absolute path send option controlled by the new fileSendMode setting.
+
 #### 5.6.7
 **New Features**
 - **Sync**: Support jsonc variants for OpenCode config files.
