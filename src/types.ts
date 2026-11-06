@@ -21,6 +21,26 @@ export type ServiceRestartPromptAction =
 /** User's answer to the in-webview missing-CLI install confirmation dialog. */
 export type CliInstallPromptAction = "install" | "notNow";
 
+/** Settings layer targeted by the in-webview extension settings dialog. */
+export type ExtensionSettingsScope = "user" | "workspace";
+
+/**
+ * Snapshot of the extension's own settings for the in-webview dialog.
+ * Keys are setting suffixes without the `opencode-cli-sidebar.` prefix.
+ */
+export interface ExtensionSettingsSnapshot {
+  /** Effective value after every scope is merged. */
+  values: Record<string, unknown>;
+  /** Values authored at user scope; a missing key means the layer is unset. */
+  userValues: Record<string, unknown>;
+  /** Values authored at workspace scope; a missing key means the layer is unset. */
+  workspaceValues: Record<string, unknown>;
+  /** Resolved default per known key, driving placeholders and reset state. */
+  defaults: Record<string, unknown>;
+  /** True when a workspace folder is open, which enables the workspace scope. */
+  hasWorkspace: boolean;
+}
+
 export type WebviewMessage =
   | { type: "terminalInput"; data: string }
   | { type: "terminalResize"; cols: number; rows: number }
@@ -139,7 +159,19 @@ export type WebviewMessage =
   /** Open a VS Code diff editor for one side of a conflict. */
   | { type: "openWebdavDiff"; id: string }
   /** Open the OpenCode config directory in the OS file manager. */
-  | { type: "openOpenCodeConfigDir" };
+  | { type: "openOpenCodeConfigDir" }
+  /* ===================== Extension settings dialog ===================== */
+  /** Dialog open or scope switch: request every setting value and layer. */
+  | { type: "requestExtensionSettingsData" }
+  /** Immediate apply for one control; the host validates and persists it. */
+  | {
+      type: "updateExtensionSetting";
+      key: string;
+      value: unknown;
+      scope: ExtensionSettingsScope;
+    }
+  /** Drop one layer's value so the setting falls back to the next layer. */
+  | { type: "resetExtensionSetting"; key: string; scope: ExtensionSettingsScope };
 
 export const ALLOWED_IMAGE_TYPES = [
   "image/png",
@@ -303,6 +335,10 @@ export type HostMessage =
       error?: string;
     }
   | { type: "openCodeCliSettingsError"; error: string }
+  /** Full settings snapshot for the extension settings dialog. */
+  | { type: "extensionSettingsData"; settings: ExtensionSettingsSnapshot }
+  /** Per-control write feedback; failures carry a short reason. */
+  | { type: "extensionSettingsSaveResult"; ok: boolean; key?: string; error?: string }
   /** OpenCode session (re)started; cli.json plugin version pins are now active. */
   | { type: "openCodeSessionStarted" }
   /** Single push channel driving the OpenCode self-update UI. */

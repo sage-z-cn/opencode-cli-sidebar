@@ -9,6 +9,7 @@ import {
 import { postMessage } from "./shared/vscode-api";
 import { showServiceRestartPrompt } from "./service-restart-prompt";
 import { initTerminal } from "./terminal";
+import { setSendKeybindingsToShell } from "./terminal/keyboard";
 import { applyStartupPhase, initStartupStatus } from "./startup-status";
 import { readTerminalConfig } from "./terminal/config";
 import { createFocusIndicator } from "./terminal/focus-indicator";
@@ -52,6 +53,7 @@ import {
   applyWebdavTestResult,
   initSyncUi,
 } from "./sync";
+import { initExtensionSettingsUi } from "./extension-settings";
 
 const focusIndicator = createFocusIndicator();
 
@@ -79,6 +81,9 @@ const callbacks: MessageHandlerCallbacks = {
   onTerminalConfig(message) {
     if (message.isEditorTab !== undefined) {
       updateEditorAttachmentIcon(message.isEditorTab);
+    }
+    if (message.sendKeybindingsToShell !== undefined) {
+      setSendKeybindingsToShell(message.sendKeybindingsToShell);
     }
   },
 
@@ -261,6 +266,7 @@ function initApp(): void {
   initOpenCodeCliSettingsUi();
   initOpenCodeUpdateUi();
   initSyncUi();
+  initExtensionSettingsUi();
 
   window.addEventListener("message", (event: MessageEvent) => {
     messageHandler.handleEvent(event as MessageEvent<HostMessage>);

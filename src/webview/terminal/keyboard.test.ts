@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from "vitest";
-import { createKeyboardHandler } from "./keyboard";
+import { createKeyboardHandler, setSendKeybindingsToShell } from "./keyboard";
 
 const createKeyboardEvent = (
   init: KeyboardEventInit & { code: string },
@@ -202,6 +202,33 @@ describe("createKeyboardHandler", () => {
         isMac: false,
         sendKeybindingsToShell: false,
       }), {
+        ctrlKey: true,
+        key: "p",
+        code: "KeyP",
+      }, false, false);
+    });
+
+    it("switches Ctrl+P routing at runtime without rebuilding the handler", () => {
+      const keyboard = createKeyboardHandler({
+        isMac: false,
+        sendKeybindingsToShell: false,
+      });
+
+      expectKeyboardHandling(keyboard, {
+        ctrlKey: true,
+        key: "p",
+        code: "KeyP",
+      }, false, false);
+
+      setSendKeybindingsToShell(true);
+      expectKeyboardHandling(keyboard, {
+        ctrlKey: true,
+        key: "p",
+        code: "KeyP",
+      }, true, true);
+
+      setSendKeybindingsToShell(false);
+      expectKeyboardHandling(keyboard, {
         ctrlKey: true,
         key: "p",
         code: "KeyP",

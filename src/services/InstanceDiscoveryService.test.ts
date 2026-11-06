@@ -208,14 +208,9 @@ describe("InstanceDiscoveryService", () => {
     ]);
   });
 
-  it("Test 4: Auto-spawn creates new instance when enabled", async () => {
+  it("auto-spawns a new instance when none is running", async () => {
     vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
-      get: vi.fn((key: string, defaultValue?: unknown) => {
-        if (key === "enableAutoSpawn") {
-          return true;
-        }
-        return defaultValue;
-      }),
+      get: vi.fn((_key: string, defaultValue?: unknown) => defaultValue),
       update: vi.fn(),
     } as any);
 
@@ -330,30 +325,6 @@ describe("InstanceDiscoveryService", () => {
     const workspacePath = await (service as any).getWorkspacePath(24002);
 
     expect(workspacePath).toBeUndefined();
-  });
-
-  it("does not auto-spawn when feature is disabled", async () => {
-    vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
-      get: vi.fn((key: string, defaultValue?: unknown) => {
-        if (key === "enableAutoSpawn") {
-          return false;
-        }
-        return defaultValue;
-      }),
-      update: vi.fn(),
-    } as any);
-
-    service = new InstanceDiscoveryService();
-
-    vi.spyOn(service as any, "scanProcesses").mockResolvedValue([]);
-    const spawnSpy = vi
-      .spyOn(service as any, "spawnOpenCode")
-      .mockResolvedValue(undefined);
-
-    const instances = await service.discoverInstances();
-
-    expect(instances).toEqual([]);
-    expect(spawnSpy).not.toHaveBeenCalled();
   });
 
   it("returns spawned instance with pid and ephemeral port", async () => {
@@ -530,13 +501,7 @@ describe("InstanceDiscoveryService", () => {
 
   it("clears stale discovered store entries when no instances are found", async () => {
     vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
-      get: vi.fn((key: string, defaultValue?: unknown) => {
-        if (key === "enableAutoSpawn") {
-          return false;
-        }
-
-        return defaultValue;
-      }),
+      get: vi.fn((_key: string, defaultValue?: unknown) => defaultValue),
       update: vi.fn(),
     } as unknown as vscode.WorkspaceConfiguration);
     const store = new InstanceStore();
@@ -547,6 +512,7 @@ describe("InstanceDiscoveryService", () => {
     });
     service = new InstanceDiscoveryService(store);
     vi.spyOn(asHarness(service), "scanProcesses").mockResolvedValue([]);
+    vi.spyOn(asHarness(service), "spawnOpenCode").mockResolvedValue(undefined);
 
     await expect(service.discoverInstances()).resolves.toEqual([]);
 

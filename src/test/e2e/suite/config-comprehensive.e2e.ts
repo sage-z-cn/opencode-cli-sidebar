@@ -61,12 +61,6 @@ const configurationSpecs: Record<string, ConfigurationSpec> = {
     type: "string",
     defaultValue: nerdFontStack,
   },
-  "opencode-cli-sidebar.cursorBlink": { type: "boolean", defaultValue: true },
-  "opencode-cli-sidebar.cursorStyle": {
-    type: "string",
-    defaultValue: "block",
-    enumValues: ["block", "underline", "bar"],
-  },
   "opencode-cli-sidebar.focusIndicatorMode": {
     type: "string",
     defaultValue: "bottomBorder",
@@ -78,14 +72,7 @@ const configurationSpecs: Record<string, ConfigurationSpec> = {
     minimum: 1,
     maximum: 8,
   },
-  "opencode-cli-sidebar.scrollback": {
-    type: "number",
-    defaultValue: 10000,
-    minimum: 0,
-    maximum: 100000,
-  },
   "opencode-cli-sidebar.autoFocusOnSend": { type: "boolean", defaultValue: true },
-  "opencode-cli-sidebar.autoStartOnOpen": { type: "boolean", defaultValue: true },
   "opencode-cli-sidebar.shellPath": { type: "string", defaultValue: "" },
   "opencode-cli-sidebar.shellArgs": {
     type: "array",
@@ -120,7 +107,6 @@ const configurationSpecs: Record<string, ConfigurationSpec> = {
     minimum: 100,
     maximum: 2000,
   },
-  "opencode-cli-sidebar.enableAutoSpawn": { type: "boolean", defaultValue: true },
   "opencode-cli-sidebar.codeActionSeverities": {
     type: "array",
     defaultValue: ["error", "warning"],
@@ -211,7 +197,6 @@ suite("Runtime configuration defaults", () => {
     assert.strictEqual(defaultValue("opencode.commandPath"), "opencode");
     assert.deepStrictEqual(defaultValue("opencode.args"), []);
     assert.strictEqual(defaultValue("opencode.continueLastSession"), true);
-    assert.strictEqual(defaultValue("autoStartOnOpen"), true);
     assert.strictEqual(defaultValue("fontSize"), 12);
   });
 });

@@ -5,6 +5,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import { scheduleRefresh } from "../shared/utils";
 import { fitFullWidth } from "../terminal/fit";
 import { notifyOpenCodeUpdateCheckRequested } from "../update";
+import { openExtensionSettingsDialog } from "../extension-settings";
 
 /** Matches package.json `opencode-cli-sidebar.fontSize` bounds/default. */
 const MIN_FONT_SIZE = 6;
@@ -248,6 +249,8 @@ export function setupSettingsButton(): void {
         }
       } else if (action === "keyboardShortcuts") {
         postMessage({ type: "openKeyboardShortcuts" });
+      } else if (action === "settings") {
+        openExtensionSettingsDialog();
       } else {
         postMessage({ type: "openSettings" });
       }

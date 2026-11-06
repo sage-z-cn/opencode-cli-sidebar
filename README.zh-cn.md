@@ -180,12 +180,8 @@
 | -------------------------------------- | ------- | ----------------- | ----------------------------------------- |
 | `opencode-cli-sidebar.fontSize`         | number  | `12`              | 终端字号（像素，6-25）                    |
 | `opencode-cli-sidebar.fontFamily`       | string  | Nerd Font 字体栈* | 终端字体族                                |
-| `opencode-cli-sidebar.cursorBlink`      | boolean | `true`            | 启用光标闪烁                              |
-| `opencode-cli-sidebar.cursorStyle`      | string  | `"block"`         | 光标样式：`block`、`underline`、`bar`     |
-| `opencode-cli-sidebar.scrollback`       | number  | `10000`           | 回滚缓冲区最大行数（0-100000）            |
 | `opencode-cli-sidebar.autoFocusOnSend`  | boolean | `true`            | 发送文件引用后自动聚焦侧边栏              |
 | `opencode-cli-sidebar.fileSendMode`     | string  | `"attachment"`    | 文件发送方式：`attachment` 以附件发送，失败或超限时回退路径文本；`path` 始终发送路径文本 |
-| `opencode-cli-sidebar.autoStartOnOpen`  | boolean | `true`            | 侧边栏打开时自动启动 OpenCode               |
 | `opencode-cli-sidebar.shellPath`        | string  | `""`              | 自定义 Shell 路径（空 = VS Code 默认）    |
 | `opencode-cli-sidebar.shellArgs`        | array   | `[]`              | 自定义 Shell 参数                         |
 | `opencode-cli-sidebar.sendKeybindingsToShell` | boolean | `true`       | 将 Ctrl/Cmd 快捷键发送到终端              |
@@ -209,7 +205,6 @@
 | `opencode-cli-sidebar.opencode.commandPath`  | string  | `"opencode"` | 启动 OpenCode CLI 的命令或可执行文件路径    |
 | `opencode-cli-sidebar.opencode.args`         | array   | `[]`         | 传给 OpenCode CLI 的额外参数                |
 | `opencode-cli-sidebar.opencode.continueLastSession` | boolean | `true` | 终端启动时续接上一次 OpenCode 会话   |
-| `opencode-cli-sidebar.enableAutoSpawn`       | boolean | `true`       | OpenCode 未运行时自动拉起                  |
 | `opencode-cli-sidebar.startup.coordinate`    | boolean | `true`       | 在多个 VS Code 窗口之间协调 OpenCode 后台服务的启动 |
 
 ### 高级设置
@@ -226,9 +221,6 @@
 {
   "opencode-cli-sidebar.fontSize": 12,
   "opencode-cli-sidebar.fontFamily": "'JetBrainsMono Nerd Font', monospace",
-  "opencode-cli-sidebar.cursorBlink": true,
-  "opencode-cli-sidebar.cursorStyle": "block",
-  "opencode-cli-sidebar.scrollback": 10000,
   "opencode-cli-sidebar.httpTimeout": 5000,
   "opencode-cli-sidebar.autoShareContext": true,
   "opencode-cli-sidebar.startup.coordinate": true,

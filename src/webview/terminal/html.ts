@@ -8,6 +8,10 @@ import {
   openCodeCliSettingsL10nStrings,
   renderOpenCodeCliSettingsModal,
 } from "../opencode-cli-settings/markup";
+import {
+  extensionSettingsL10nStrings,
+  renderExtensionSettingsModal,
+} from "../extension-settings/markup";
 import { openCodeUpdateL10nStrings } from "../update/l10n";
 import { serviceRestartPromptL10nStrings } from "../service-restart-prompt/l10n";
 import { syncL10nStrings } from "../sync/l10n";
@@ -41,6 +45,7 @@ export function renderTerminalHtml({
   const toolbarL10nScript = `<script nonce="${nonce}">window.__TOOLBAR_L10N__=${JSON.stringify(toolbarL10nStrings)};</script>`;
   const keymapL10nScript = `<script nonce="${nonce}">window.__KEYMAP_L10N__=${JSON.stringify(keymapL10nStrings)};</script>`;
   const ocCliSettingsL10nScript = `<script nonce="${nonce}">window.__OC_CLI_SETTINGS_L10N__=${JSON.stringify(openCodeCliSettingsL10nStrings)};</script>`;
+  const extSettingsL10nScript = `<script nonce="${nonce}">window.__EXT_SETTINGS_L10N__=${JSON.stringify(extensionSettingsL10nStrings)};</script>`;
   const ocUpdateL10nScript = `<script nonce="${nonce}">window.__OC_UPDATE_L10N__=${JSON.stringify(openCodeUpdateL10nStrings)};</script>`;
   const uiLanguageScript = `<script nonce="${nonce}">window.__OC_UPDATE_LANG__=${JSON.stringify(uiLanguage)};</script>`;
   const serviceRestartPromptL10nScript = `<script nonce="${nonce}">window.__SERVICE_RESTART_L10N__=${JSON.stringify(serviceRestartPromptL10nStrings)};</script>`;
@@ -61,6 +66,7 @@ export function renderTerminalHtml({
     ${toolbarL10nScript}
     ${keymapL10nScript}
     ${ocCliSettingsL10nScript}
+    ${extSettingsL10nScript}
     ${ocUpdateL10nScript}
     ${uiLanguageScript}
     ${serviceRestartPromptL10nScript}
@@ -82,6 +88,7 @@ export function renderTerminalHtml({
     ${renderKeymapModals()}
     ${renderOpenCodeCliSettingsModal()}
     ${renderSyncUi()}
+    ${renderExtensionSettingsModal()}
     <script nonce="${nonce}" src="${scriptUri}"></script>
   </body>
 </html>`;

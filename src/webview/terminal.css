@@ -2765,3 +2765,294 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
      and the exclusions indent so paths keep their width. */
   .dav-item-group + .dav-item-group { margin-top: 18px; }
 }
+
+/* ── Extension settings dialog ── */
+.eset-overlay {
+  position: fixed; inset: 0; z-index: 3000;
+  background: var(--vscode-widget-shadow, rgba(0, 0, 0, 0.55));
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.eset-overlay.hidden { display: none; }
+.eset-modal {
+  width: min(820px, 100%); max-width: 100%;
+  height: min(620px, calc(100vh - 32px));
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--vscode-editor-background, #161616);
+  border: 1px solid var(--vscode-panel-border, #2e2e2e);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+  color: var(--vscode-foreground, #d4d4d4);
+  font-family: var(--vscode-font-family);
+}
+.eset-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border, #2e2e2e);
+}
+.eset-title-wrap { min-width: 0; }
+.eset-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--vscode-foreground, #d4d4d4); }
+.eset-sub { margin-top: 3px; font-size: 11px; line-height: 1.4; color: var(--vscode-descriptionForeground, #8a8a8a); }
+.eset-header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.eset-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0; border: none; border-radius: 4px;
+  background: none; color: var(--vscode-descriptionForeground, #8a8a8a);
+  cursor: pointer;
+}
+.eset-icon-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12)); color: var(--vscode-foreground, #d4d4d4); }
+.eset-icon-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); }
+
+/* Layer switch: user vs workspace */
+.eset-scope {
+  display: inline-flex; gap: 2px; padding: 2px; border-radius: 6px;
+  background: var(--vscode-input-background, #2a2a2a);
+  border: 1px solid var(--vscode-input-border, transparent);
+}
+.eset-scope-btn {
+  border: none; border-radius: 4px; background: none; font: inherit;
+  font-size: 11px; line-height: 16px; padding: 3px 9px; cursor: pointer;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+.eset-scope-btn:hover:not(:disabled) { color: var(--vscode-foreground, #d4d4d4); }
+.eset-scope-btn.is-on {
+  background: var(--vscode-button-background, #007fd4);
+  color: var(--vscode-button-foreground, #ffffff);
+  font-weight: 600;
+}
+.eset-scope-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.eset-scope-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); outline-offset: 1px; }
+.eset-note {
+  padding: 5px 14px; font-size: 11px; line-height: 1.4;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.06));
+  border-bottom: 1px solid var(--vscode-panel-border, #2e2e2e);
+}
+.eset-note.hidden { display: none; }
+
+.eset-main { flex: 1; min-height: 0; display: flex; }
+.eset-nav {
+  width: 154px; flex-shrink: 0; overflow-y: auto; padding: 8px 0;
+  border-right: 1px solid var(--vscode-panel-border, #2e2e2e);
+}
+.eset-nav-item {
+  display: block; width: 100%; padding: 7px 12px; border: none; background: none;
+  color: var(--vscode-foreground, #d4d4d4); font-size: 12px; font-family: inherit;
+  text-align: left; line-height: 1.35; cursor: pointer;
+  border-left: 2px solid transparent;
+}
+.eset-nav-item:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12)); }
+.eset-nav-item.is-on {
+  background: var(--vscode-list-activeSelectionBackground, rgba(59, 130, 246, 0.18));
+  color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground, #d4d4d4));
+  border-left-color: var(--vscode-focusBorder, #007fd4);
+  font-weight: 600;
+}
+.eset-nav-item:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); outline-offset: -1px; }
+
+.eset-body { flex: 1; min-width: 0; overflow-y: auto; position: relative; }
+.eset-loading {
+  position: absolute; inset: 0; z-index: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; font-size: 12px; pointer-events: none;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+  background: var(--vscode-editor-background, #161616);
+}
+.eset-loading.hidden { display: none; }
+.eset-loading.is-error { color: var(--vscode-errorForeground, #f87171); text-align: center; padding: 0 24px; }
+.eset-loading.is-error .eset-spinner { display: none; }
+.eset-spinner {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  border-top-color: var(--vscode-progressBar-background, var(--vscode-focusBorder, #007fd4));
+  animation: eset-spin 0.8s linear infinite;
+}
+@keyframes eset-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .eset-spinner { animation: none; }
+}
+.eset-panes.is-loading { visibility: hidden; }
+.eset-pane { display: none; }
+.eset-pane.is-on { display: block; }
+.eset-group-intro {
+  padding: 12px 14px 4px; font-size: 11px; line-height: 1.45;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+
+/* One setting per row: copy on the left, control on the right */
+.eset-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, auto);
+  gap: 4px 16px; align-items: start;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border, #2e2e2e);
+}
+.eset-row:last-child { border-bottom: none; }
+.eset-row-text { min-width: 0; }
+.eset-row-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.eset-row-title { font-size: 12.5px; font-weight: 500; color: var(--vscode-foreground, #d4d4d4); }
+.eset-row-desc {
+  margin-top: 2px; font-size: 11px; line-height: 1.45;
+  color: var(--vscode-descriptionForeground, #8a8a8a); overflow-wrap: anywhere;
+}
+/* Layer note: which layer wins when the visible value is not editable here */
+.eset-row-layer {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px;
+  margin-top: 3px; font-size: 11px; line-height: 1.45;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+.eset-row-layer.hidden { display: none; }
+.eset-layer-action {
+  border: none; background: none; padding: 0; margin: 0; font: inherit;
+  font-size: 11px; cursor: pointer;
+  color: var(--vscode-textLink-foreground, var(--vscode-focusBorder, #007fd4));
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.eset-layer-action:hover { color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground, #007fd4)); }
+.eset-layer-action:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); outline-offset: 2px; }
+.eset-layer-action.hidden { display: none; }
+/* Layer state used to sit here as a dot; only the font family keeps a reset. */
+.eset-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.eset-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.eset-reset {
+  border: none; background: none; padding: 2px 4px; border-radius: 3px;
+  font: inherit; font-size: 11px; cursor: pointer;
+  color: var(--vscode-textLink-foreground, var(--vscode-focusBorder, #007fd4));
+}
+.eset-reset:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12)); }
+.eset-reset:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); }
+.eset-reset.hidden { display: none; }
+
+.eset-input, .eset-select, .eset-textarea {
+  box-sizing: border-box; min-width: 0;
+  padding: 4px 8px; border-radius: 4px; font-size: 12px;
+  font-family: inherit;
+  border: 1px solid var(--vscode-input-border, transparent);
+  background: var(--vscode-input-background, #2a2a2a);
+  color: var(--vscode-input-foreground, var(--vscode-foreground, #d4d4d4));
+}
+.eset-input:focus, .eset-select:focus, .eset-textarea:focus {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+.eset-input { width: 210px; }
+.eset-number { width: 84px; font-variant-numeric: tabular-nums; }
+.eset-select { width: auto; min-width: 110px; max-width: 210px; }
+.eset-textarea {
+  width: 100%; min-height: 54px; resize: vertical; line-height: 1.5;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+.eset-row.is-stacked { grid-template-columns: minmax(0, 1fr); }
+.eset-row.is-stacked .eset-control {
+  flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 6px;
+}
+
+/* Boolean switch */
+.eset-switch { position: relative; display: inline-flex; width: 34px; height: 18px; flex-shrink: 0; }
+.eset-switch input {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  margin: 0; opacity: 0; cursor: pointer;
+}
+.eset-switch-track {
+  position: absolute; inset: 0; pointer-events: none;
+  border-radius: 9px;
+  border: 1px solid var(--vscode-checkbox-border, transparent);
+  background: var(--vscode-checkbox-background, #3a3a3a);
+  transition: background-color 0.12s ease;
+}
+.eset-switch-track::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--vscode-checkbox-foreground, #d4d4d4);
+  transition: transform 0.12s ease;
+}
+.eset-switch input:checked + .eset-switch-track {
+  background: var(--vscode-focusBorder, #007fd4);
+  border-color: transparent;
+}
+.eset-switch input:checked + .eset-switch-track::after {
+  transform: translateX(16px);
+  background: #ffffff;
+}
+.eset-switch input:focus-visible + .eset-switch-track {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4); outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .eset-switch-track, .eset-switch-track::after { transition: none; }
+}
+
+/* Diagnostic level checkboxes */
+.eset-checks { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px 12px; }
+.eset-check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
+.eset-check input[type="checkbox"] { margin: 0; accent-color: var(--vscode-focusBorder, #007fd4); }
+
+/* Inline write failure */
+.eset-row-error {
+  margin-top: 4px; font-size: 11px; line-height: 1.45;
+  color: var(--vscode-errorForeground, #f87171);
+}
+.eset-row-error.hidden { display: none; }
+.eset-row.is-invalid .eset-input,
+.eset-row.is-invalid .eset-select,
+.eset-row.is-invalid .eset-textarea {
+  border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, #ef4444));
+}
+
+/* Config sync pointer group */
+.eset-sync { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 16px 14px; }
+.eset-sync-title { font-size: 12.5px; font-weight: 600; color: var(--vscode-foreground, #d4d4d4); }
+.eset-sync-text {
+  max-width: 56ch; font-size: 11.5px; line-height: 1.55;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+
+/* Footer: transient save status + escape hatches */
+.eset-footer {
+  display: flex; align-items: center; gap: 8px; padding: 8px 14px;
+  border-top: 1px solid var(--vscode-panel-border, #2e2e2e);
+  background: var(--vscode-editorWidget-background, #202020);
+}
+.eset-status {
+  flex: 1; min-width: 0; font-size: 11px;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.eset-status.is-ok { color: var(--vscode-charts-green, #23a123); }
+.eset-status.is-error { color: var(--vscode-errorForeground, #f87171); }
+.eset-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: none; border-radius: 3px; padding: 3px 10px;
+  font-size: 11px; font-family: var(--vscode-font-family); cursor: pointer;
+  background: var(--vscode-button-background, #007fd4);
+  color: var(--vscode-button-foreground, #ffffff);
+}
+.eset-btn:hover { background: var(--vscode-button-hoverBackground, #026ec1); }
+.eset-btn--secondary {
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.12));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground, #d4d4d4));
+}
+.eset-btn--secondary:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.18)); }
+.eset-btn:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); }
+
+/* Narrow panes: the control drops below its copy, nav becomes a tab strip */
+@media (max-width: 520px) {
+  .eset-row { grid-template-columns: minmax(0, 1fr); }
+  .eset-control { justify-content: flex-start; }
+  .eset-input { width: 100%; }
+  .eset-select { max-width: 100%; }
+  .eset-checks { justify-content: flex-start; }
+}
+@media (max-width: 419px) {
+  .eset-main { flex-direction: column; }
+  .eset-nav {
+    width: auto; flex-shrink: 0; display: flex; flex-wrap: nowrap;
+    overflow-x: auto; padding: 0 4px;
+    border-right: none; border-bottom: 1px solid var(--vscode-panel-border, #2e2e2e);
+  }
+  .eset-nav-item {
+    width: auto; flex-shrink: 0; white-space: nowrap; padding: 6px 8px;
+    border-left: none; border-bottom: 2px solid transparent;
+  }
+  .eset-nav-item.is-on {
+    border-left-color: transparent;
+    border-bottom-color: var(--vscode-focusBorder, #007fd4);
+  }
+}

@@ -189,12 +189,8 @@ Available settings in VS Code settings (`Cmd+,` / `Ctrl+,`):
 | ------------------------------------ | ------- | ----------------- | ---------------------------------------------------- |
 | `opencode-cli-sidebar.fontSize`       | number  | `12`              | Terminal font size in pixels (6-25)                  |
 | `opencode-cli-sidebar.fontFamily`     | string  | Nerd Font stack\* | Terminal font family                                 |
-| `opencode-cli-sidebar.cursorBlink`    | boolean | `true`            | Enable cursor blinking                               |
-| `opencode-cli-sidebar.cursorStyle`    | string  | `"block"`         | Cursor style: `block`, `underline`, or `bar`         |
-| `opencode-cli-sidebar.scrollback`     | number  | `10000`           | Maximum lines in scrollback buffer (0-100000)        |
 | `opencode-cli-sidebar.autoFocusOnSend` | boolean | `true`            | Auto-focus sidebar after sending file references     |
 | `opencode-cli-sidebar.fileSendMode` | string | `"attachment"` | File send method: `attachment` (falls back to path text) or `path` |
-| `opencode-cli-sidebar.autoStartOnOpen` | boolean | `true`            | Automatically start OpenCode when sidebar is opened     |
 | `opencode-cli-sidebar.shellPath`      | string  | `""`              | Custom shell path (empty = VS Code default)          |
 | `opencode-cli-sidebar.shellArgs`      | array   | `[]`              | Custom shell arguments                               |
 | `opencode-cli-sidebar.sendKeybindingsToShell` | boolean | `true` | Send Ctrl/Cmd shortcuts to terminal |
@@ -218,7 +214,6 @@ Available settings in VS Code settings (`Cmd+,` / `Ctrl+,`):
 | `opencode-cli-sidebar.opencode.commandPath`    | string  | `"opencode"` | Command or executable path used to launch the OpenCode CLI |
 | `opencode-cli-sidebar.opencode.args`           | array   | `[]`         | Extra arguments passed to the OpenCode CLI             |
 | `opencode-cli-sidebar.opencode.continueLastSession` | boolean | `true`   | Continue the last OpenCode session when the terminal starts |
-| `opencode-cli-sidebar.enableAutoSpawn`         | boolean | `true`       | Auto-spawn OpenCode if it is not running               |
 | `opencode-cli-sidebar.startup.coordinate`      | boolean | `true`       | Coordinate OpenCode background service startup across VS Code windows |
 
 ### Advanced Settings
@@ -235,9 +230,6 @@ Available settings in VS Code settings (`Cmd+,` / `Ctrl+,`):
 {
   "opencode-cli-sidebar.fontSize": 12,
   "opencode-cli-sidebar.fontFamily": "'JetBrainsMono Nerd Font', monospace",
-  "opencode-cli-sidebar.cursorBlink": true,
-  "opencode-cli-sidebar.cursorStyle": "block",
-  "opencode-cli-sidebar.scrollback": 10000,
   "opencode-cli-sidebar.httpTimeout": 5000,
   "opencode-cli-sidebar.autoShareContext": true,
   "opencode-cli-sidebar.startup.coordinate": true,

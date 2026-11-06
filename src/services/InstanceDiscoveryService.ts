@@ -32,7 +32,6 @@ interface ProcessCandidate {
 
 export class InstanceDiscoveryService {
   private instances: OpenCodeInstance[] = [];
-  private autoSpawn: boolean;
   private enableProcessScan: boolean;
   private disposed = false;
   private readonly instanceStore?: InstanceStore;
@@ -42,7 +41,6 @@ export class InstanceDiscoveryService {
 
   constructor(instanceStore?: InstanceStore) {
     const config = vscode.workspace.getConfiguration("opencode-cli-sidebar");
-    this.autoSpawn = config.get<boolean>("enableAutoSpawn", true);
     this.enableProcessScan = config.get<boolean>("enableProcessScan", true);
     this.instanceStore = instanceStore;
   }
@@ -126,13 +124,11 @@ export class InstanceDiscoveryService {
       return [...this.instances];
     }
 
-    if (this.autoSpawn) {
-      const spawned = await this.spawnOpenCode();
-      if (spawned) {
-        this.instances = [spawned];
-        this.syncToInstanceStore(this.instances);
-        return [...this.instances];
-      }
+    const spawned = await this.spawnOpenCode();
+    if (spawned) {
+      this.instances = [spawned];
+      this.syncToInstanceStore(this.instances);
+      return [...this.instances];
     }
 
     this.instances = [];

@@ -20,6 +20,7 @@ import {
 } from "../types";
 import type {
   CliInstallPromptAction,
+  ExtensionSettingsScope,
   ServiceRestartPromptAction,
   TerminalBackendType,
 } from "../types";
@@ -86,6 +87,16 @@ export interface MessageRouterProviderBridge {
   ): Promise<void>;
   cancelOpenCodeChangelogTranslation(requestId: string): void;
   sendChangelogToOpenCode(text: string): Promise<void>;
+  requestExtensionSettingsData(): Promise<void>;
+  updateExtensionSetting(
+    key: string,
+    value: unknown,
+    scope: ExtensionSettingsScope,
+  ): Promise<void>;
+  resetExtensionSetting(
+    key: string,
+    scope: ExtensionSettingsScope,
+  ): Promise<void>;
 }
 
 export class MessageRouter {
@@ -307,6 +318,33 @@ export class MessageRouter {
       case "cancelOpenCodeChangelogTranslation":
         if (typeof message.requestId === "string") {
           this.provider.cancelOpenCodeChangelogTranslation(message.requestId);
+        }
+        break;
+      /* ===================== Extension settings dialog ===================== */
+      case "requestExtensionSettingsData":
+        await this.provider.requestExtensionSettingsData();
+        break;
+      case "updateExtensionSetting":
+        if (
+          typeof message.key === "string" &&
+          (message.scope === "user" || message.scope === "workspace")
+        ) {
+          await this.provider.updateExtensionSetting(
+            message.key,
+            message.value,
+            message.scope,
+          );
+        }
+        break;
+      case "resetExtensionSetting":
+        if (
+          typeof message.key === "string" &&
+          (message.scope === "user" || message.scope === "workspace")
+        ) {
+          await this.provider.resetExtensionSetting(
+            message.key,
+            message.scope,
+          );
         }
         break;
       /* ===================== WebDAV config sync ===================== */

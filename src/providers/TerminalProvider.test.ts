@@ -69,21 +69,16 @@ describe("TerminalProvider", () => {
   });
 
   function mockConfiguration(options?: {
-    autoStartOnOpen?: boolean;
     focusIndicatorMode?: string;
     focusIndicatorBorderWidth?: number;
   }) {
     const {
-      autoStartOnOpen = false,
       focusIndicatorMode = "bottomBorder",
       focusIndicatorBorderWidth,
     } = options ?? {};
 
     const configuration = {
       get: vi.fn((key: string, defaultValue?: unknown) => {
-        if (key === "autoStartOnOpen") {
-          return autoStartOnOpen;
-        }
         if (key === "httpTimeout") {
           return 5000;
         }
@@ -98,6 +93,7 @@ describe("TerminalProvider", () => {
         }
         return defaultValue;
       }),
+      inspect: vi.fn(() => undefined),
       update: vi.fn(),
     };
 
@@ -181,8 +177,8 @@ describe("TerminalProvider", () => {
     expect(view.webview.html).toContain("webview.js");
   });
 
-  it("does not start restorable disconnected process on webview view resolve", async () => {
-    mockConfiguration({ autoStartOnOpen: false });
+  it("restores a restorable disconnected process on webview view resolve", async () => {
+    mockConfiguration();
     const instanceStore = new InstanceStore();
     instanceStore.upsert({
       config: { id: "default" },
@@ -191,9 +187,13 @@ describe("TerminalProvider", () => {
     });
 
     provider = createProvider({ instanceStore });
+    const restoreSpy = vi
+      .spyOn(provider as any, "promptNativeRestore")
+      .mockResolvedValue(true);
     resolveProvider(provider);
     await flushAsyncStartup();
 
+    expect(restoreSpy).toHaveBeenCalledTimes(1);
     expect((provider as any).isStarted()).toBe(false);
   });
 
@@ -390,6 +390,125 @@ describe("TerminalProvider", () => {
     });
 
     expect(getTerminalConfigMessages(view).length).toBe(previousCount);
+  });
+
+  it("reposts terminal config when the font family changes", () => {
+    mockConfiguration();
+    provider = createProvider();
+    const { view } = resolveProvider(provider);
+    const previousCount = getTerminalConfigMessages(view).length;
+    const listener = getConfigurationChangeListener();
+
+    listener({
+      affectsConfiguration: (section: string) =>
+        section === "opencode-cli-sidebar.fontFamily",
+    });
+
+    expect(getTerminalConfigMessages(view).length).toBe(previousCount + 1);
+  });
+
+  it("reposts terminal config when sendKeybindingsToShell changes", () => {
+    mockConfiguration();
+    provider = createProvider();
+    const { view } = resolveProvider(provider);
+    const previousCount = getTerminalConfigMessages(view).length;
+    const listener = getConfigurationChangeListener();
+
+    listener({
+      affectsConfiguration: (section: string) =>
+        section === "opencode-cli-sidebar.sendKeybindingsToShell",
+    });
+
+    expect(getTerminalConfigMessages(view).length).toBe(previousCount + 1);
+  });
+
+  it("posts the extension settings snapshot on request", async () => {
+    mockConfiguration();
+    provider = createProvider();
+    const { view } = resolveProvider(provider);
+
+    await provider.requestExtensionSettingsData();
+
+    const message = vi
+      .mocked(view.webview.postMessage)
+      .mock.calls.map((call: unknown[]) => call[0] as any)
+      .find((entry: any) => entry?.type === "extensionSettingsData");
+
+    expect(message).toBeDefined();
+    expect(message.settings.hasWorkspace).toBe(false);
+    expect(message.settings.defaults.focusIndicatorMode).toBe("bottomBorder");
+    expect(Object.keys(message.settings.values)).toHaveLength(20);
+  });
+
+  it("persists an extension setting and pushes a success receipt with a fresh snapshot", async () => {
+    const configuration = mockConfiguration();
+    provider = createProvider();
+    const { view } = resolveProvider(provider);
+
+    await provider.updateExtensionSetting("fontFamily", "Fira Code", "user");
+
+    expect(configuration.update).toHaveBeenCalledWith(
+      "fontFamily",
+      "Fira Code",
+      vscode.ConfigurationTarget.Global,
+    );
+    const messages = vi
+      .mocked(view.webview.postMessage)
+      .mock.calls.map((call: unknown[]) => call[0] as any);
+    expect(messages).toContainEqual({
+      type: "extensionSettingsSaveResult",
+      ok: true,
+      key: "fontFamily",
+    });
+    expect(
+      messages.some((entry: any) => entry?.type === "extensionSettingsData"),
+    ).toBe(true);
+  });
+
+  it("resets an extension setting layer and reports success", async () => {
+    const configuration = mockConfiguration();
+    provider = createProvider();
+    const { view } = resolveProvider(provider);
+
+    await provider.resetExtensionSetting("httpTimeout", "user");
+
+    expect(configuration.update).toHaveBeenCalledWith(
+      "httpTimeout",
+      undefined,
+      vscode.ConfigurationTarget.Global,
+    );
+    const messages = vi
+      .mocked(view.webview.postMessage)
+      .mock.calls.map((call: unknown[]) => call[0] as any);
+    expect(messages).toContainEqual({
+      type: "extensionSettingsSaveResult",
+      ok: true,
+      key: "httpTimeout",
+    });
+  });
+
+  it("reports a failed extension setting write without refreshing the snapshot", async () => {
+    const configuration = mockConfiguration();
+    configuration.update.mockRejectedValueOnce(
+      new Error("This value cannot be saved."),
+    );
+    provider = createProvider();
+    const { view } = resolveProvider(provider);
+
+    await provider.updateExtensionSetting("httpTimeout", 5000, "user");
+
+    const messages = vi
+      .mocked(view.webview.postMessage)
+      .mock.calls.map((call: unknown[]) => call[0] as any);
+    expect(messages).toContainEqual({
+      type: "extensionSettingsSaveResult",
+      ok: false,
+      key: "httpTimeout",
+      error: "This value cannot be saved.",
+    });
+    expect(
+      messages.some((entry: any) => entry?.type === "extensionSettingsData"),
+    ).toBe(false);
   });
 
   describe("OpenCode self-update UI bridge", () => {

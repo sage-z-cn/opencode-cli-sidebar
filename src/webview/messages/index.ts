@@ -6,6 +6,10 @@ import { postMessage } from "../shared/vscode-api";
 import { scheduleRefresh } from "../shared/utils";
 import { fitFullWidth } from "../terminal/fit";
 import { isInstallPromptVisible } from "../update";
+import {
+  applyExtensionSettingsData,
+  handleExtensionSettingsSaveResult,
+} from "../extension-settings";
 
 export interface MessageHandlerCallbacks {
   onActiveSession: (
@@ -269,6 +273,14 @@ export function createMessageHandler(
 
         case "webdavLog":
           callbacks.onWebdavLog?.(message);
+          break;
+
+        case "extensionSettingsData":
+          applyExtensionSettingsData(message.settings);
+          break;
+
+        case "extensionSettingsSaveResult":
+          handleExtensionSettingsSaveResult(message);
           break;
       }
     },

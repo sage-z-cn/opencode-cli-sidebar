@@ -27,8 +27,26 @@ export interface KeyboardHandlerOptions {
   sendKeybindingsToShell?: boolean;
 }
 
+/**
+ * Live state read by every keyboard handler. The handler closes over this
+ * binding, so `setSendKeybindingsToShell` updates behavior without rebuilding
+ * the handler or reattaching it to xterm.
+ */
+let sendKeybindingsToShell = false;
+
+/**
+ * Enable or disable passing workbench primary modifier chords to the
+ * terminal at runtime, e.g. after the `terminalConfig` host message.
+ */
+export function setSendKeybindingsToShell(enabled: boolean): void {
+  sendKeybindingsToShell = enabled;
+}
+
 export function createKeyboardHandler(options: KeyboardHandlerOptions = {}) {
   const isMac = options.isMac ?? detectMacPlatform();
+  // The webview owns a single xterm instance, so the handler created here
+  // adopts the configured state as the shared baseline.
+  sendKeybindingsToShell = options.sendKeybindingsToShell === true;
 
   const isWorkbenchPrimaryModifier = (event: KeyboardEvent): boolean =>
     isMac
@@ -101,7 +119,7 @@ export function createKeyboardHandler(options: KeyboardHandlerOptions = {}) {
 
     if (isWorkbenchPrimaryModifier(event)) {
       if (
-        options.sendKeybindingsToShell ||
+        sendKeybindingsToShell ||
         ALWAYS_TERMINAL_CONTROL.has(event.code)
       ) {
         event.preventDefault();

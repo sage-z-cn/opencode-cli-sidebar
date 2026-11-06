@@ -22,7 +22,7 @@
 ## Config
 
 - `.vscode-test.js`: `workspaceFolder: src/test/e2e/fixtures/workspace`, `mocha.ui: "tdd"`, `timeout: 20000` (20s).
-- Fixture workspace (`fixtures/workspace/.vscode/settings.json`) sets `opencode-cli-sidebar.autoStartOnOpen: false` so activation tests can control startup.
+- Fixture workspace (`fixtures/workspace/.vscode/settings.json`) is empty: the extension now auto-starts OpenCode whenever the view becomes visible, so activation tests must not resolve the view.
 
 ## File Layout
 

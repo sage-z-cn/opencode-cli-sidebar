@@ -31,13 +31,12 @@ suite("Command registration", () => {
     );
   });
 
-  test("uses opencode auto-start defaults", async () => {
+  test("uses opencode command defaults", async () => {
     const extension = await activateExtension();
 
     const properties = extension.packageJSON.contributes.configuration
       .properties as Record<string, { default: unknown }>;
 
-    assert.strictEqual(properties["opencode-cli-sidebar.autoStartOnOpen"].default, true);
     assert.strictEqual(
       properties["opencode-cli-sidebar.opencode.commandPath"].default,
       "opencode",

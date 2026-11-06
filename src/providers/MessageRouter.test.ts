@@ -146,6 +146,9 @@ describe("MessageRouter", () => {
       dismissOpenCodeUpdate: vi.fn(),
       answerCliInstallPrompt: vi.fn(async () => undefined),
       requestOpenCodeChangelog: vi.fn(async () => undefined),
+      requestExtensionSettingsData: vi.fn(async () => undefined),
+      updateExtensionSetting: vi.fn(async () => undefined),
+      resetExtensionSetting: vi.fn(async () => undefined),
     };
   }
 
@@ -414,6 +417,55 @@ describe("MessageRouter", () => {
       undefined,
       "installed",
     );
+  });
+
+  it("routes extension settings dialog messages", async () => {
+    await router.handleMessage({ type: "requestExtensionSettingsData" });
+    await router.handleMessage({
+      type: "updateExtensionSetting",
+      key: "fontFamily",
+      value: "Fira Code",
+      scope: "user",
+    });
+    await router.handleMessage({
+      type: "resetExtensionSetting",
+      key: "fontFamily",
+      scope: "workspace",
+    });
+
+    expect(provider.requestExtensionSettingsData).toHaveBeenCalledTimes(1);
+    expect(provider.updateExtensionSetting).toHaveBeenCalledWith(
+      "fontFamily",
+      "Fira Code",
+      "user",
+    );
+    expect(provider.resetExtensionSetting).toHaveBeenCalledWith(
+      "fontFamily",
+      "workspace",
+    );
+  });
+
+  it("drops extension settings messages with invalid payload shapes", async () => {
+    await router.handleMessage({
+      type: "updateExtensionSetting",
+      key: 42,
+      value: true,
+      scope: "user",
+    } as never);
+    await router.handleMessage({
+      type: "updateExtensionSetting",
+      key: "fontFamily",
+      value: "Fira Code",
+      scope: "global",
+    } as never);
+    await router.handleMessage({
+      type: "resetExtensionSetting",
+      key: "fontFamily",
+      scope: 1,
+    } as never);
+
+    expect(provider.updateExtensionSetting).not.toHaveBeenCalled();
+    expect(provider.resetExtensionSetting).not.toHaveBeenCalled();
   });
 
   it("routes all three install-prompt answers and drops invalid actions", async () => {
@@ -1357,6 +1409,9 @@ describe("MessageRouter WebDAV sync branches", () => {
       answerCliInstallPrompt: vi.fn(async () => undefined),
       requestOpenCodeChangelog: vi.fn(async () => undefined),
       sendChangelogToOpenCode: vi.fn(async () => undefined),
+      requestExtensionSettingsData: vi.fn(async () => undefined),
+      updateExtensionSetting: vi.fn(async () => undefined),
+      resetExtensionSetting: vi.fn(async () => undefined),
     };
     const context =
       new vscode.ExtensionContext() as unknown as vscodeApi.ExtensionContext;

@@ -184,21 +184,6 @@
           "default": "'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'CascadiaCode NF', Menlo, monospace",
           "description": "%configuration.opencode-cli-sidebar.fontFamily.description%"
         },
-        "opencode-cli-sidebar.cursorBlink": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.opencode-cli-sidebar.cursorBlink.description%"
-        },
-        "opencode-cli-sidebar.cursorStyle": {
-          "type": "string",
-          "default": "block",
-          "enum": [
-            "block",
-            "underline",
-            "bar"
-          ],
-          "description": "%configuration.opencode-cli-sidebar.cursorStyle.description%"
-        },
         "opencode-cli-sidebar.focusIndicatorMode": {
           "type": "string",
           "default": "bottomBorder",
@@ -215,13 +200,6 @@
           "minimum": 1,
           "maximum": 8,
           "description": "%configuration.opencode-cli-sidebar.focusIndicatorBorderWidth.description%"
-        },
-        "opencode-cli-sidebar.scrollback": {
-          "type": "number",
-          "default": 10000,
-          "minimum": 0,
-          "maximum": 100000,
-          "description": "%configuration.opencode-cli-sidebar.scrollback.description%"
         },
         "opencode-cli-sidebar.autoFocusOnSend": {
           "type": "boolean",
@@ -240,11 +218,6 @@
           ],
           "default": "attachment",
           "description": "%configuration.opencode-cli-sidebar.fileSendMode.description%"
-        },
-        "opencode-cli-sidebar.autoStartOnOpen": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.opencode-cli-sidebar.autoStartOnOpen.description%"
         },
         "opencode-cli-sidebar.shellPath": {
           "type": "string",
@@ -300,11 +273,6 @@
           "minimum": 100,
           "maximum": 2000,
           "description": "%configuration.opencode-cli-sidebar.maxDiagnosticLength.description%"
-        },
-        "opencode-cli-sidebar.enableAutoSpawn": {
-          "type": "boolean",
-          "default": true,
-          "description": "%configuration.opencode-cli-sidebar.enableAutoSpawn.description%"
         },
         "opencode-cli-sidebar.startup.coordinate": {
           "type": "boolean",

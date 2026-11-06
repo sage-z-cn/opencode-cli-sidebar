@@ -30,6 +30,7 @@ import {
   ServiceRestartPromptAction,
   TerminalBackendType,
   CliInstallPromptAction,
+  ExtensionSettingsScope,
   WebviewMessage,
 } from "../types";
 import {
@@ -49,6 +50,7 @@ import type { StartupGate } from "../services/StartupCoordinator";
 import { TerminalBackendRegistry } from "../services/terminalBackends";
 import { OpenCodeKeymapService } from "../services/OpenCodeKeymapService";
 import { OpenCodeCliSettingsService } from "../services/OpenCodeCliSettingsService";
+import { ExtensionSettingsService } from "../services/ExtensionSettingsService";
 import {
   OpenCodeUpdateService,
   type OpenCodeUpdateStatus,
@@ -75,6 +77,7 @@ export class TerminalProvider
   private readonly dataThrottleService: DataThrottleService;
   private readonly keymapService = new OpenCodeKeymapService();
   private readonly openCodeCliSettingsService = new OpenCodeCliSettingsService();
+  private readonly extensionSettingsService = new ExtensionSettingsService();
   private readonly pendingWebviewMessages: HostMessage[] = [];
   private pendingQueueablePostChecks = 0;
   private readonly disposables: vscode.Disposable[] = [];
@@ -205,6 +208,11 @@ export class TerminalProvider
         this.cancelOpenCodeChangelogTranslation(requestId),
       sendChangelogToOpenCode: (text) =>
         this.sendPrompt(text, { asPaste: true }),
+      requestExtensionSettingsData: () => this.requestExtensionSettingsData(),
+      updateExtensionSetting: (key, value, scope) =>
+        this.updateExtensionSetting(key, value, scope),
+      resetExtensionSetting: (key, scope) =>
+        this.resetExtensionSetting(key, scope),
     };
 
     this.messageRouter = new MessageRouter(
@@ -246,6 +254,10 @@ export class TerminalProvider
           ) ||
           event.affectsConfiguration(
             "opencode-cli-sidebar.focusIndicatorBorderWidth",
+          ) ||
+          event.affectsConfiguration("opencode-cli-sidebar.fontFamily") ||
+          event.affectsConfiguration(
+            "opencode-cli-sidebar.sendKeybindingsToShell",
           )
         ) {
           this.postTerminalConfig();
@@ -311,8 +323,6 @@ export class TerminalProvider
     this.postCurrentSessionState(webviewView.webview);
     this.flushPendingWebviewMessages(webviewView.webview);
 
-    const config = vscode.workspace.getConfiguration("opencode-cli-sidebar");
-    const autoStartOnOpen = config.get<boolean>("autoStartOnOpen", true);
     const visibilityListener = webviewView.onDidChangeVisibility(() => {
       if (!webviewView.visible) {
         return;
@@ -327,7 +337,7 @@ export class TerminalProvider
         this.postTerminalConfig();
       }
 
-      if (autoStartOnOpen && !this.isStarted()) {
+      if (!this.isStarted()) {
         if (this.getNativeRestoreRecord()) {
           void this.promptNativeRestore().then((restored) => {
             if (!restored) {
@@ -342,22 +352,16 @@ export class TerminalProvider
     });
     webviewView.onDidDispose(() => visibilityListener.dispose());
 
-    if (autoStartOnOpen) {
-      if (webviewView.visible) {
-        if (!this.isStarted()) {
-          if (this.getNativeRestoreRecord()) {
-            void this.promptNativeRestore().then((restored) => {
-              if (!restored) {
-                void this.startOpenCode();
-              }
-            });
-          } else {
+    if (webviewView.visible && !this.isStarted()) {
+      if (this.getNativeRestoreRecord()) {
+        void this.promptNativeRestore().then((restored) => {
+          if (!restored) {
             void this.startOpenCode();
           }
-        }
+        });
+      } else {
+        void this.startOpenCode();
       }
-    } else if (webviewView.visible && !this.isStarted()) {
-      void this.promptNativeRestore();
     }
   }
 
@@ -546,6 +550,83 @@ export class TerminalProvider
       });
     }
     await this.requestKeymapData();
+  }
+
+  // ── Extension settings dialog bridge ──
+
+  /** Replies with every setting value, authored layer and default. */
+  public async requestExtensionSettingsData(): Promise<void> {
+    try {
+      const settings = this.extensionSettingsService.readSnapshot();
+      this.postWebviewMessage({ type: "extensionSettingsData", settings });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `[TerminalProvider] extension settings snapshot failed: ${message}`,
+      );
+      this.postWebviewMessage({
+        type: "extensionSettingsSaveResult",
+        ok: false,
+        error: message,
+      });
+    }
+  }
+
+  /** Validates and persists one setting at the requested scope. */
+  public async updateExtensionSetting(
+    key: string,
+    value: unknown,
+    scope: ExtensionSettingsScope,
+  ): Promise<void> {
+    try {
+      await this.extensionSettingsService.update(key, value, scope);
+      this.postWebviewMessage({
+        type: "extensionSettingsSaveResult",
+        ok: true,
+        key,
+      });
+      await this.requestExtensionSettingsData();
+    } catch (error) {
+      this.postExtensionSettingsFailure("update", key, scope, error);
+    }
+  }
+
+  /** Clears one layer's value so the setting falls back to the next layer. */
+  public async resetExtensionSetting(
+    key: string,
+    scope: ExtensionSettingsScope,
+  ): Promise<void> {
+    try {
+      await this.extensionSettingsService.reset(key, scope);
+      this.postWebviewMessage({
+        type: "extensionSettingsSaveResult",
+        ok: true,
+        key,
+      });
+      await this.requestExtensionSettingsData();
+    } catch (error) {
+      this.postExtensionSettingsFailure("reset", key, scope, error);
+    }
+  }
+
+  private postExtensionSettingsFailure(
+    action: "update" | "reset",
+    key: string,
+    scope: ExtensionSettingsScope,
+    error: unknown,
+  ): void {
+    const message = error instanceof Error ? error.message : String(error);
+    // The key and scope stay in the log; the receipt carries only the
+    // short, user-facing reason.
+    this.logger.error(
+      `[TerminalProvider] extension setting ${action} failed (${key}, ${scope}): ${message}`,
+    );
+    this.postWebviewMessage({
+      type: "extensionSettingsSaveResult",
+      ok: false,
+      key,
+      error: message,
+    });
   }
 
   public async requestOpenCodeCliSettingsData(): Promise<void> {
@@ -1782,12 +1863,9 @@ export class TerminalProvider
         "fontFamily",
         "'JetBrainsMono Nerd Font', 'FiraCode Nerd Font', 'CascadiaCode NF', Menlo, monospace",
       ),
-      cursorBlink: config.get<boolean>("cursorBlink", true),
-      cursorStyle: config.get<"block" | "underline" | "bar">(
-        "cursorStyle",
-        "block",
-      ),
-      scrollback: config.get<number>("scrollback", 10000),
+      cursorBlink: true,
+      cursorStyle: "block",
+      scrollback: 10000,
       sendKeybindingsToShell: config.get<boolean>(
         "sendKeybindingsToShell",
         true,
