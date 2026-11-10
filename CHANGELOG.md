@@ -5,6 +5,14 @@ All notable changes to the "OpenCode CLI Sidebar" extension will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+#### 5.7.1
+**New Features**
+- **Links**: Handle CJK-glued paths and URLs and replace the web-links addon for more reliable link detection.
+- **L10n**: Add Simplified Chinese (zh-cn) translations.
+
+**Improvements**
+- **L10n**: Restructure sync panel strings for easier localization.
+
 #### 5.7.0
 **New Features**
 - **Settings**: Add an extension settings webview panel and remove deprecated settings.
