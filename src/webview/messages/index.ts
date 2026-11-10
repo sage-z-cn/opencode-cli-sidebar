@@ -28,6 +28,9 @@ export interface MessageHandlerCallbacks {
   onStartupPhase?: (
     message: Extract<HostMessage, { type: "startupPhase" }>,
   ) => void;
+  onPreStartSyncResult?: (
+    message: Extract<HostMessage, { type: "preStartSyncResult" }>,
+  ) => void;
   onKeymapData?: (
     message: Extract<HostMessage, { type: "keymapData" }>,
   ) => void;
@@ -152,6 +155,10 @@ export function createMessageHandler(
 
         case "startupPhase":
           callbacks.onStartupPhase?.(message);
+          break;
+
+        case "preStartSyncResult":
+          callbacks.onPreStartSyncResult?.(message);
           break;
 
         case "platformInfo":

@@ -7,6 +7,7 @@
  * server/items/conflicts/history/log.
  */
 import { postMessage } from "../shared/vscode-api";
+import { showToast, type ToastTone } from "../shared/toast";
 import type {
   WebDavSyncSnapshot,
   WebDavSyncStatusDelta,
@@ -46,9 +47,7 @@ let state: SyncUiState = initialSyncUiState();
 /** Routes webdavSaveResult feedback: server save vs immediate options/items. */
 let lastSaveKind: "server" | "options" | "items" | null = null;
 
-/** Transient notice (delta.notice) with a 4.5 s TTL. */
-let noticeText = "";
-let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+/** Transient notice TTL; the shared toast owns the timer itself. */
 const NOTICE_TTL_MS = 4500;
 
 /** Add-item inline error with the same TTL. The owning input gets an
@@ -196,16 +195,10 @@ function renderIcon(): void {
 
 // ── Notice / inline errors ──
 
-function showNotice(text: string): void {
-  noticeText = text;
-  if (noticeTimer) {
-    clearTimeout(noticeTimer);
-  }
-  noticeTimer = setTimeout(() => {
-    noticeText = "";
-    render();
-  }, NOTICE_TTL_MS);
-  render();
+function showNotice(text: string, tone: ToastTone = "info"): void {
+  // The panel footer keeps its permanent status line; transient feedback is
+  // a toast so it never fights that line for the same element.
+  showToast({ text, tone, ttlMs: NOTICE_TTL_MS });
 }
 
 // ── Global render ──
@@ -215,9 +208,6 @@ function render(): void {
   updateSyncTooltip(state);
   renderPanel(state);
   renderSaveDirty(state);
-  if (noticeText) {
-    el("dav-foot-st").textContent = noticeText;
-  }
 }
 
 // ── Host message entry points ──
@@ -275,10 +265,10 @@ export function applyWebdavSaveResult(ok: boolean, error?: string): void {
     clearServerPassword();
     return;
   }
-  // 即改即生效的成功反馈保持低调：瞬时 notice。
+  // 即改即生效的成功反馈保持低调：瞬时 toast。
   // 来源不明的回执不渲染任何内容，避免在服务器页误显“已保存”。
   if (kind === "options" || kind === "items") {
-    showNotice(st.saveOk);
+    showNotice(st.saveOk, "success");
   }
 }
 

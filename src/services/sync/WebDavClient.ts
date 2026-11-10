@@ -45,6 +45,18 @@ export class PreconditionFailedError extends WebDavTransientError {
 }
 
 /**
+ * The caller aborted the request or the wait for a pacing slot. Deliberately
+ * not a `WebDavTransientError`: an abort is a decision, not a server
+ * condition, so the circuit breaker must not count it as a failure.
+ */
+export class WebDavAbortError extends Error {
+  public constructor(message = "WebDAV request aborted") {
+    super(message);
+    this.name = "WebDavAbortError";
+  }
+}
+
+/**
  * Server-side rate limit (429/503): a cooldown to wait out, not a
  * failure. Carries the server's Retry-After hint when available.
  */
@@ -80,6 +92,11 @@ export interface WebDavClientOptions {
   windowMs?: number;
   /** Fired once per request that had to wait for a pacing slot. */
   onRateLimitWait?: (waitedMs: number) => void;
+  /**
+   * Cancels the request and any pacing wait. Used by the launch path, which
+   * cannot afford the minutes a rate-limit cooldown may sleep.
+   */
+  signal?: AbortSignal;
 }
 
 /** Optional conditional-request headers for PUT. */
@@ -304,6 +321,7 @@ export class WebDavClient {
   private readonly maxRequests: number;
   private readonly windowMs: number;
   private readonly onRateLimitWait: ((waitedMs: number) => void) | undefined;
+  private readonly signal: AbortSignal | undefined;
   /** Timestamps of paced requests still inside the sliding window. */
   private readonly requestTimestamps: number[] = [];
 
@@ -337,6 +355,14 @@ export class WebDavClient {
     this.maxRequests = Math.floor(options.maxRequests ?? 0);
     this.windowMs = Math.floor(options.windowMs ?? 0);
     this.onRateLimitWait = options.onRateLimitWait;
+    this.signal = options.signal;
+  }
+
+  /** Fail fast when the caller already aborted before the request began. */
+  private throwIfAborted(): void {
+    if (this.signal?.aborted) {
+      throw new WebDavAbortError();
+    }
   }
 
   /**
@@ -641,6 +667,7 @@ export class WebDavClient {
     if (this.maxRequests < 1 || this.windowMs < 1) {
       return;
     }
+    this.throwIfAborted();
     const startedAt = Date.now();
     let waited = false;
     for (;;) {
@@ -659,15 +686,33 @@ export class WebDavClient {
         1,
       );
       waited = true;
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, sleepMs);
-        timer.unref();
-      });
+      // Sleep in short slices so an abort lands quickly: the full window can
+      // be minutes long and a launch cannot wait for it.
+      await this.sleepInterruptibly(sleepMs);
     }
     if (waited) {
       this.onRateLimitWait?.(Date.now() - startedAt);
     }
     this.requestTimestamps.push(Date.now());
+  }
+
+  /**
+   * Wait out one pacing slice, waking early on abort. The slice length keeps
+   * the abort latency bounded without busy-waiting.
+   */
+  private async sleepInterruptibly(totalMs: number): Promise<void> {
+    const sliceMs = 250;
+    let remaining = totalMs;
+    while (remaining > 0) {
+      this.throwIfAborted();
+      const slice = Math.min(remaining, sliceMs);
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, slice);
+        timer.unref?.();
+      });
+      remaining -= slice;
+    }
+    this.throwIfAborted();
   }
 
   /**
@@ -682,6 +727,7 @@ export class WebDavClient {
     headers: Record<string, string>,
     body: Buffer | undefined,
   ): Promise<RawResponse> {
+    this.throwIfAborted();
     const issueRequest = (): Promise<RawResponse> => {
       const lib = url.protocol === "https:" ? https : http;
       const requestOptions: http.RequestOptions = {
@@ -704,7 +750,11 @@ export class WebDavClient {
           }
           settled = true;
           clearTimeout(totalTimer);
+          this.signal?.removeEventListener("abort", onAbort);
           settleFn();
+        };
+        const onAbort = (): void => {
+          req.destroy(new WebDavAbortError());
         };
         const totalTimer = setTimeout(() => {
           req.destroy(
@@ -745,9 +795,21 @@ export class WebDavClient {
         req.setTimeout(this.timeoutMs, () => {
           req.destroy(new WebDavTransientError("WebDAV request timed out"));
         });
+        if (this.signal) {
+          this.signal.addEventListener("abort", onAbort, { once: true });
+          // The signal may have fired between the check above and this
+          // registration; destroy now so the request cannot hang.
+          if (this.signal.aborted) {
+            onAbort();
+          }
+        }
         req.on("error", (err: Error) => {
           settle(() => {
-            if (err instanceof WebDavFatalError || err instanceof WebDavTransientError) {
+            if (
+              err instanceof WebDavAbortError ||
+              err instanceof WebDavFatalError ||
+              err instanceof WebDavTransientError
+            ) {
               reject(err);
               return;
             }

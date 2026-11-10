@@ -48,6 +48,34 @@
 - Sync passwords go to VS Code SecretStorage; never log credentials or write them to settings/state.
 - Machine-wide UI status (conflicts, state, lastSyncAt, pendingCount, autoSyncPaused) lives in `sync/status.json` under globalStorage; every window watches the file and converges through it. `leader` stays per-window. Writes are serialized per window and carry a unique `writeId` (revision numbers can collide across windows). State-only writes preserve the file's conflict list; only a full pass scan replaces it and conflict resolution removes resolved entries, so a stale window cannot resurrect resolved conflicts.
 
+### Pass Lock
+
+- `SyncManifest.save()` rewrites the whole file from an in-memory snapshot, so exactly one pass may read it per machine. `sync/pass.lock` (`SyncProcessLock`, 8s staleness) is taken in `executeSync` before the manifest is loaded; `runSync` and `resolveConflicts` both go through it. Without it, two windows each write their own baseline and every file degrades to a `noBaseline` conflict.
+- The pass lock and the auto-sync leadership lock are different files with different jobs: leadership elects who runs watcher/poller, the pass lock protects the manifest. Never merge them.
+- A pass that cannot take the lock returns `"busy"` instead of running. Callers decide: auto passes skip silently, manual sync tells the user, the launch gate waits on the completion stamp.
+
+### Scoped Launch Pass
+
+- `runScopedPass({ scopePaths, signal, onProgress })` is the pre-launch entry point. `runSync` returns `SyncPassResult` (`done | aborted | failed | busy`) so callers can tell a skipped pass from a failed one.
+- A scoped pass locks its own decisions: `onConflict: "prompt"` and `deletions: "ignore"` regardless of settings. It runs before the user has seen any UI, so it must never resolve a difference on its own.
+- A scoped pass merges its conflicts into the shared list and leaves `pendingCount` alone; replacing them would erase conflicts another pass found in files this one never scanned.
+- Aborts surface as `SyncAbortError` and are handled before the rate-limit/fatal/transient branches: state returns to `idle`, the breaker and `failureStreak` stay untouched, and per-file manifest checkpoints already landed.
+- `WebDavClient` takes an optional `signal`; `paceRequest` sleeps in 250ms slices so an abort lands during a rate-limit wait instead of after the full window.
+
+### Pre-Start Gate
+
+- `PreStartSyncGate` (`src/services/sync/PreStartSyncGate.ts`) runs the scoped pass before OpenCode starts. `LaunchGate` (`src/services/LaunchGate.ts`) bundles it with `StartupCoordinator` so `SessionRuntime` carries one gate instead of two.
+- `sync.preStartSync` is independent of `sync.autoSyncOnStartup` and off by default: the launch waits for it, so it must be switchable alone. The startup toggle stays a separate switch for the full reconcile.
+- Only the first launch of a window runs it. Restart and instance switching reuse `startDefaultSession`, and rewriting `cli.json` under a running TUI races that process's own write.
+- Scope comes from `SyncItemDefinition.preStart`, not a parallel list. `AGENTS.md` and `skills/` stay out: the launch only needs what OpenCode reads while booting. A successful launch pass then calls `reconcileAfterLaunch()` so those files still sync on startup without delaying it.
+- When a v2 service already answers, the pass covers `cli.json` only. The service watches and hot reloads `opencode.json*` and the plugin config; `cli.json` is read per TUI process with no watcher.
+- Dedupe is a completion stamp (`sync/prestart.json`, atomic write) plus the pass lock. The stamp records the server identity, so changing servers invalidates it. Skips and failures write a stamp too: without one, every sibling window waits out its own full budget.
+- The cooldown is `sync.preStartSyncCooldownMinutes`, default 5 minutes, `0` for every launch. The launch pass is cheap when nothing changed (a scoped pass only stats its own files), so a short window costs little while still collapsing a burst of window reloads.
+- The budget is enforced from outside with `Promise.race` and aborts the pass. An internal deadline would not hold, because the client can sit in a rate-limit wait for minutes.
+- Failures are log-only with a two-minute negative cache. One opportunistic launch attempt must not pause the machine-wide auto sync.
+- `initialize()` skips its own startup pass when `preStartSync` is on: the launch pass plus its reconcile already cover the same tree.
+
+
 ## Verification
 
 - Service tests are colocated as `*.test.ts`, with some older grouped tests under `src/services/__tests__`.

@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import { l10n } from "../../i18n";
 import type {
   HostMessage,
+  PreStartSyncProgress,
   WebDavConflictEntry,
   WebDavConflictKind,
   WebDavConnectionDraft,
@@ -31,6 +32,7 @@ import {
 import { SyncStatusStore, type SyncStatusData } from "./SyncStatusStore";
 import {
   PreconditionFailedError,
+  WebDavAbortError,
   WebDavClient,
   WebDavFatalError,
   WebDavRateLimitedError,
@@ -43,6 +45,7 @@ import {
 import {
   classifyEntry,
   collectItemFiles,
+  collectScopedFiles,
   deriveSyncItems,
   visibleSyncItems,
   isPathBlacklisted,
@@ -72,9 +75,45 @@ const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 600;
 const LOCK_ACQUIRE_TIMEOUT_MS = 2_000;
 const LOCK_HEARTBEAT_MS = 10_000;
 const LOCK_RETRY_MS = 60_000;
+/** Pass lock: one manifest writer per machine, across windows. */
+const PASS_LOCK_STALE_MS = 8_000;
+const PASS_LOCK_ACQUIRE_MS = 1_500;
+/** Well inside `PASS_LOCK_STALE_MS`, so a held lock never looks abandoned. */
+const PASS_LOCK_HEARTBEAT_MS = 2_000;
+/**
+ * How long after a launch reconcile the activation-time startup pass stays
+ * suppressed. Long enough to cover the gap between activation and the first
+ * launch, short enough that a genuinely new activation still syncs.
+ */
+const LAUNCH_RECONCILE_FRESH_MS = 5 * 60_000;
 
 /** What can start a sync pass; mirrors the persisted history trigger values. */
 export type SyncTrigger = WebDavSyncTrigger;
+
+/**
+ * Terminal state of one pass. The launch gate needs to tell a skipped pass
+ * from a failed one, and a pass that never ran (another window held the
+ * lock) from both.
+ */
+export type SyncPassResult = "done" | "aborted" | "failed" | "busy";
+
+/** Raised inside a pass when the caller aborted it. */
+export class SyncAbortError extends Error {
+  public constructor() {
+    super("sync pass aborted");
+    this.name = "SyncAbortError";
+  }
+}
+
+/** Options that narrow one pass; all optional, absent means a full pass. */
+export interface SyncPassOptions {
+  /** Restrict the pass to these relative paths (launch path). */
+  scopePaths?: readonly string[];
+  /** Aborts the pass at the next safe boundary. */
+  signal?: AbortSignal;
+  /** Reports scan and transfer progress. */
+  onProgress?: (progress: PreStartSyncProgress) => void;
+}
 
 export type SyncConflictPolicy = "prompt" | "preferLocal" | "preferRemote";
 /**
@@ -103,6 +142,10 @@ export interface SyncEngineConfig {
   excludedPaths: string[];
   onConflict: SyncConflictPolicy;
   deletions: SyncDeletionPolicy;
+  /** Sync the key config files before OpenCode starts. */
+  preStartSync: boolean;
+  /** Cooldown window in minutes; 0 syncs on every launch. */
+  preStartSyncCooldownMinutes: number;
   /** Max WebDAV requests per sliding window; 0 = unlimited. */
   rateLimitMaxRequests: number;
   /** Sliding window length in minutes; used for pacing and cooldowns. */
@@ -153,6 +196,11 @@ export function readSyncConfig(): SyncEngineConfig {
       config.get<SyncConflictPolicy>("sync.onConflict", "prompt") ?? "prompt",
     deletions:
       config.get<SyncDeletionPolicy>("sync.deletions", "prompt") ?? "prompt",
+    preStartSync: config.get<boolean>("sync.preStartSync", false),
+    preStartSyncCooldownMinutes: Math.max(
+      0,
+      Math.floor(config.get<number>("sync.preStartSyncCooldownMinutes", 5) || 0),
+    ),
     rateLimitMaxRequests:
       rawMaxRequests >= 1 && rawWindowMinutes >= 1 ? rawMaxRequests : 0,
     rateLimitWindowMinutes:
@@ -404,6 +452,27 @@ export class ConfigSyncService implements vscode.Disposable {
 
   /** Cross-window leadership over the auto-sync channels. */
   private readonly syncLock: SyncProcessLock;
+  /**
+   * One manifest writer per machine. Every pass takes this before reading
+   * the manifest; `SyncManifest.save()` rewrites the whole file, so two
+   * concurrent passes would each overwrite the other's baseline.
+   */
+  private readonly passLock: SyncProcessLock;
+  /**
+   * Renews `passLock` while a pass runs. A pass can outlive the lock's
+   * staleness window (a full reconcile over a large config takes longer than
+   * a few seconds), and without renewal a sibling window would take the lock
+   * over mid-pass and write the manifest concurrently.
+   */
+  private passLockHeartbeat: ReturnType<typeof setInterval> | undefined;
+  /** In-flight pass, so a caller that arrives mid-pass can await it. */
+  private activePass: Promise<SyncPassResult> | undefined;
+  /**
+   * When a launch pass last reconciled the full tree. The activation-time
+   * startup pass checks this so a launch and an activation never scan the
+   * same tree twice, while a launch-less activation still syncs.
+   */
+  private launchReconciledAt: number | undefined;
   private lockHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private lockRetryTimer: ReturnType<typeof setTimeout> | undefined;
   /** True while this window runs watcher/poller and rate-limit spend. */
@@ -427,6 +496,10 @@ export class ConfigSyncService implements vscode.Disposable {
     this.waitForOpenCodeReady = deps.waitForOpenCodeReady;
     this.syncLock = new SyncProcessLock(
       path.join(syncStorageDir(this.globalStoragePath()), "lock.json"),
+    );
+    this.passLock = new SyncProcessLock(
+      path.join(syncStorageDir(this.globalStoragePath()), "pass.lock"),
+      PASS_LOCK_STALE_MS,
     );
     this.statusStore = new SyncStatusStore(this.globalStoragePath());
     this.statusStoreFilePath = this.statusStore.filePath;
@@ -471,11 +544,31 @@ export class ConfigSyncService implements vscode.Disposable {
           return;
         }
         await this.awaitOpenCodeStartup();
-        if (!this.disposed && this.isLeader) {
-          void this.triggerAuto("startup");
+        if (this.disposed || !this.isLeader) {
+          return;
         }
+        // A launch pass may already have reconciled everything; scanning the
+        // same tree again seconds later would only cost network. This is
+        // also what keeps a launch-less activation covered: without a launch
+        // no reconcile happened, so the startup pass runs as before.
+        if (this.recentlyReconciledFromLaunch()) {
+          this.log(
+            "debug",
+            "startup sync skipped; a launch pass already reconciled",
+          );
+          return;
+        }
+        void this.triggerAuto("startup");
       });
     }
+  }
+
+  /** True when a launch pass reconciled the tree a moment ago. */
+  private recentlyReconciledFromLaunch(): boolean {
+    return (
+      this.launchReconciledAt !== undefined &&
+      Date.now() - this.launchReconciledAt < LAUNCH_RECONCILE_FRESH_MS
+    );
   }
 
   /** Begin watching the machine-shared status file. Kept by every window,
@@ -539,8 +632,10 @@ export class ConfigSyncService implements vscode.Disposable {
     this.stopStatusWatcher();
     this.stopAutoTimers();
     this.stopLockHeartbeat();
+    this.stopPassLockHeartbeat();
     this.clearLockRetryTimer();
     void this.syncLock.release();
+    void this.passLock.release();
     this.cachedClient = undefined;
     for (const disposable of this.disposables) {
       disposable.dispose();
@@ -598,6 +693,8 @@ export class ConfigSyncService implements vscode.Disposable {
         pollIntervalMinutes: config.pollIntervalMinutes,
         showStatusIcon: config.showStatusIcon,
         deletions: config.deletions,
+        preStartSync: config.preStartSync,
+        preStartSyncCooldownMinutes: config.preStartSyncCooldownMinutes,
         passwordSet,
       },
       items: visibleSyncItems(config.customItems, config.disabledItems),
@@ -776,6 +873,20 @@ export class ConfigSyncService implements vscode.Disposable {
       );
       if (options.deletions) {
         await target.update("sync.deletions", options.deletions, global);
+      }
+      if (options.preStartSync !== undefined) {
+        await target.update(
+          "sync.preStartSync",
+          !!options.preStartSync,
+          global,
+        );
+      }
+      if (options.preStartSyncCooldownMinutes !== undefined) {
+        await target.update(
+          "sync.preStartSyncCooldownMinutes",
+          Math.max(0, Math.floor(options.preStartSyncCooldownMinutes || 0)),
+          global,
+        );
       }
       // Reuse the settings-change path so watcher and poller honor the new
       // options immediately instead of waiting for the next event.
@@ -1051,68 +1162,102 @@ export class ConfigSyncService implements vscode.Disposable {
       return;
     }
     // Resolution and the sync transfer phase share one manifest; their
-    // read-modify-write cycles must never interleave.
+    // read-modify-write cycles must never interleave. The in-process queue
+    // covers this window, the pass lock covers sibling windows.
     await this.enqueueExclusive(async () => {
-      // Settle our own pending writes, then force-adopt the shared truth:
-      // entries another window already resolved must vanish here too
-      // (unknown ids are skipped by the loop below).
-      await this.statusWrite;
-      await this.adoptSharedStatus(true);
-      const resolvedIds: string[] = [];
-      // Fresh conflicts raised while resolving are the only entries this
-      // window may add back; everything else stays as the file has it, so
-      // a sibling's concurrent resolution is not overwritten.
-      const reconflictedEntries: WebDavConflictEntry[] = [];
-      let failed = 0;
-      for (const id of targets) {
-        const current = this.conflicts.get(id);
-        if (!current) {
-          continue;
-        }
-        const rel = current.path;
-        try {
-          const reconflicted = await this.resolveConflictEntry(
-            config,
-            current,
-            resolution,
-            (entry) => reconflictedEntries.push(entry),
-          );
-          if (reconflicted) {
-            this.log(
-              "warn",
-              `conflict resolution incomplete; conflict kept for ${rel}`,
-            );
-          } else {
-            this.conflicts.delete(id);
-            resolvedIds.push(id);
-            this.log(
-              "info",
-              `conflict resolved (${current.kind}/${resolution}): ${rel}`,
-            );
-          }
-        } catch (error) {
-          failed += 1;
-          this.logger.error(
-            `[WebDavSync] failed to resolve conflict ${id}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-      await this.persistStatus({
-        conflicts: reconflictedEntries,
-        removedConflictIds: resolvedIds,
-      });
-      this.pushDelta({ conflictCount: this.conflicts.size });
-      await this.requestSyncData();
-      if (failed > 0) {
-        void vscode.window.showErrorMessage(
-          failed === 1
-            ? l10n.t("Could not resolve the sync conflict.")
-            : l10n.t("Could not resolve {0} sync conflicts.", failed),
+      const hasPassLock = await this.passLock.acquire(PASS_LOCK_ACQUIRE_MS);
+      if (!hasPassLock) {
+        // Another window is mid-pass. Resolving against a manifest that is
+        // being rewritten would lose this window's baseline update, so ask
+        // the user to retry rather than silently doing nothing.
+        this.log(
+          "warn",
+          "conflict resolution deferred; another window holds the pass lock",
         );
+        this.pushDelta({
+          notice: l10n.t(
+            "A sync is already in progress. Try again when it finishes.",
+          ),
+        });
+        return;
+      }
+      // Resolution rewrites the manifest for every conflict, so it can also
+      // outlive the staleness window on a long list.
+      this.startPassLockHeartbeat();
+      try {
+        await this.resolveConflictsLocked(config, targets, resolution);
+      } finally {
+        this.stopPassLockHeartbeat();
+        await this.passLock.release().catch(() => undefined);
       }
     });
+  }
+
+  /** Body of one resolution batch; runs only under the pass lock. */
+  private async resolveConflictsLocked(
+    config: SyncEngineConfig,
+    targets: string[],
+    resolution: "local" | "remote",
+  ): Promise<void> {
+    // Settle our own pending writes, then force-adopt the shared truth:
+    // entries another window already resolved must vanish here too
+    // (unknown ids are skipped by the loop below).
+    await this.statusWrite;
+    await this.adoptSharedStatus(true);
+    const resolvedIds: string[] = [];
+    // Fresh conflicts raised while resolving are the only entries this
+    // window may add back; everything else stays as the file has it, so
+    // a sibling's concurrent resolution is not overwritten.
+    const reconflictedEntries: WebDavConflictEntry[] = [];
+    let failed = 0;
+    for (const id of targets) {
+      const current = this.conflicts.get(id);
+      if (!current) {
+        continue;
+      }
+      const rel = current.path;
+      try {
+        const reconflicted = await this.resolveConflictEntry(
+          config,
+          current,
+          resolution,
+          (entry) => reconflictedEntries.push(entry),
+        );
+        if (reconflicted) {
+          this.log(
+            "warn",
+            `conflict resolution incomplete; conflict kept for ${rel}`,
+          );
+        } else {
+          this.conflicts.delete(id);
+          resolvedIds.push(id);
+          this.log(
+            "info",
+            `conflict resolved (${current.kind}/${resolution}): ${rel}`,
+          );
+        }
+      } catch (error) {
+        failed += 1;
+        this.logger.error(
+          `[WebDavSync] failed to resolve conflict ${id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    await this.persistStatus({
+      conflicts: reconflictedEntries,
+      removedConflictIds: resolvedIds,
+    });
+    this.pushDelta({ conflictCount: this.conflicts.size });
+    await this.requestSyncData();
+    if (failed > 0) {
+      void vscode.window.showErrorMessage(
+        failed === 1
+          ? l10n.t("Could not resolve the sync conflict.")
+          : l10n.t("Could not resolve {0} sync conflicts.", failed),
+      );
+    }
   }
 
   private async resolveConflictEntry(
@@ -1757,10 +1902,24 @@ export class ConfigSyncService implements vscode.Disposable {
 
   // ── Sync engine ──
 
-  private async runSync(trigger: SyncTrigger): Promise<void> {
-    // Single-flight: triggers arriving mid-run are merged into the pass
-    // that is already scanning both sides.
+  private async runSync(
+    trigger: SyncTrigger,
+    options: SyncPassOptions = {},
+  ): Promise<SyncPassResult> {
+    // A scoped launch pass must observe the in-flight pass instead of
+    // merging into it: merging would silently skip the launch's files and
+    // the caller would still launch with stale config.
     if (this.syncing) {
+      if (options.scopePaths) {
+        const inFlight = this.activePass;
+        if (inFlight) {
+          this.log(
+            "debug",
+            `scoped sync waiting for the in-flight pass to settle (${trigger})`,
+          );
+          return inFlight;
+        }
+      }
       this.log("debug", `sync already running; ${trigger} merged and skipped`);
       if (trigger === "manual") {
         this.pushDelta({
@@ -1769,12 +1928,17 @@ export class ConfigSyncService implements vscode.Disposable {
           ),
         });
       }
-      return;
+      return "busy";
     }
     this.syncing = true;
+    const pass = this.enqueueExclusive(() =>
+      this.executeSync(trigger, options),
+    );
+    this.activePass = pass;
     try {
-      await this.enqueueExclusive(() => this.executeSync(trigger));
+      return await pass;
     } finally {
+      this.activePass = undefined;
       this.syncing = false;
       // The open panel refreshes its lists only from full snapshots, so
       // every completed run — success or failure — pushes one with the
@@ -1782,6 +1946,53 @@ export class ConfigSyncService implements vscode.Disposable {
       // merged-skip path above returns before this point and never pushes.
       await this.requestSyncData();
     }
+  }
+
+  /**
+   * Scoped pass for the pre-launch gate. Separate from `runSync` so the
+   * gate's contract is narrow: a scope, an abort signal, progress, and a
+   * terminal result.
+   */
+  public async runScopedPass(options: {
+    scopePaths: readonly string[];
+    signal: AbortSignal;
+    onProgress?: (progress: PreStartSyncProgress) => void;
+  }): Promise<SyncPassResult> {
+    return this.runSync("preStart", options);
+  }
+
+  /**
+   * True when an automatic pass cannot succeed right now: the breaker
+   * paused after repeated errors, or the stored credentials were rejected.
+   * The launch gate uses this so a broken server never delays a launch.
+   */
+  public isAutoPassBlocked(): boolean {
+    return this.autoSyncPaused || this.state === "needsAuth";
+  }
+
+  /**
+   * Full reconcile after a launch pass. Fire-and-forget: the launch already
+   * happened, and this only picks up the files the launch scope leaves out.
+   *
+   * Deliberately not leader-gated. The launch pass runs in whichever window
+   * started OpenCode, which need not hold the auto-sync leadership; gating
+   * here would make the reconcile happen or not depending on which window
+   * launched. The pass lock keeps sibling windows from interleaving, and
+   * `runSync` single-flight absorbs a second request.
+   */
+  public reconcileAfterLaunch(): void {
+    const config = readSyncConfig();
+    if (!config.enabled || !config.url || !config.autoSyncEnabled) {
+      return;
+    }
+    if (this.autoSyncPaused || this.state === "needsAuth") {
+      return;
+    }
+    if (this.rateLimitResumeTimer) {
+      return;
+    }
+    this.launchReconciledAt = Date.now();
+    void this.runSync("startup").catch(() => undefined);
   }
 
   /**
@@ -1798,13 +2009,66 @@ export class ConfigSyncService implements vscode.Disposable {
     return run;
   }
 
-  private async executeSync(trigger: SyncTrigger): Promise<void> {
+  private async executeSync(
+    trigger: SyncTrigger,
+    options: SyncPassOptions = {},
+  ): Promise<SyncPassResult> {
     const config = readSyncConfig();
     if (!config.enabled || !config.url) {
       this.state = "unconfigured";
       this.pushDelta({ state: "unconfigured" });
-      return;
+      return "done";
     }
+    // One manifest writer per machine: `SyncManifest.save()` rewrites the
+    // whole file, so two concurrent passes would each overwrite the other's
+    // freshly written baseline and every file would degrade to noBaseline.
+    const hasPassLock = await this.passLock.acquire(PASS_LOCK_ACQUIRE_MS);
+    if (!hasPassLock) {
+      this.log(
+        "debug",
+        `sync pass skipped (${trigger}); another window holds the pass lock`,
+      );
+      return "busy";
+    }
+    // Renew for the whole pass: the staleness window is far shorter than a
+    // full reconcile over a real config directory.
+    this.startPassLockHeartbeat();
+    try {
+      return await this.executeLockedPass(trigger, options, config);
+    } finally {
+      this.stopPassLockHeartbeat();
+      await this.passLock.release().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Keep `passLock` fresh while a pass runs.
+   *
+   * The lock is held for the whole pass, which can easily exceed
+   * `PASS_LOCK_STALE_MS` on a real config. Without this, a sibling window
+   * sees a stale lock, takes it over, and both windows write the manifest.
+   */
+  private startPassLockHeartbeat(): void {
+    this.stopPassLockHeartbeat();
+    this.passLockHeartbeat = setInterval(() => {
+      void this.passLock.renew().catch(() => false);
+    }, PASS_LOCK_HEARTBEAT_MS);
+    this.passLockHeartbeat.unref?.();
+  }
+
+  private stopPassLockHeartbeat(): void {
+    if (this.passLockHeartbeat) {
+      clearInterval(this.passLockHeartbeat);
+      this.passLockHeartbeat = undefined;
+    }
+  }
+
+  /** Body of one pass; runs only while this window holds the pass lock. */
+  private async executeLockedPass(
+    trigger: SyncTrigger,
+    options: SyncPassOptions,
+    config: SyncEngineConfig,
+  ): Promise<SyncPassResult> {
     const password = await this.resolvePassword(
       config.url,
       config.username,
@@ -1820,16 +2084,34 @@ export class ConfigSyncService implements vscode.Disposable {
       // Persist unconditionally: the shared file may still predate this
       // verdict, and this state blocks automatic passes (triggerAuto),
       // so no later write would ever propagate it to sibling windows.
-      void this.persistStatus();
-      if (!wasNeedsAuth) {
+      void this.persistStatus();      if (!wasNeedsAuth) {
         this.log(
           "info",
           "sync skipped: no WebDAV password is stored on this device",
         );
         this.pushDelta({ state: "needsAuth" });
       }
-      return;
+      // Not "done": nothing was transferred, so reporting success would make
+      // the launch gate write an `ok` stamp and tell the user the config is
+      // current while it is stale. The breaker path stays as it is — the
+      // needsAuth state already blocks automatic retries.
+      return "failed";
     }
+    const signal = options.signal;
+    const scoped = options.scopePaths !== undefined;
+    // A scoped pass must not rewrite machine-wide state it never observed:
+    // replacing the shared conflict list with its own few files would erase
+    // conflicts another pass found in skills/ or AGENTS.md.
+    const scopeSet = scoped ? new Set(options.scopePaths) : undefined;
+    const reportProgress = (progress: PreStartSyncProgress): void => {
+      options.onProgress?.(progress);
+    };
+    // The walk is the long pole on a slow server and has no countable total;
+    // announcing it keeps the overlay honest instead of showing a bare spinner.
+    if (options.onProgress) {
+      reportProgress({ phase: "scan", current: 0, total: 0 });
+    }
+    this.throwIfAborted(signal);
     this.state = "syncing";
     this.pushDelta({ state: "syncing" });
     void this.persistStatus();
@@ -1839,16 +2121,25 @@ export class ConfigSyncService implements vscode.Disposable {
     let completedDownloads = 0;
     let completedDeletes = 0;
     try {
-      const client = await this.createClientFromSettings(config, password);
-      const remote = await this.walkRemote(client);
+      const client = await this.createClientFromSettings(
+        config,
+        password,
+        signal,
+      );
+      const remote = await this.walkRemote(client, signal, scoped);
       const items = deriveSyncItems(
         config.customItems,
         config.disabledItems,
       ).filter((item) => item.enabled);
       const excludes = normalizeExcludes(config.excludedPaths);
       const configDir = this.configDirProvider();
+      // A scoped pass must not walk `skills/`: the scope is a flat list of
+      // config files, so collecting the whole directory tree (hundreds of
+      // files on a real config) would cost far more than the pass itself.
       const localFiles = new Set(
-        await collectItemFiles(items, configDir, excludes),
+        scoped
+          ? await collectScopedFiles(scopeSet ?? new Set(), configDir)
+          : await collectItemFiles(items, configDir, excludes),
       );
       const manifest = new SyncManifest(this.globalStoragePath());
       await manifest.load();
@@ -1868,20 +2159,30 @@ export class ConfigSyncService implements vscode.Disposable {
       let fileErrors = 0;
       // Recompute from scratch: a previous aborted pass may have counted
       // files that this scan will count again.
-      this.pendingCount = 0;
+      if (!scoped) {
+        this.pendingCount = 0;
+      }
 
-      const allPaths = new Set<string>([
-        ...remote.files.keys(),
-        ...localFiles,
-        ...manifest.paths(),
-      ]);
+      // A scoped pass has a closed candidate list: its scope plus whatever it
+      // already knows is local. Pulling every manifest path in would iterate
+      // the whole history just to filter it out again.
+      const allPaths = new Set<string>(
+        scoped
+          ? [...(scopeSet ?? []), ...localFiles, ...remote.files.keys()]
+          : [
+              ...remote.files.keys(),
+              ...localFiles,
+              ...manifest.paths(),
+            ],
+      );
 
       for (const rel of allPaths) {
         // The credential deny-list outranks every item and pattern match.
         if (
           !isPathUnderItems(rel, items) ||
           isPathExcluded(rel, excludes) ||
-          isPathBlacklisted(rel)
+          isPathBlacklisted(rel) ||
+          (scopeSet !== undefined && !scopeSet.has(rel))
         ) {
           continue;
         }
@@ -1903,7 +2204,10 @@ export class ConfigSyncService implements vscode.Disposable {
             localHash = null;
           }
         }
-        if (localHash !== null && localHash !== baselineHash) {
+        if (localHash !== null && localHash !== baselineHash && !scoped) {
+          // A scoped pass is about to bring exactly these files up to date,
+          // so counting them as pending would leave a count that survives
+          // the pass and is never reconciled.
           this.pendingCount++;
         }
         const stat = remote.files.get(rel);
@@ -1936,8 +2240,11 @@ export class ConfigSyncService implements vscode.Disposable {
           localHash,
           remoteHash,
           baselineHash,
-          onConflict: config.onConflict,
-          deletions: config.deletions,
+          // A scoped launch pass runs before the user has seen any UI, so it
+          // must never resolve a difference on its own: no deletion is
+          // mirrored and no side wins a conflict silently.
+          onConflict: scoped ? "prompt" : config.onConflict,
+          deletions: scoped ? "ignore" : config.deletions,
         });
         switch (action.type) {
           case "upload":
@@ -2004,7 +2311,21 @@ export class ConfigSyncService implements vscode.Disposable {
       };
 
       // Execute transfers; per-file failures degrade to a partial result.
+      const transferTotal = uploads.length + downloads.length;
+      let transferDone = 0;
+      const reportTransfer = (rel: string): void => {
+        transferDone++;
+        reportProgress({
+          phase: "transfer",
+          current: transferDone,
+          total: transferTotal,
+          path: rel,
+        });
+      };
       for (const rel of uploads) {
+        // Abort lands on file boundaries: a half-written file would be a
+        // state neither side agreed on.
+        this.throwIfAborted(signal);
         try {
           const remoteStat = remote.files.get(rel);
           const uploaded = await this.uploadFile(
@@ -2023,7 +2344,11 @@ export class ConfigSyncService implements vscode.Disposable {
             await manifest.save();
             completedUploads++;
           }
+          reportTransfer(rel);
         } catch (error) {
+          if (error instanceof WebDavAbortError) {
+            throw new SyncAbortError();
+          }
           if (
             error instanceof WebDavFatalError ||
             error instanceof WebDavRateLimitedError
@@ -2037,9 +2362,11 @@ export class ConfigSyncService implements vscode.Disposable {
               error instanceof Error ? error.message : String(error)
             }`,
           );
+          reportTransfer(rel);
         }
       }
       for (const rel of downloads) {
+        this.throwIfAborted(signal);
         try {
           const downloaded = await this.downloadFile(
             client,
@@ -2055,7 +2382,11 @@ export class ConfigSyncService implements vscode.Disposable {
             await manifest.save();
             completedDownloads++;
           }
+          reportTransfer(rel);
         } catch (error) {
+          if (error instanceof WebDavAbortError) {
+            throw new SyncAbortError();
+          }
           if (
             error instanceof WebDavFatalError ||
             error instanceof WebDavRateLimitedError
@@ -2069,6 +2400,7 @@ export class ConfigSyncService implements vscode.Disposable {
               error instanceof Error ? error.message : String(error)
             }`,
           );
+          reportTransfer(rel);
         } finally {
           remoteContentCache.delete(rel);
         }
@@ -2165,14 +2497,24 @@ export class ConfigSyncService implements vscode.Disposable {
       const now = Date.now();
 
       const previousConflictIds = new Set(this.conflicts.keys());
-      this.conflicts = nextConflicts;
+      // A scoped pass only observed its own files: replacing the whole map
+      // would drop conflicts another pass found in skills/ or AGENTS.md.
+      if (scoped) {
+        for (const [id, entry] of nextConflicts) {
+          this.conflicts.set(id, entry);
+        }
+      } else {
+        this.conflicts = nextConflicts;
+      }
       const newConflictIds = [...nextConflicts.keys()].filter(
         (id) => !previousConflictIds.has(id),
       );
 
       this.state = "idle";
       this.lastSyncAt = now;
-      this.pendingCount = 0;
+      if (!scoped) {
+        this.pendingCount = 0;
+      }
       this.failureStreak = 0;
       this.nextBackoffMs = FIRST_BACKOFF_MS;
       // A completed pass makes any pending rate-limit resume obsolete.
@@ -2181,12 +2523,18 @@ export class ConfigSyncService implements vscode.Disposable {
         this.autoSyncPaused = false;
         this.armTriggers();
       }
-      // The scan covers both sides, so its conflict list is authoritative
-      // and replaces whatever the shared file held.
-      void this.persistStatus({
-        conflicts: [...this.conflicts.values()],
-        replaceConflicts: true,
-      });
+      if (scoped) {
+        // Merge instead of replace: the file's other conflicts are still
+        // valid and belong to a pass this one never ran.
+        void this.persistStatus({ conflicts: [...nextConflicts.values()] });
+      } else {
+        // The scan covers both sides, so its conflict list is authoritative
+        // and replaces whatever the shared file held.
+        void this.persistStatus({
+          conflicts: [...this.conflicts.values()],
+          replaceConflicts: true,
+        });
+      }
       const direction =
         completedUploads > 0 && completedDownloads > 0
           ? "both"
@@ -2197,16 +2545,22 @@ export class ConfigSyncService implements vscode.Disposable {
               : "none";
       const result: "success" | "partial" | "failed" =
         fileErrors > 0 || nextConflicts.size > 0 ? "partial" : "success";
-      this.appendHistory({
-        time: now,
-        direction,
-        files: completedUploads + completedDownloads + completedDeletes,
-        uploads: completedUploads,
-        downloads: completedDownloads,
-        deletes: this.takeExcludeDeletes(trigger) + completedDeletes,
-        result,
-        trigger,
-      });
+      // A scoped pass that moved nothing stays out of the history: launches
+      // happen often and would flush the 20-entry list.
+      const transferred =
+        completedUploads + completedDownloads + completedDeletes;
+      if (!scoped || transferred > 0) {
+        this.appendHistory({
+          time: now,
+          direction,
+          files: transferred,
+          uploads: completedUploads,
+          downloads: completedDownloads,
+          deletes: this.takeExcludeDeletes(trigger) + completedDeletes,
+          result,
+          trigger,
+        });
+      }
       this.log(
         "info",
         `sync finished (${trigger}): ${completedUploads} up, ${completedDownloads} down, ${completedDeletes} deleted, ${nextConflicts.size} conflict(s), ${fileErrors} error(s)`,
@@ -2214,22 +2568,25 @@ export class ConfigSyncService implements vscode.Disposable {
 
       const delta: WebDavSyncStatusDelta = {
         state: "idle",
-        pendingCount: 0,
-        conflictCount: nextConflicts.size,
+        conflictCount: this.conflicts.size,
         lastSyncAt: now,
         lastSyncLabel: relativeTimeLabel(now),
         autoSyncPaused: false,
       };
-      if (completedDownloads > 0) {
+      if (!scoped) {
+        delta.pendingCount = 0;
+      }
+      if (completedDownloads > 0 && !scoped) {
         delta.notice = l10n.t(
           "Downloaded {count} updated file(s) from the sync server.",
           { count: completedDownloads },
         );
       }
       this.pushDelta(delta);
-      if (newConflictIds.length > 0) {
+      if (newConflictIds.length > 0 && !scoped) {
         // Notify without stealing focus: the panel stays closed and the
-        // user opens it from the toolbar when ready.
+        // user opens it from the toolbar when ready. A launch pass keeps
+        // quiet; its conflicts surface in the panel like any other.
         const notice = l10n.t(
           "Sync conflict detected in {count} file(s). Open the sync panel to resolve.",
           { count: newConflictIds.length },
@@ -2239,7 +2596,19 @@ export class ConfigSyncService implements vscode.Disposable {
           void vscode.window.showInformationMessage(notice);
         }
       }
+      return "done";
     } catch (error) {
+      if (error instanceof SyncAbortError || error instanceof WebDavAbortError) {
+        // An abort is a decision, not a failure: restore the state machine
+        // so every window's panel leaves "syncing", and keep the breaker
+        // out of it. Per-file manifest checkpoints already landed, so the
+        // next pass resumes instead of redoing work.
+        this.state = "idle";
+        this.pushDelta({ state: "idle" });
+        void this.persistStatus();
+        this.log("info", `sync pass aborted (${trigger})`);
+        return "aborted";
+      }
       if (error instanceof WebDavRateLimitedError) {
         // A server rate limit is a cooldown, not a failure: checkpoint
         // what already finished, record a partial pass and resume once
@@ -2249,13 +2618,22 @@ export class ConfigSyncService implements vscode.Disposable {
         } catch {
           // The checkpoint is best-effort; per-file saves already landed.
         }
+        if (scoped) {
+          // A launch pass has no resume: the cooldown belongs to the normal
+          // auto channels, and the launch must not wait for it.
+          this.state = "idle";
+          this.pushDelta({ state: "idle" });
+          void this.persistStatus();
+          this.log("warn", "scoped sync rate limited; launch continues");
+          return "failed";
+        }
         this.handleRateLimited(error, trigger, completedUploads, completedDownloads);
-        return;
+        return "failed";
       }
       if (error instanceof WebDavFatalError) {
         if (error.status === 401) {
           this.handleAuthFailure(trigger, error);
-          return;
+          return "failed";
         }
         this.appendHistory({
           time: Date.now(),
@@ -2277,8 +2655,12 @@ export class ConfigSyncService implements vscode.Disposable {
           trigger,
         });
         this.log("warn", `sync aborted (fatal): ${error.message}`);
-        this.pauseAutoSync(error.message);
-        return;
+        // A scoped launch pass must not stop the machine-wide auto sync:
+        // one opportunistic attempt is not evidence the server is broken.
+        if (!scoped) {
+          this.pauseAutoSync(error.message);
+        }
+        return "failed";
       }
       const transient =
         error instanceof WebDavTransientError
@@ -2286,7 +2668,17 @@ export class ConfigSyncService implements vscode.Disposable {
           : new WebDavTransientError(
               error instanceof Error ? error.message : String(error),
             );
+      if (scoped) {
+        // Log-only for a launch pass: no failure streak, no backoff timer,
+        // no breaker. The gate keeps its own short negative cache.
+        this.state = "idle";
+        this.pushDelta({ state: "idle" });
+        void this.persistStatus();
+        this.log("warn", `scoped sync failed: ${transient.message}`);
+        return "failed";
+      }
       this.handleTransientFailure(trigger, transient);
+      return "failed";
     }
   }
 
@@ -2416,12 +2808,34 @@ export class ConfigSyncService implements vscode.Disposable {
     }, delayMs);
   }
 
-  private async walkRemote(client: WebDavClientLike): Promise<RemoteTree> {
+  /** Throw the pass-level abort when the caller asked to stop. */
+  private throwIfAborted(signal: AbortSignal | undefined): void {
+    if (signal?.aborted) {
+      throw new SyncAbortError();
+    }
+  }
+
+  /**
+   * Walk the remote tree.
+   *
+   * A scoped pass only needs the files at the base level: its scope is a flat
+   * list of config files, so descending into `skills/` would cost one
+   * PROPFIND per directory (hundreds on a real config) for entries the pass
+   * then discards. The full walk is still what a complete reconcile needs.
+   */
+  private async walkRemote(
+    client: WebDavClientLike,
+    signal?: AbortSignal,
+    shallow = false,
+  ): Promise<RemoteTree> {
     const files = new Map<string, WebDavStat>();
     const dirs = new Set<string>();
     let baseMissing = false;
     const queue: string[] = [""];
     while (queue.length > 0) {
+      // One PROPFIND per directory, each a network round trip; a launch
+      // cannot wait out a deep tree once it aborted.
+      this.throwIfAborted(signal);
       const dir = queue.shift() as string;
       let entries: WebDavStat[];
       try {
@@ -2446,7 +2860,9 @@ export class ConfigSyncService implements vscode.Disposable {
         }
         if (entry.isDir) {
           dirs.add(entry.path);
-          queue.push(entry.path);
+          if (!shallow) {
+            queue.push(entry.path);
+          }
         } else {
           files.set(entry.path, entry);
         }
@@ -2953,6 +3369,7 @@ export class ConfigSyncService implements vscode.Disposable {
   private async createClientFromSettings(
     config: SyncEngineConfig,
     storedPassword?: string,
+    signal?: AbortSignal,
   ): Promise<WebDavClientLike> {
     const password =
       storedPassword ??
@@ -2973,7 +3390,9 @@ export class ConfigSyncService implements vscode.Disposable {
       config.rateLimitMaxRequests,
       config.rateLimitWindowMinutes,
     ]);
-    if (this.cachedClient?.key === key) {
+    // A client carrying an abort signal belongs to one pass only: the
+    // signal is per-launch, and a cached one would fire on the next pass.
+    if (!signal && this.cachedClient?.key === key) {
       return this.cachedClient.client;
     }
     const client = this.clientFactory({
@@ -2995,8 +3414,11 @@ export class ConfigSyncService implements vscode.Disposable {
           `rate limit: waiting ${Math.max(1, Math.round(waitedMs / 1000))}s for request window`,
         );
       },
+      signal,
     });
-    this.cachedClient = { key, client };
+    if (!signal) {
+      this.cachedClient = { key, client };
+    }
     return client;
   }
 

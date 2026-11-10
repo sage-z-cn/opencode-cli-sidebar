@@ -18,6 +18,7 @@ vi.mock("node:http", () => ({
 import * as http from "node:http";
 import * as https from "node:https";
 import {
+  WebDavAbortError,
   WebDavClient,
   WebDavFatalError,
   WebDavRateLimitedError,
@@ -300,6 +301,56 @@ describe("WebDavClient", () => {
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(200);
     expect(waits).toHaveLength(3);
     expect(Math.max(...waits)).toBeGreaterThanOrEqual(100);
+  });
+
+  it("aborts a pacing wait immediately", async () => {
+    // The launch path cannot sit out a window-long pacing sleep, so an
+    // abort must interrupt the wait rather than let it finish.
+    const controller = new AbortController();
+    const client = new WebDavClient({
+      ...baseOptions(),
+      maxRequests: 1,
+      windowMs: 60_000,
+      signal: controller.signal,
+    });
+    const first = client.get("a.md");
+    await vi.waitFor(() => {
+      if (httpsCalls.length < 1) {
+        throw new Error("request not issued yet");
+      }
+    });
+    respond(httpsCalls[0], 200, "x");
+    await first;
+
+    const pending = client.get("b.md");
+    const rejection = expect(pending).rejects.toThrow(WebDavAbortError);
+    controller.abort();
+    await rejection;
+    // The aborted request never reached the network.
+    expect(httpsCalls).toHaveLength(1);
+  });
+
+  it("fails fast when the signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const client = new WebDavClient({
+      ...baseOptions(),
+      signal: controller.signal,
+    });
+    await expect(client.get("a.md")).rejects.toThrow(WebDavAbortError);
+    expect(httpsCalls).toHaveLength(0);
+  });
+
+  it("aborts an in-flight request", async () => {
+    const controller = new AbortController();
+    const client = new WebDavClient({
+      ...baseOptions(),
+      signal: controller.signal,
+    });
+    const pending = client.get("a.md");
+    const rejection = expect(pending).rejects.toThrow(WebDavAbortError);
+    controller.abort();
+    await rejection;
   });
 
   it("issues bursts without delay when pacing is off", async () => {

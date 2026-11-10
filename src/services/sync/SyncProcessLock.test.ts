@@ -108,6 +108,29 @@ describe("SyncProcessLock", () => {
     expect(lock.isOwner()).toBe(false);
   });
 
+  it("honours a custom stale window", async () => {
+    // The launch path cannot wait out the default 35s staleness, so it
+    // configures a shorter window and must see a takeover inside it.
+    const first = new SyncProcessLock(lockPath, 500);
+    await expect(first.acquire(1_000)).resolves.toBe(true);
+    writeLockFile({ ...readLockFile(), renewedAt: Date.now() - 1_000 });
+
+    const second = new SyncProcessLock(lockPath, 500);
+    await expect(second.acquire(1_000)).resolves.toBe(true);
+    expect(second.isOwner()).toBe(true);
+    await expect(first.renew()).resolves.toBe(false);
+  });
+
+  it("does not take over a lock still inside a custom stale window", async () => {
+    const first = new SyncProcessLock(lockPath, 60_000);
+    await expect(first.acquire(1_000)).resolves.toBe(true);
+    writeLockFile({ ...readLockFile(), renewedAt: Date.now() - 1_000 });
+
+    const second = new SyncProcessLock(lockPath, 60_000);
+    await expect(second.acquire(150)).resolves.toBe(false);
+    expect(first.isOwner()).toBe(true);
+  });
+
   it("release never deletes another owner's lock", async () => {
     const first = new SyncProcessLock(lockPath);
     await expect(first.acquire(1_000)).resolves.toBe(true);

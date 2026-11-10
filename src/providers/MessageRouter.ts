@@ -97,6 +97,7 @@ export interface MessageRouterProviderBridge {
     key: string,
     scope: ExtensionSettingsScope,
   ): Promise<void>;
+  skipPreStartSync?: () => boolean;
 }
 
 export class MessageRouter {
@@ -432,6 +433,9 @@ export class MessageRouter {
           await getActiveConfigSyncService()?.openDiff(message.id);
         }
         break;
+      case "skipPreStartSync":
+        await this.provider.skipPreStartSync?.();
+        return;
       default:
         break;
     }

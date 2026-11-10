@@ -13,6 +13,7 @@ import {
 import { SYNC_ICONS } from "./icons";
 import { st } from "./strings";
 import {
+  applyPreStartCooldownEnabled,
   clearConflictSelection,
   collectConnectionDraft,
   collectServerConfig,
@@ -248,6 +249,7 @@ export function applySnapshotToPanel(
   }
   applyMasterEnabled(snapshot.settings.autoSync.enabled);
   applyPollEnabled(snapshot.settings.autoSync.remotePoll);
+  applyPreStartCooldownEnabled(snapshot.settings.preStartSync ?? false);
 }
 
 export function setTestResult(ok: boolean, latencyMs?: number, message?: string): void {
@@ -351,12 +353,16 @@ export function initPanel(handlers: {
 
   // Immediate-apply options: every toggle posts the full options object.
   // The interval input commits on change (= blur or Enter), never per keystroke.
-  ["dav-f-master", "dav-f-startup", "dav-f-local", "dav-f-poll", "dav-f-showicon"].forEach(
+  ["dav-f-master", "dav-f-startup", "dav-f-local", "dav-f-poll", "dav-f-showicon", "dav-f-prestart"].forEach(
     (id) => {
       el<HTMLInputElement>(id).addEventListener("change", handlers.onApplyOptions);
     },
   );
   el("dav-f-interval").addEventListener("change", handlers.onApplyOptions);
+  el("dav-f-prestart-cooldown").addEventListener(
+    "change",
+    handlers.onApplyOptions,
+  );
   el("dav-f-deletions").addEventListener("change", handlers.onApplyOptions);
 
   // History pane: quiet clear action in the header meta row.
@@ -367,6 +373,11 @@ export function initPanel(handlers: {
   master.addEventListener("change", () => applyMasterEnabled(master.checked));
   const poll = el<HTMLInputElement>("dav-f-poll");
   poll.addEventListener("change", () => applyPollEnabled(poll.checked));
+  const preStart = el<HTMLInputElement>("dav-f-prestart");
+  preStart.addEventListener("change", () =>
+    applyPreStartCooldownEnabled(preStart.checked),
+  );
+  applyPreStartCooldownEnabled(preStart.checked);
   el("dav-sub-toggle").addEventListener("click", () => {
     setSubCollapsed(!subCollapsed);
   });

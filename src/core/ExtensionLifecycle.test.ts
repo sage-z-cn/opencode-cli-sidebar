@@ -435,8 +435,34 @@ describe("ExtensionLifecycle", () => {
       expect(provider.sendPrompt).toHaveBeenCalledWith("hello");
     });
 
-    it("should resolve the active terminal id from runtime terminal key", () => {
-      const instanceStore = {
+    it("keeps the startup overlay while the pre-start sync owns it", () => {
+      // The startup gate reports ready right before the launch gate hands
+      // the indicator to the pre-start sync; clearing it there would blank
+      // the overlay and drop the skip button mid-sync.
+      const postWebviewMessage = vi.fn();
+      const isRunning = vi.fn(() => true);
+      Reflect.set(lifecycle, "tuiProvider", { postWebviewMessage });
+      Reflect.set(lifecycle, "preStartSyncGate", { isRunning });
+      Reflect.set(lifecycle, "startupPhase", "starting");
+      Reflect.set(lifecycle, "startupPhaseVisible", true);
+
+      (lifecycle as any).hideStartupProgress();
+
+      expect(postWebviewMessage).not.toHaveBeenCalled();
+      expect(Reflect.get(lifecycle, "startupPhaseVisible")).toBe(false);
+
+      // Once the sync is done, the next idle phase reaches the webview.
+      isRunning.mockReturnValue(false);
+      Reflect.set(lifecycle, "startupPhase", "starting");
+      Reflect.set(lifecycle, "startupPhaseVisible", true);
+      (lifecycle as any).hideStartupProgress();
+      expect(postWebviewMessage).toHaveBeenCalledWith({
+        type: "startupPhase",
+        phase: "idle",
+      });
+    });
+
+    it("should resolve the active terminal id from runtime terminal key", () => {      const instanceStore = {
         getActive: vi.fn(() => ({
           config: { id: "instance-1" },
           runtime: { terminalKey: "terminal-1" },

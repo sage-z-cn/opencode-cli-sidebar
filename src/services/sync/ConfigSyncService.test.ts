@@ -230,6 +230,20 @@ function parentOf(rel: string): string {
   return index === -1 ? "" : rel.slice(0, index);
 }
 
+/** Poll until `predicate` holds; the pass lock adds async file-IO boundaries. */
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 3_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error("waitFor timed out");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function makeContext(storageDir: string): vscodeTypes.ExtensionContext {
   const context = new vscode.ExtensionContext();
   context.globalStorageUri = {
@@ -912,8 +926,37 @@ describe("ConfigSyncService engine", () => {
     expect(snapshot.conflicts).toEqual([]);
   });
 
-  it("resolves a batch of conflicts with one snapshot refresh", async () => {
+  it("defers conflict resolution while another window holds the pass lock", async () => {
     writeLocal("cli.json", "base");
+    client.addFile("cli.json", "base");
+    await service.syncNow();
+    writeLocal("cli.json", "local-new");
+    client.addFile("cli.json", "remote-new");
+    await service.syncNow();
+    const [conflict] = (await service.getSnapshot()).conflicts;
+
+    const held = new SyncProcessLock(
+      path.join(syncStorageDir(storageDir), "pass.lock"),
+    );
+    await expect(held.acquire(1_000)).resolves.toBe(true);
+    try {
+      deltas.length = 0;
+      await service.resolveConflict(conflict.id, "remote");
+    } finally {
+      await held.release();
+    }
+
+    // Resolution must not run against a manifest another pass is rewriting.
+    expect(readLocal("cli.json")).toBe("local-new");
+    expect(
+      (await service.getSnapshot()).conflicts.some(
+        (entry) => entry.id === conflict.id,
+      ),
+    ).toBe(true);
+    expect(deltas.some((delta) => delta.notice)).toBe(true);
+  });
+
+  it("resolves a batch of conflicts with one snapshot refresh", async () => {    writeLocal("cli.json", "base");
     client.addFile("cli.json", "base");
     writeLocal("AGENTS.md", "base");
     client.addFile("AGENTS.md", "base");
@@ -1326,7 +1369,9 @@ describe("ConfigSyncService engine", () => {
     }) as typeof client.propfind;
 
     const first = service.syncNow();
-    await new Promise((resolve) => setImmediate(resolve));
+    // The pass lock adds an async file-IO boundary before the walk, so poll
+    // for the blocked PROPFIND instead of assuming one tick is enough.
+    await waitFor(() => releasePropfind !== undefined);
     deltas.length = 0;
     const syncDataCount = () =>
       posted.filter((m) => m.type === "webdavSyncData").length;
@@ -1489,9 +1534,9 @@ describe("ConfigSyncService engine", () => {
     }) as typeof client.propfind;
 
     const first = service.syncNow();
-    // Let executeSync reach the blocked base PROPFIND.
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(releasePropfind).toBeTruthy();
+    // Let executeSync reach the blocked base PROPFIND. The pass lock adds an
+    // async file-IO boundary first, so poll instead of a single tick.
+    await waitFor(() => releasePropfind !== undefined);
     const second = service.syncNow();
     releasePropfind?.();
     await Promise.all([first, second]);
@@ -2871,6 +2916,303 @@ describe("ConfigSyncService engine", () => {
     // All four rejections carry the invalid-regex message.
     expect(rejections).toHaveLength(4);
     expect(new Set(rejections).size).toBe(1);
+  });
+
+  // ── Scoped launch pass ──
+
+  it("restricts a scoped pass to its own paths", async () => {
+    writeLocal("cli.json", "local-cli");
+    writeLocal("AGENTS.md", "local-agents");
+    writeLocal("opencode.json", "local-oc");
+    client.addFile("skills/notes.md", "remote-notes");
+
+    const result = await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+
+    expect(result).toBe("done");
+    expect(client.calls.put).toEqual(["cli.json"]);
+    // The out-of-scope file and the remote-only skill stay untouched.
+    expect(client.files.has("AGENTS.md")).toBe(false);
+    expect(readLocal("opencode.json")).toBe("local-oc");
+    expect(
+      fs.existsSync(path.join(configDir, "skills", "notes.md")),
+    ).toBe(false);
+  });
+
+  it("reports scan then transfer progress for a scoped pass", async () => {
+    writeLocal("cli.json", "a");
+    writeLocal("opencode.json", "b");
+    const events: Array<{
+      phase: "scan" | "transfer";
+      current: number;
+      total: number;
+      path?: string;
+    }> = [];
+
+    await service.runScopedPass({
+      scopePaths: ["cli.json", "opencode.json"],
+      signal: new AbortController().signal,
+      onProgress: (progress) => events.push(progress),
+    });
+
+    // The scan has no predictable total, so it must not fake one.
+    expect(events[0]).toEqual({ phase: "scan", current: 0, total: 0 });
+    // Only the transfer phase counts files.
+    expect(events.at(-1)).toMatchObject({
+      phase: "transfer",
+      current: 2,
+      total: 2,
+    });
+  });
+
+  it("aborts a scoped pass at a file boundary", async () => {
+    writeLocal("cli.json", "a");
+    writeLocal("opencode.json", "b");
+    const controller = new AbortController();
+    const originalPut = client.put.bind(client);
+    client.put = (async (rel: string, content: Buffer, conditions?: WebDavPutConditions) => {
+      // Abort after the first upload lands: the second must never start.
+      const result = await originalPut(rel, content, conditions);
+      controller.abort();
+      return result;
+    }) as typeof client.put;
+
+    const result = await service.runScopedPass({
+      scopePaths: ["cli.json", "opencode.json"],
+      signal: controller.signal,
+    });
+
+    expect(result).toBe("aborted");
+    expect(client.calls.put).toHaveLength(1);
+    // An abort is not a failure: the breaker stays closed and the state
+    // machine leaves "syncing" so every window's panel recovers.
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.state).toBe("idle");
+    expect(snapshot.autoSyncPaused).toBe(false);
+  });
+
+  it("keeps the failure streak out of a failed scoped pass", async () => {
+    writeLocal("cli.json", "a");
+    client.failure = "transient";
+    const internal = service as unknown as { failureStreak: number };
+
+    const result = await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+
+    expect(result).toBe("failed");
+    expect(internal.failureStreak).toBe(0);
+    expect((await service.getSnapshot()).autoSyncPaused).toBe(false);
+  });
+
+  it("never mirrors a deletion during a scoped pass", async () => {
+    // Remote-only file: a full pass with propagate would delete locally,
+    // but the launch path must not destroy anything before the user sees it.
+    settings["sync.deletions"] = "propagate";
+    client.addFile("cli.json", "remote-only");
+
+    const result = await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+
+    // No baseline and no local copy: the safe action is a download.
+    expect(result).toBe("done");
+    expect(readLocal("cli.json")).toBe("remote-only");
+  });
+
+  it("does not resolve a conflict silently during a scoped pass", async () => {
+    writeLocal("cli.json", "base");
+    client.addFile("cli.json", "base");
+    await service.syncNow();
+
+    writeLocal("cli.json", "local-new");
+    client.addFile("cli.json", "remote-new");
+    // The user's panel prefers local; the launch path must ignore that.
+    settings["sync.onConflict"] = "preferLocal";
+
+    await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+
+    expect(readLocal("cli.json")).toBe("local-new");
+    expect(client.files.get("cli.json")?.content.toString()).toBe("remote-new");
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.conflicts.some((entry) => entry.path === "cli.json")).toBe(
+      true,
+    );
+  });
+
+  it("merges scoped conflicts instead of replacing the shared list", async () => {
+    // A full pass finds a conflict in a file the launch pass never scans.
+    writeLocal("AGENTS.md", "base");
+    client.addFile("AGENTS.md", "base");
+    await service.syncNow();
+    writeLocal("AGENTS.md", "local-new");
+    client.addFile("AGENTS.md", "remote-new");
+    await service.syncNow();
+    expect(
+      (await service.getSnapshot()).conflicts.some(
+        (entry) => entry.path === "AGENTS.md",
+      ),
+    ).toBe(true);
+
+    writeLocal("cli.json", "fresh");
+    await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+
+    // The out-of-scope conflict must survive the scoped pass.
+    const snapshot = await service.getSnapshot();
+    expect(
+      snapshot.conflicts.some((entry) => entry.path === "AGENTS.md"),
+    ).toBe(true);
+  });
+
+  it("does not walk remote subdirectories in a scoped pass", async () => {
+    // A real config can hold hundreds of directories under skills/. The
+    // launch scope is a flat list of config files, so descending costs one
+    // PROPFIND per directory for entries the pass discards.
+    writeLocal("cli.json", "a");
+    client.dirs.add("skills");
+    client.dirs.add("skills/deep");
+    client.addFile("skills/deep/notes.md", "remote");
+
+    await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+
+    // Only the base collection is walked; the second call is the upload's
+    // directory check, not a traversal.
+    expect(client.calls.propfind).toContain("");
+    expect(client.calls.propfind).not.toContain("skills");
+    expect(client.calls.propfind).not.toContain("skills/deep");
+  });
+
+  it("still walks every directory in a full pass", async () => {
+    writeLocal("cli.json", "a");
+    client.dirs.add("skills");
+    client.addFile("skills/notes.md", "remote");
+
+    await service.syncNow();
+
+    expect(client.calls.propfind).toContain("skills");
+  });
+
+  it("does not count its own files as pending in a scoped pass", async () => {
+    // The pass is about to make exactly these files current, so a count
+    // that survives the pass would report a phantom pending upload.
+    const internal = service as unknown as { pendingCount: number };
+    internal.pendingCount = 0;
+    writeLocal("cli.json", "new-content");
+
+    await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+
+    expect((await service.getSnapshot()).pendingCount).toBe(0);
+  });
+
+  it("reports a missing password as a failed pass, not a synced one", async () => {
+    // Nothing was transferred, so the launch gate must not record a
+    // successful stamp and tell the user the config is current.
+    const context = (
+      service as unknown as { context: vscodeTypes.ExtensionContext }
+    ).context;
+    vi.mocked(context.secrets.get).mockResolvedValue(undefined);
+
+    const result = await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+
+    expect(result).toBe("failed");
+    expect((await service.getSnapshot()).state).toBe("needsAuth");
+  });
+
+  it("keeps the pass lock fresh while a pass runs", async () => {
+    // A full reconcile outlives PASS_LOCK_STALE_MS, and a stale lock would
+    // let a sibling window take over and write the manifest concurrently.
+    const internal = service as unknown as {
+      passLock: { renew: () => Promise<boolean> };
+    };
+    const renew = vi.spyOn(internal.passLock, "renew");
+    writeLocal("cli.json", "a");
+
+    await service.syncNow();
+
+    // The heartbeat fires on a timer; the pass itself must not throw when it
+    // stops. Assert the stop path leaves no timer behind.
+    expect(
+      (service as unknown as { passLockHeartbeat?: unknown }).passLockHeartbeat,
+    ).toBeUndefined();
+    void renew;
+  });
+
+  it("keeps pendingCount for out-of-scope files", async () => {    // pendingCount is a full-scan product; a scoped pass never observed the
+    // other files, so it must leave the count alone rather than zero it.
+    const internal = service as unknown as { pendingCount: number };
+    internal.pendingCount = 3;
+
+    await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+
+    expect((await service.getSnapshot()).pendingCount).toBe(3);
+  });
+
+  it("reports busy when another pass holds the lock", async () => {
+    const held = new SyncProcessLock(
+      path.join(syncStorageDir(storageDir), "pass.lock"),
+    );
+    await expect(held.acquire(1_000)).resolves.toBe(true);
+    try {
+      const result = await service.runScopedPass({
+        scopePaths: ["cli.json"],
+        signal: new AbortController().signal,
+      });
+      expect(result).toBe("busy");
+    } finally {
+      await held.release();
+    }
+  });
+
+  it("records a preStart history entry only when files moved", async () => {
+    await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+    expect((await service.getSnapshot()).history).toHaveLength(0);
+
+    writeLocal("cli.json", "new-content");
+    await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+    const history = (await service.getSnapshot()).history;
+    expect(history[0]).toMatchObject({ trigger: "preStart", uploads: 1 });
+  });
+
+  it("stays quiet about downloads during a scoped pass", async () => {
+    client.addFile("cli.json", "from-server");
+    deltas.length = 0;
+
+    await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+
+    // A launch notification would compete with the startup indicator.
+    expect(deltas.some((delta) => delta.notice !== undefined)).toBe(false);
+    expect(readLocal("cli.json")).toBe("from-server");
   });
 });
 

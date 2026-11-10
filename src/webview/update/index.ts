@@ -14,6 +14,7 @@ import type {
   OpenCodeUpdateUiStatus,
 } from "../../types";
 import { postMessage } from "../shared/vscode-api";
+import { showToast } from "../shared/toast";
 import { ICONS as LUCIDE_ICONS, icon } from "../shared/icons";
 import { UpdateDialogShell, trapFocus } from "./dialog";
 import {
@@ -154,9 +155,8 @@ let checkFailed = false;
 /** Keyboard position inside the method list. */
 let methodFocused = 0;
 
-type CardMode = "hint" | "checking";
+type CardMode = "checking";
 let cardMode: CardMode | null = null;
-let hintTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ── A11y ──
 
@@ -452,7 +452,7 @@ function renderProgressLine(): void {
   );
 }
 
-// ── Hint card ──
+// ── Update card (checking / progress entry) ──
 
 function hideCardFull(): void {
   if (!card) return;
@@ -460,21 +460,13 @@ function hideCardFull(): void {
   card.classList.add("hidden");
   card.innerHTML = "";
   cardMode = null;
-  if (hintTimer !== null) {
-    clearTimeout(hintTimer);
-    hintTimer = null;
-  }
   if (hadFocus && pill && !pill.disabled) pill.focus();
 }
 
-function cardHead(kind: "prog" | "info", title: string): string {
-  const iconHtml =
-    kind === "prog"
-      ? ""
-      : '<span class="ocu-card-ic ocu-ic-info">' + ICONS.info + "</span>";
+/** Card head for the checking/progress states; the icon is always the spinner. */
+function cardHead(title: string): string {
   return (
     '<div class="ocu-card-head">' +
-    iconHtml +
     '<span class="ocu-card-title">' +
     escapeHtml(title) +
     "</span>" +
@@ -486,23 +478,16 @@ function cardHead(kind: "prog" | "info", title: string): string {
   );
 }
 
+// ── Hint toast ──
+
+/**
+ * Transient hint. Uses the shared toast instead of the update card: the card
+ * doubles as the "checking for updates" indicator and as the progress entry
+ * point, so reusing it for a message that merely disappears would couple two
+ * unrelated lifetimes.
+ */
 function showHintCard(text: string): void {
-  if (!card) return;
-  if (hintTimer !== null) {
-    clearTimeout(hintTimer);
-    hintTimer = null;
-  }
-  cardMode = "hint";
-  card.setAttribute("role", "status");
-  card.innerHTML =
-    cardHead("info", text) + '<div class="ocu-card-body"></div>';
-  card.classList.remove("hidden");
-  hintTimer = setTimeout(() => {
-    hintTimer = null;
-    if (cardMode === "hint") {
-      hideCardFull();
-    }
-  }, HINT_TTL_MS);
+  showToast({ text, tone: "info", ttlMs: HINT_TTL_MS });
 }
 
 function showCheckingCard(): void {
@@ -510,7 +495,7 @@ function showCheckingCard(): void {
   cardMode = "checking";
   card.setAttribute("role", "status");
   card.innerHTML =
-    cardHead("prog", t("checkingUpdates", "Checking for updates…")) +
+    cardHead(t("checkingUpdates", "Checking for updates…")) +
     '<div class="ocu-card-body"></div>';
   card.classList.remove("hidden");
 }

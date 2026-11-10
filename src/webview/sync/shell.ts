@@ -40,6 +40,11 @@ export interface SyncShellStrings {
   fSelfSignedHint: string;
   fShowIcon: string;
   fShowIconHint: string;
+  fPreStart: string;
+  fPreStartHint: string;
+  preStartCooldown: string;
+  preStartCooldownUnit: string;
+  preStartHint: string;
   deletionPolicy: string;
   deletionPrompt: string;
   deletionIgnore: string;
@@ -123,6 +128,12 @@ export function renderSyncShell(d: SyncShellStrings): string {
           </div>
           <div class="dav-sub-settings" id="dav-auto-group">
             <div class="dav-sub-body" id="dav-sub-body">
+              <label class="dav-check"><input type="checkbox" id="dav-f-prestart"><span>${d.fPreStart}<span class="dav-hint">${d.fPreStartHint}</span></span></label>
+              <div class="dav-poll-row" id="dav-prestart-cooldown-row">
+                <label class="dav-poll-label" for="dav-f-prestart-cooldown">${d.preStartCooldown}</label>
+                <input type="number" id="dav-f-prestart-cooldown" value="5" min="0" step="1">
+                <span class="dav-poll-unit">${d.preStartCooldownUnit}</span>
+              </div>
               <label class="dav-check"><input type="checkbox" id="dav-f-startup"><span>${d.fStartup}<span class="dav-hint">${d.fStartupHint}</span></span></label>
               <label class="dav-check"><input type="checkbox" id="dav-f-local"><span>${d.fLocal}<span class="dav-hint">${d.fLocalHint}</span></span></label>
               <label class="dav-check"><input type="checkbox" id="dav-f-poll"><span>${d.fPoll}<span class="dav-hint">${d.fPollHint}</span></span></label>
@@ -131,6 +142,7 @@ export function renderSyncShell(d: SyncShellStrings): string {
                 <input type="number" id="dav-f-interval" value="30" min="1" step="1">
                 <span class="dav-poll-unit">${d.pollUnit}</span>
               </div>
+              <div class="dav-hint" id="dav-prestart-hint">${d.preStartHint}</div>
             </div>
           </div>
           <label class="dav-check dav-block-gap"><input type="checkbox" id="dav-f-showicon"><span>${d.fShowIcon}<span class="dav-hint">${d.fShowIconHint}</span></span></label>

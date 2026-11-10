@@ -12,6 +12,7 @@ import { OpenCodeToolOperator } from "../services/aiTools/OpenCodeToolOperator";
 import { NativeTerminalManager } from "../services/NativeTerminalManager";
 import { TerminalBackendRegistry } from "../services/terminalBackends";
 import type { IdeContextServer } from "../services/ideContext/IdeContextServer";
+import type { LaunchGate } from "../services/LaunchGate";
 import { SessionRuntime } from "./SessionRuntime";
 
 const vscode = await vi.importActual<typeof vscodeTypes>(
@@ -104,6 +105,7 @@ describe("SessionRuntime (native-only)", () => {
     ideContextServer?: IdeContextServer;
     /** Leave the real readiness poll loop in place. */
     stubHttpPolling?: boolean;
+    launchGate?: LaunchGate;
   }): SessionRuntime {
     const runtime = new SessionRuntime(
       terminalManager,
@@ -122,6 +124,7 @@ describe("SessionRuntime (native-only)", () => {
       },
       nativeTerminalManager,
       overrides?.ideContextServer,
+      overrides?.launchGate,
     );
     // The HTTP API has no opt-out setting, so every start enters the
     // readiness path. Nothing listens on the assigned port in unit tests;
@@ -190,6 +193,79 @@ describe("SessionRuntime (native-only)", () => {
     expect(mockPostMessage).toHaveBeenCalledWith({
       type: "openCodeSessionStarted",
     });
+  });
+
+  it("runs the pre-launch sync on the first launch only", async () => {
+    instanceStore.upsert({
+      config: { id: "default" },
+      runtime: { terminalKey: "default" },
+      state: "disconnected",
+    });
+    const order: string[] = [];
+    const launchGate: LaunchGate = {
+      beforeOpenCodeStart: vi.fn(async () => {
+        order.push("sync");
+      }),
+    };
+    sessionRuntime = createSessionRuntime({ launchGate });
+
+    await sessionRuntime.startOpenCode();
+    expect(launchGate.beforeOpenCodeStart).toHaveBeenCalledTimes(1);
+    // v1 has no shared service, so the gate is told exactly that.
+    expect(launchGate.beforeOpenCodeStart).toHaveBeenCalledWith("v1");
+
+    // A restart reuses the same path; rewriting cli.json under a running
+    // TUI would race that process's own write.
+    await sessionRuntime.switchToInstance("default", { forceRestart: true });
+    expect(launchGate.beforeOpenCodeStart).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["sync"]);
+  });
+
+  it("tells the gate when a ready v2 service makes the sync narrower", async () => {
+    instanceStore.upsert({
+      config: { id: "default" },
+      runtime: { terminalKey: "default" },
+      state: "disconnected",
+    });
+    const launchGate: LaunchGate = {
+      beforeStart: vi.fn(async () => "ready" as const),
+      beforeOpenCodeStart: vi.fn(async () => {}),
+    };
+    sessionRuntime = createSessionRuntime({ launchGate });
+
+    // v1 does not consult the shared-service gate at all.
+    await sessionRuntime.startOpenCode();
+    expect(launchGate.beforeStart).not.toHaveBeenCalled();
+    expect(launchGate.beforeOpenCodeStart).toHaveBeenCalledWith("v1");
+  });
+
+  it("waits for the pre-launch sync before spawning the terminal", async () => {
+    instanceStore.upsert({
+      config: { id: "default" },
+      runtime: { terminalKey: "default" },
+      state: "disconnected",
+    });
+    const order: string[] = [];
+    const launchGate: LaunchGate = {
+      beforeOpenCodeStart: async () => {
+        order.push("sync-start");
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        order.push("sync-end");
+      },
+    };
+    sessionRuntime = createSessionRuntime({ launchGate });
+    const createTerminal = vi
+      .spyOn(terminalManager, "createTerminal")
+      .mockImplementation(() => {
+        order.push("spawn");
+        return {} as never;
+      });
+
+    await sessionRuntime.startOpenCode();
+
+    expect(createTerminal).toHaveBeenCalled();
+    // The sync must settle before the process reads the config directory.
+    expect(order).toEqual(["sync-start", "sync-end", "spawn"]);
   });
 
   it("getActiveSession returns session after creation", () => {

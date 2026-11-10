@@ -54,6 +54,15 @@ export function buildSyncShellStrings(): SyncShellStrings {
     fShowIconHint: t(
       "Shown on the config sync toolbar button; appears for syncing, pending, conflicts and errors only",
     ),
+    fPreStart: t("Sync key config before OpenCode starts"),
+    fPreStartHint: t(
+      "Holds the launch until opencode.json, cli.json and the oh-my-opencode-slim config are current",
+    ),
+    preStartCooldown: t("Cooldown"),
+    preStartCooldownUnit: t("min"),
+    preStartHint: t(
+      "Skips the launch sync when it ran within the cooldown window. 0 syncs on every launch.",
+    ),
     deletionPolicy: t("When a file is deleted"),
     deletionPrompt: t("Ask first"),
     deletionIgnore: t("Keep the other copy"),
@@ -63,8 +72,10 @@ export function buildSyncShellStrings(): SyncShellStrings {
     ),
     autoSync: t("Auto sync"),
     chevTitle: t("Collapse or expand trigger sources"),
-    fStartup: t("Sync on startup"),
-    fStartupHint: t("Full reconcile once after the extension starts"),
+    fStartup: t("Sync after the extension starts"),
+    fStartupHint: t(
+      "Full reconcile of every sync item; when launch sync is on, the files it covers are already current",
+    ),
     fLocal: t("Upload local changes"),
     fLocalHint: t(
       "Watch the config directory and upload after a 30 s debounce; handled by polling or manual sync when off",

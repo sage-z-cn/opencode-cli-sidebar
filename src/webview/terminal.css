@@ -71,6 +71,38 @@ html {
   pointer-events: none;
 }
 
+/* The pre-launch sync shares the toast anchor instead of covering the whole
+   terminal: it appears while the terminal is about to be filled, so a
+   full-screen sheet would hide the screen the launch just produced. Same
+   anchor, same badge shape, same click-through contract as `.oc-toast`. */
+.startup-status[data-phase="preStartSync"] {
+  inset: auto;
+  left: 50%;
+  top: 70%;
+  /* Centred on the 70% line in both axes, matching `.oc-toast`: a bare
+     translateX would anchor the top edge, so the two badges of different
+     heights would sit at visibly different places. */
+  transform: translate(-50%, -50%);
+  /* One row, like the toast it replaces: the spinner leads the text and the
+     skip action trails it, instead of four stacked lines. */
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  max-width: 90%;
+  border: 1px solid var(--vscode-panel-border, #2e2e2e);
+  border-radius: 3px;
+  background: var(--vscode-editorWidget-background, #1f1f1f);
+  color: var(--vscode-foreground, #cccccc);
+  font-size: 11px;
+  text-align: left;
+  opacity: 0.95;
+  /* Below the toast: the settled verdict replaces this badge in the same
+     spot, so the toast must win while both are momentarily on screen. */
+  z-index: 9;
+}
+
 .startup-status.hidden {
   display: none;
 }
@@ -84,9 +116,102 @@ html {
   animation: startup-status-spin 900ms linear infinite;
 }
 
+/* The badge layout is compact, so its spinner is smaller than the full-screen
+   one. Declared after the base rule so it wins on specificity ties. */
+.startup-status[data-phase="preStartSync"] .startup-status-spinner {
+  width: 12px;
+  height: 12px;
+}
+
 .startup-status-text {
   color: var(--vscode-foreground, #cccccc);
   max-width: 28em;
+}
+
+/* Pre-launch sync detail line and its skip action. The overlay itself is
+   click-through, so the button re-enables pointer events for itself. */
+.startup-status-progress {
+  font-size: 11px;
+  max-width: 28em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.startup-status-progress.hidden {
+  display: none;
+}
+
+.startup-status-skip {
+  pointer-events: auto;
+  border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, #2e2e2e));
+  border-radius: 3px;
+  padding: 1px 8px;
+  font-family: var(--vscode-font-family);
+  font-size: 11px;
+  cursor: pointer;
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.12));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground, #d4d4d4));
+}
+
+.startup-status-skip:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+.startup-status-skip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.startup-status-skip.hidden {
+  display: none;
+}
+
+/* Shared transient toast (shared/toast.ts). Anchored to the terminal surface
+   and click-through, so it never covers the OpenCode screen or steals input.
+   Sits at 70% height rather than the very bottom: the bottom rows are where
+   OpenCode keeps its prompt and status, and a toast there would cover the
+   text the user is about to read.
+   Colour carries the tone; the text is the accessible copy. */
+.oc-toast {
+  position: absolute;
+  left: 50%;
+  top: 70%;
+  /* Centred on the 70% line in both axes so this badge and the pre-start
+     sync badge share one anchor regardless of their heights. */
+  transform: translate(-50%, -50%);
+  z-index: 9;
+  max-width: 90%;
+  padding: 5px 12px;
+  border: 1px solid var(--vscode-panel-border, #2e2e2e);
+  border-radius: 3px;
+  background: var(--vscode-editorWidget-background, #1f1f1f);
+  color: var(--vscode-foreground, #cccccc);
+  font-family: var(--vscode-font-family);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0.95;
+}
+
+.oc-toast[data-tone="success"] {
+  border-color: var(--vscode-testing-iconPassed, #388a34);
+}
+
+.oc-toast[data-tone="warn"] {
+  border-color: var(--vscode-inputValidation-warningBorder, #b89500);
+  color: var(--vscode-inputValidation-warningForeground, #ddb100);
+}
+
+.oc-toast[data-tone="error"] {
+  border-color: var(--vscode-inputValidation-errorBorder, #be1100);
+  color: var(--vscode-inputValidation-errorForeground, #f48771);
+}
+
+.oc-toast.hidden {
+  display: none;
 }
 
 @keyframes startup-status-spin {

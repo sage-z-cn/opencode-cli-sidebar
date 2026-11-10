@@ -120,6 +120,7 @@ function buildStrings() {
   histUnknownTime: syncT("histUnknownTime", "—"),
   trigNone: syncT("trigNone", "—"),
   trigStartup: syncT("trigStartup", "Startup"),
+  trigPreStart: syncT("trigPreStart", "Launch sync"),
   trigLocalChange: syncT("trigLocalChange", "Local change"),
   trigPoll: syncT("trigPoll", "Poll"),
   trigRetry: syncT("trigRetry", "Retry"),

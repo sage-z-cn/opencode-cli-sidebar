@@ -24,7 +24,16 @@ import {
 import { OpenCodeChangelogService } from "../services/OpenCodeChangelogService";
 import { ChangelogTranslationService } from "../services/ChangelogTranslationService";
 import { ConfigSyncService } from "../services/sync/ConfigSyncService";
-import { setActiveConfigSyncService } from "../services/sync/syncServiceRegistry";
+import {
+  getActiveConfigSyncService,
+  setActiveConfigSyncService,
+} from "../services/sync/syncServiceRegistry";
+import {
+  PreStartSyncGate,
+  asPreStartSyncRunner,
+  type PreStartSyncOutcome,
+} from "../services/sync/PreStartSyncGate";
+import type { LaunchGate } from "../services/LaunchGate";
 import { OpenCodeReadiness } from "../services/OpenCodeReadiness";
 import { StartupCoordinator } from "../services/StartupCoordinator";
 import { IdeContextServer } from "../services/ideContext/IdeContextServer";
@@ -37,6 +46,7 @@ import {
   registerCommands as registerAllCommands,
   type RegisterCommandDependencies,
 } from "./commands";
+import type { PreStartSyncResult } from "../types";
 
 /**
  * SecretStorage key used as a cross-window update signal bus:
@@ -84,6 +94,9 @@ export class ExtensionLifecycle {
   private configSyncService: ConfigSyncService | undefined;
   private openCodeReadiness: OpenCodeReadiness | undefined;
   private startupCoordinator: StartupCoordinator | undefined;
+  private preStartSyncGate: PreStartSyncGate | undefined;
+  /** Status-bar entry shown while the pre-launch sync holds the start. */
+  private preStartSyncStatusItem: vscode.StatusBarItem | undefined;
   /** Startup indicator state posted to the webview, plus its delayed timer. */
   private startupPhase: "starting" | "idle" = "idle";
   private startupPhaseVisible = false;
@@ -345,6 +358,44 @@ export class ExtensionLifecycle {
         this.openCodeReadiness,
       );
 
+      this.preStartSyncGate = new PreStartSyncGate({
+        // TerminalProvider is constructed before ConfigSyncService, so the
+        // runner resolves lazily through the registry instead of a captured
+        // instance.
+        resolveRunner: () => {
+          const service = getActiveConfigSyncService();
+          return service ? asPreStartSyncRunner(service) : undefined;
+        },
+        logger,
+        globalStoragePath: context.globalStorageUri.fsPath,
+        onProgress: (progress) => {
+          this.tuiProvider?.postWebviewMessage({
+            type: "startupPhase",
+            phase: progress === undefined ? "idle" : "preStartSync",
+            progress,
+          });
+        },
+        onActiveChange: (active) => {
+          if (active) {
+            this.showPreStartSyncStatusBar();
+          } else {
+            this.hidePreStartSyncStatusBar();
+          }
+        },
+        onResult: (outcome) => this.showPreStartSyncResult(outcome),
+      });
+      context.subscriptions.push(this.preStartSyncGate);
+      const startupCoordinator = this.startupCoordinator;
+      const preStartSyncGate = this.preStartSyncGate;
+      const launchGate: LaunchGate = {
+        beforeStart: () => startupCoordinator.beforeStart(),
+        beforeOpenCodeStart: async (outcome) => {
+          await preStartSyncGate.beforeOpenCodeStart({
+            v2ServiceReady: outcome === "ready",
+          });
+        },
+      };
+
       this.tuiProvider = new TerminalProvider(
         context,
         this.terminalManager,
@@ -357,7 +408,7 @@ export class ExtensionLifecycle {
         this.opencodeUpdateService,
         openCodeChangelogService,
         changelogTranslationService,
-        this.startupCoordinator,
+        launchGate,
       );
 
       this.tuiProviderRegistration?.dispose();
@@ -497,6 +548,7 @@ export class ExtensionLifecycle {
       get configSyncService() {
         return self.configSyncService;
       },
+      skipPreStartSync: () => this.preStartSyncGate?.skip() ?? false,
       getActiveTerminalId: () => this.getActiveTerminalId(),
       sendTerminalCwd: () => this.sendTerminalCwd(),
       sendPrompt: (prompt: string) =>
@@ -820,9 +872,53 @@ export class ExtensionLifecycle {
     const wasVisible = this.startupPhaseVisible;
     this.startupPhase = "idle";
     this.startupPhaseVisible = false;
-    if (wasVisible) {
+    // The launch gate hands the indicator to the pre-start sync right after
+    // this phase settles; clearing it here would blank the overlay and drop
+    // the skip button mid-sync.
+    if (wasVisible && !this.preStartSyncGate?.isRunning()) {
       this.tuiProvider?.postWebviewMessage({ type: "startupPhase", phase: "idle" });
     }
+  }
+
+  /** Status-bar entry so the skip action is reachable while the sidebar is hidden. */
+  private showPreStartSyncStatusBar(): void {
+    if (!this.preStartSyncStatusItem) {
+      this.preStartSyncStatusItem = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Left,
+        90,
+      );
+      this.preStartSyncStatusItem.command = "opencode-cli-sidebar.skipPreStartSync";
+      this.preStartSyncStatusItem.text = `$(sync~spin) ${l10n.t("Syncing OpenCode configuration")}`;
+      this.preStartSyncStatusItem.tooltip = l10n.t(
+        "Click to skip this sync and start OpenCode",
+      );
+    }
+    this.preStartSyncStatusItem.show();
+  }
+
+  private hidePreStartSyncStatusBar(): void {
+    this.preStartSyncStatusItem?.hide();
+  }
+
+  /**
+   * Hand the settled verdict to the webview, which renders it inside the
+   * sidebar itself.
+   *
+   * No native VS Code surface is involved: a notification toast would follow
+   * the user out of the sidebar and linger in the notification centre, and
+   * the status bar is reserved for the skip action while a pass runs. The
+   * launch is never delayed — the message is queued and the terminal spawns
+   * immediately after.
+   */
+  private showPreStartSyncResult(outcome: PreStartSyncOutcome): void {
+    const result = toPreStartSyncResult(outcome);
+    if (!result) {
+      return;
+    }
+    this.tuiProvider?.postWebviewMessage({
+      type: "preStartSyncResult",
+      result,
+    });
   }
 
   async deactivate(): Promise<void> {
@@ -904,6 +1000,10 @@ export class ExtensionLifecycle {
     this.openCodeReadiness = undefined;
     this.hideStartupProgress();
 
+    this.preStartSyncGate = undefined;
+    this.preStartSyncStatusItem?.dispose();
+    this.preStartSyncStatusItem = undefined;
+
     this.codeActionProvider = undefined;
 
     this.captureManager = undefined;
@@ -968,5 +1068,29 @@ export class ExtensionLifecycle {
         `[ExtensionLifecycle] Failed to auto-enable sendKeybindingsToShell: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+}
+
+/**
+ * Narrow the gate's outcome to what the overlay can render. `disabled` never
+ * showed the overlay, `busy-waited` already means a sibling's pass covered
+ * this launch, and `skipped` is the user's own decision, so none of them
+ * deserve a verdict.
+ */
+function toPreStartSyncResult(
+  outcome: PreStartSyncOutcome,
+): PreStartSyncResult | undefined {
+  switch (outcome) {
+    case "synced":
+      return "synced";
+    case "cooldown":
+    case "busy-waited":
+      return "cooldown";
+    case "timeout":
+      return "timeout";
+    case "failed":
+      return "failed";
+    default:
+      return undefined;
   }
 }

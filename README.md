@@ -130,6 +130,10 @@ Also under OpenCode v2, an **OpenCode CLI Settings** button appears next to the 
 
 > Like the keymap button, this button is shown only for OpenCode v2.
 
+## WebDAV Config Sync
+
+The config sync panel keeps OpenCode configuration files in sync across devices through a WebDAV server. `sync.preStartSync` is independent of the startup reconcile and is off by default: it makes the launch wait, so it must be switchable on its own. When enabled, the key files (`opencode.json`, `cli.json`, and the oh-my-opencode-slim config) sync before OpenCode starts, and the remaining items (`AGENTS.md`, `skills/`) are reconciled in the background afterwards. The launch sync is skipped when it already ran within `sync.preStartSyncCooldownMinutes` minutes, default `5`; `0` syncs on every launch. Clicking **Skip** in the sidebar overlay or the status-bar entry aborts the running pass: files already transferred are kept, and the next launch syncs again. With launch sync on, `sync.autoSyncOnStartup` no longer triggers its own pass, so the same tree is not scanned twice.
+
 ## HTTP API Integration
 
 The extension communicates with OpenCode CLI via an HTTP API for reliable bidirectional communication:

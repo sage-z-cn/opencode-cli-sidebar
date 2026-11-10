@@ -62,6 +62,11 @@ export function populateGeneralForm(state: SyncUiState): void {
   input("dav-f-http").checked = settings.allowInsecureHttp;
   input("dav-f-selfsigned").checked = settings.acceptSelfSigned;
   input("dav-f-showicon").checked = settings.showStatusIcon;
+  input("dav-f-prestart").checked = settings.preStartSync ?? false;
+  input("dav-f-prestart-cooldown").value = String(
+    Math.max(0, settings.preStartSyncCooldownMinutes ?? 5),
+  );
+  applyPreStartCooldownEnabled(settings.preStartSync ?? false);
   input("dav-f-master").checked = settings.autoSync.enabled;
   input("dav-f-startup").checked = settings.autoSync.onStartup;
   input("dav-f-local").checked = settings.autoSync.onLocalChange;
@@ -118,8 +123,30 @@ export function collectSyncOptions(): WebDavSyncOptions {
       Number(input("dav-f-interval").value) || 30,
     ),
     showStatusIcon: input("dav-f-showicon").checked,
+    preStartSync: input("dav-f-prestart").checked,
+    preStartSyncCooldownMinutes: Math.max(
+      0,
+      Math.floor(Number(input("dav-f-prestart-cooldown").value) || 0),
+    ),
     deletions: collectDeletionPolicy(),
   };
+}
+
+/** Enable the cooldown input only while the pre-launch sync is on. */
+export function applyPreStartCooldownEnabled(enabled: boolean): void {
+  // The row is hidden rather than dimmed: a disabled number field still
+  // reads as a setting the user can act on, and the whole row is meaningless
+  // while the launch sync is off.
+  const row = document.getElementById("dav-prestart-cooldown-row");
+  row?.classList.toggle("hidden", !enabled);
+  // The explanatory line only makes sense while the feature is on.
+  document
+    .getElementById("dav-prestart-hint")
+    ?.classList.toggle("hidden", !enabled);
+  const field = document.getElementById("dav-f-prestart-cooldown");
+  if (field instanceof HTMLInputElement) {
+    field.disabled = !enabled;
+  }
 }
 
 /** True when server-card fields differ from the snapshot (unsaved edits). */
@@ -579,6 +606,8 @@ function triggerLabel(trigger: WebDavHistoryEntry["trigger"]): string {
   switch (trigger) {
     case "startup":
       return st.trigStartup;
+    case "preStart":
+      return st.trigPreStart;
     case "localChange":
       return st.trigLocalChange;
     case "poll":

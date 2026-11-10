@@ -27,16 +27,24 @@ describe("registerSyncCommands", () => {
     const service = { syncNow } as unknown as ConfigSyncService;
     const disposables = registerSyncCommands({ configSyncService: service });
 
-    expect(disposables).toHaveLength(1);
+    expect(disposables).toHaveLength(2);
     expect(registered.has("opencode-cli-sidebar.webdavSyncNow")).toBe(true);
 
     await registered.get("opencode-cli-sidebar.webdavSyncNow")?.();
     expect(syncNow).toHaveBeenCalledTimes(1);
   });
 
+  it("forwards the pre-start skip to the injected gate", () => {
+    const skipPreStartSync = vi.fn(() => true);
+    registerSyncCommands({ configSyncService: undefined, skipPreStartSync });
+
+    registered.get("opencode-cli-sidebar.skipPreStartSync")?.();
+    expect(skipPreStartSync).toHaveBeenCalledTimes(1);
+  });
+
   it("tolerates a missing service without throwing", async () => {
     const disposables = registerSyncCommands({ configSyncService: undefined });
-    expect(disposables).toHaveLength(1);
+    expect(disposables).toHaveLength(2);
     const invoke = registered.get("opencode-cli-sidebar.webdavSyncNow");
     await expect(Promise.resolve(invoke?.())).resolves.toBeUndefined();
   });

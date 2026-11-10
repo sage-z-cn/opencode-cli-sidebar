@@ -33,7 +33,8 @@ import type {
   BackendLaunchPlan,
 } from "../services/terminalBackends";
 import { NativeTerminalManager } from "../services/NativeTerminalManager";
-import type { StartupGate } from "../services/StartupCoordinator";
+import type { StartupGateOutcome } from "../services/StartupCoordinator";
+import type { LaunchGate } from "../services/LaunchGate";
 
 interface StartupWorkspaceResolution {
   workspacePath: string;
@@ -89,6 +90,12 @@ export class SessionRuntime {
   private openCodeCliMajor: number | undefined;
   private openCodeMajorRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private session?: SessionState;
+  /**
+   * Pre-launch config sync only makes sense once per window: restart and
+   * instance switching reuse startDefaultSession, and rewriting cli.json
+   * under a running TUI would race that process's own writes.
+   */
+  private hasLaunchedOnce = false;
 
   public constructor(
     private readonly terminalManager: TerminalManager,
@@ -103,7 +110,7 @@ export class SessionRuntime {
     private readonly callbacks: SessionRuntimeCallbacks,
     private readonly nativeTerminalManager?: NativeTerminalManager,
     private readonly ideContextServer?: IdeContextServer,
-    private readonly startupGate?: StartupGate,
+    private readonly launchGate?: LaunchGate,
   ) {
     if (this.instanceStore) {
       this.subscribeToActiveInstanceChanges();
@@ -426,9 +433,23 @@ export class SessionRuntime {
       // Multiple VS Code windows restore at once and would otherwise each
       // spawn a contender for the same fixed service port. Only v2 has a
       // shared service; v1 binds its own port per window and needs no gate.
-      if (apiProtocol === "v2" && this.startupGate) {
-        const outcome = await this.startupGate.beforeStart();
-        this.logger.info(`[TerminalProvider] OpenCode startup gate: ${outcome}`);
+      //
+      // Only the first launch of this window runs the pre-launch config sync:
+      // restart and instance switching reuse this path, and rewriting cli.json
+      // while a TUI already reads it would race that process's own write.
+      const firstLaunch = !this.hasLaunchedOnce;
+      this.hasLaunchedOnce = true;
+      if (this.launchGate) {
+        let outcome: StartupGateOutcome | "v1" = "v1";
+        if (apiProtocol === "v2" && this.launchGate.beforeStart) {
+          outcome = await this.launchGate.beforeStart();
+          this.logger.info(`[TerminalProvider] OpenCode startup gate: ${outcome}`);
+        }
+        if (firstLaunch) {
+          // Never throws and never outlives its own budget: a failed or skipped
+          // sync must not block the launch.
+          await this.launchGate.beforeOpenCodeStart(outcome);
+        }
       }
 
       this.terminalManager.createTerminal(

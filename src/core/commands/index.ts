@@ -10,6 +10,7 @@ import { registerSyncCommands } from "./syncCommands";
 export type RegisterCommandDependencies = TerminalCommandDependencies & {
   contextManager: ContextManager | undefined;
   configSyncService: ConfigSyncService | undefined;
+  skipPreStartSync?: () => boolean;
 };
 
 export function registerCommands(

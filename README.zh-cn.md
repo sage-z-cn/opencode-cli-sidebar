@@ -130,6 +130,10 @@
 
 > 该按钮与快捷键按钮同样仅在 OpenCode v2 下显示。
 
+## WebDAV 配置同步
+
+配置同步面板通过 WebDAV 服务器在多台设备之间同步 OpenCode 配置文件。`sync.preStartSync` 与扩展启动后的同步相互独立，默认关闭：它会让启动等待，必须能单独关闭。开启后，关键文件会在 OpenCode 启动前完成同步，包括 `opencode.json`、`cli.json` 与 oh-my-opencode-slim 配置；其余同步项 `AGENTS.md` 与 `skills/` 在启动后由后台补齐。若在 `sync.preStartSyncCooldownMinutes` 分钟内的冷却窗口里已经同步过，启动前同步会被跳过，默认 5 分钟；设为 0 表示每次启动都同步。点击侧边栏覆盖层或状态栏上的「跳过」，会中止本次同步，已完成的文件保留，下次启动时重新同步。开启启动前同步后，`sync.autoSyncOnStartup` 不再单独触发一次全量，避免同一份目录被扫描两遍。
+
 ## HTTP API 集成
 
 扩展通过 HTTP API 与 OpenCode CLI 通信，实现可靠的双向通信：

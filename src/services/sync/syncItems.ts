@@ -14,6 +14,11 @@ export interface SyncItemDefinition {
   path: string;
   kind: "file" | "dir";
   builtin: boolean;
+  /**
+   * Included in the pre-launch pass. Those files are read by OpenCode while
+   * it boots, so they must be current before a process starts.
+   */
+  preStart?: boolean;
 }
 
 /** Built-in items in fixed display order. */
@@ -23,18 +28,21 @@ export const BUILTIN_SYNC_ITEMS: readonly SyncItemDefinition[] = [
     path: "opencode.json",
     kind: "file",
     builtin: true,
+    preStart: true,
   },
   {
     id: "opencode.jsonc",
     path: "opencode.jsonc",
     kind: "file",
     builtin: true,
+    preStart: true,
   },
   {
     id: "cli.json",
     path: "cli.json",
     kind: "file",
     builtin: true,
+    preStart: true,
   },
   {
     id: "AGENTS.md",
@@ -53,14 +61,34 @@ export const BUILTIN_SYNC_ITEMS: readonly SyncItemDefinition[] = [
     path: "oh-my-opencode-slim.json",
     kind: "file",
     builtin: true,
+    preStart: true,
   },
   {
     id: "oh-my-opencode-slim.jsonc",
     path: "oh-my-opencode-slim.jsonc",
     kind: "file",
     builtin: true,
+    preStart: true,
   },
 ];
+
+/**
+ * Files the pre-launch pass covers, derived from the item definitions so a
+ * new built-in file cannot be forgotten here.
+ */
+export const PRE_START_SYNC_PATHS: readonly string[] = BUILTIN_SYNC_ITEMS.filter(
+  (item) => item.preStart,
+).map((item) => item.path);
+
+/**
+ * Pre-launch paths owned by the background service, which watches and hot
+ * reloads them. A window that only attaches to a ready service leaves these
+ * alone: writing them then races the service's own writes for no gain.
+ * `cli.json` is deliberately not here: each TUI process reads it on start
+ * and nothing watches it, so a ready service does not make it current.
+ */
+export const SERVICE_OWNED_PRE_START_PATHS: readonly string[] =
+  PRE_START_SYNC_PATHS.filter((path) => path !== "cli.json");
 
 export type CustomItemRejection =
   | "empty"
@@ -460,6 +488,35 @@ export async function collectItemFiles(
     }
   }
   return [...files].sort();
+}
+
+/**
+ * Collect the local files for a launch-scoped pass: only the named paths,
+ * checked for existence. No directory walk happens, because a launch scope is
+ * a flat list of config files and walking `skills/` would dominate the pass.
+ */
+export async function collectScopedFiles(
+  scopePaths: ReadonlySet<string>,
+  configDir?: string,
+): Promise<string[]> {
+  const root = configDir ?? resolveOpenCodeConfigDir();
+  const files: string[] = [];
+  for (const rel of scopePaths) {
+    // The deny-list still wins: a scope entry never overrides it.
+    if (isPathBlacklisted(rel)) {
+      continue;
+    }
+    const abs = path.join(root, ...rel.split("/"));
+    try {
+      const stat = await fs.promises.stat(abs);
+      if (stat.isFile()) {
+        files.push(rel);
+      }
+    } catch {
+      // Missing locally is normal: the pass may download it.
+    }
+  }
+  return files.sort();
 }
 
 /** Walk the whole config directory and return every file as a POSIX rel path. */

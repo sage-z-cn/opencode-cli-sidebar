@@ -399,6 +399,18 @@
           "default": true,
           "description": "%configuration.opencode-cli-sidebar.sync.showStatusIcon.description%"
         },
+        "opencode-cli-sidebar.sync.preStartSync": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.opencode-cli-sidebar.sync.preStartSync.description%"
+        },
+        "opencode-cli-sidebar.sync.preStartSyncCooldownMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "step": 1,
+          "description": "%configuration.opencode-cli-sidebar.sync.preStartSyncCooldownMinutes.description%"
+        },
         "opencode-cli-sidebar.sync.customItems": {
           "type": "array",
           "items": {

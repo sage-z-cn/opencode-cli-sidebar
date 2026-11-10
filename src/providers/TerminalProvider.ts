@@ -47,7 +47,7 @@ import {
 import { WebviewRequestRouter } from "./WebviewRequestRouter";
 import { renderWebviewHtml } from "./webviewHtml";
 import { NativeTerminalManager } from "../services/NativeTerminalManager";
-import type { StartupGate } from "../services/StartupCoordinator";
+import type { LaunchGate } from "../services/LaunchGate";
 import { TerminalBackendRegistry } from "../services/terminalBackends";
 import { OpenCodeKeymapService } from "../services/OpenCodeKeymapService";
 import { OpenCodeCliSettingsService } from "../services/OpenCodeCliSettingsService";
@@ -118,7 +118,7 @@ export class TerminalProvider
     opencodeUpdateService?: OpenCodeUpdateService,
     changelogService?: OpenCodeChangelogService,
     changelogTranslationService?: ChangelogTranslationService,
-    startupGate?: StartupGate,
+    launchGate?: LaunchGate,
   ) {
     this.contextSharingService = new ContextSharingService();
     this.opencodeOperator = new OpenCodeToolOperator();
@@ -153,7 +153,7 @@ export class TerminalProvider
       },
       this.nativeTerminalManager,
       this.ideContextServer,
-      startupGate,
+      launchGate,
     );
 
     const routerBridge: MessageRouterProviderBridge = {
@@ -216,6 +216,19 @@ export class TerminalProvider
         this.updateExtensionSetting(key, value, scope),
       resetExtensionSetting: (key, scope) =>
         this.resetExtensionSetting(key, scope),
+      // The gate is owned by ExtensionLifecycle, which also registers the
+      // skip command; routing the webview request through that command keeps
+      // a single implementation instead of widening this provider's
+      // constructor. The boolean reports that the request was dispatched: the
+      // command itself owns the authoritative skip result. Rejections are
+      // swallowed because the command may not be registered yet during
+      // activation.
+      skipPreStartSync: () => {
+        void vscode.commands
+          .executeCommand("opencode-cli-sidebar.skipPreStartSync")
+          .then(undefined, () => undefined);
+        return true;
+      },
     };
 
     this.messageRouter = new MessageRouter(

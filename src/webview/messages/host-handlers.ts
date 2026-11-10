@@ -3,7 +3,7 @@ import type { TerminalHandle } from "../terminal/useTerminal";
 import { createMessageHandler, type MessageHandlerCallbacks } from "./index";
 import { showServiceRestartPrompt } from "../service-restart-prompt";
 import { setSendKeybindingsToShell } from "../terminal/keyboard";
-import { applyStartupPhase } from "../startup-status";
+import { applyStartupPhase, showPreStartSyncResult } from "../startup-status";
 import { updateEditorAttachmentIcon } from "../toolbar";
 import {
   applyKeymapData,
@@ -156,7 +156,11 @@ export function installHostMessageHandlers(
     },
 
     onStartupPhase(message) {
-      applyStartupPhase(message.phase);
+      applyStartupPhase(message.phase, message.progress);
+    },
+
+    onPreStartSyncResult(message) {
+      showPreStartSyncResult(message.result);
     },
   };
 

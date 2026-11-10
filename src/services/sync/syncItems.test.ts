@@ -4,6 +4,8 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   BUILTIN_SYNC_ITEMS,
+  PRE_START_SYNC_PATHS,
+  SERVICE_OWNED_PRE_START_PATHS,
   classifyEntry,
   collectItemFiles,
   compileFullMatchRegex,
@@ -78,6 +80,32 @@ describe("syncItems", () => {
       "oh-my-opencode-slim.jsonc",
     ]);
     expect(BUILTIN_SYNC_ITEMS.every((item) => item.kind === "file" || item.kind === "dir")).toBe(true);
+  });
+
+  it("marks the launch-scoped built-ins", () => {
+    // AGENTS.md and skills/ stay out of the launch pass on purpose: they are
+    // large and the launch only needs what OpenCode reads while booting.
+    expect(
+      BUILTIN_SYNC_ITEMS.filter((item) => item.preStart).map((item) => item.path),
+    ).toEqual([
+      "opencode.json",
+      "opencode.jsonc",
+      "cli.json",
+      "oh-my-opencode-slim.json",
+      "oh-my-opencode-slim.jsonc",
+    ]);
+    expect(PRE_START_SYNC_PATHS).toEqual(
+      BUILTIN_SYNC_ITEMS.filter((item) => item.preStart).map((item) => item.path),
+    );
+    // Only cli.json is read per TUI process without a watcher.
+    expect(SERVICE_OWNED_PRE_START_PATHS).not.toContain("cli.json");
+  });
+
+  it("does not invent a cli.jsonc variant", () => {
+    // OpenCode only reads cli.json; a jsonc entry would be a dead item.
+    expect(BUILTIN_SYNC_ITEMS.map((item) => item.path)).not.toContain(
+      "cli.jsonc",
+    );
   });
 
   it("rejects absolute paths, escapes and credential-shaped paths", () => {

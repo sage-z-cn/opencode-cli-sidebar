@@ -3,6 +3,8 @@ import type { ConfigSyncService } from "../../services/sync/ConfigSyncService";
 
 export interface SyncCommandDependencies {
   configSyncService: ConfigSyncService | undefined;
+  /** Aborts the pre-launch config sync; true when one was actually running. */
+  skipPreStartSync?: () => boolean;
 }
 
 /** Registers the WebDAV config sync commands. */
@@ -15,5 +17,11 @@ export function registerSyncCommands(
       void deps.configSyncService?.syncNow();
     },
   );
-  return [syncNowCommand];
+  const skipPreStartSyncCommand = vscode.commands.registerCommand(
+    "opencode-cli-sidebar.skipPreStartSync",
+    () => {
+      deps.skipPreStartSync?.();
+    },
+  );
+  return [syncNowCommand, skipPreStartSyncCommand];
 }

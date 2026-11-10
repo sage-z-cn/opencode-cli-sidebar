@@ -60,11 +60,18 @@ function delay(ms: number): Promise<void> {
 
 export class SyncProcessLock {
   private readonly lockFilePath: string;
+  private readonly staleMs: number;
   /** Owner key of the lock this instance holds, if any. */
   private lockId: string | undefined;
 
-  public constructor(lockFilePath: string) {
+  /**
+   * `staleMs` bounds how long a silent holder keeps the lock. Callers that
+   * cannot wait that long, such as the launch path, pass a shorter value so
+   * a crashed owner is taken over inside their own budget.
+   */
+  public constructor(lockFilePath: string, staleMs: number = LOCK_STALE_MS) {
     this.lockFilePath = lockFilePath;
+    this.staleMs = Math.max(1, staleMs);
   }
 
   public isOwner(): boolean {
@@ -115,7 +122,7 @@ export class SyncProcessLock {
         const existing = await this.readLockFile();
         if (
           existing === null ||
-          Date.now() - existing.renewedAt > LOCK_STALE_MS
+          Date.now() - existing.renewedAt > this.staleMs
         ) {
           // Stale or unreadable. A residual TOCTOU window remains — the
           // holder may renew between our read and the unlink — but it is
@@ -127,7 +134,7 @@ export class SyncProcessLock {
           const recheck = await this.readLockFile();
           if (
             recheck !== null &&
-            Date.now() - recheck.renewedAt <= LOCK_STALE_MS
+            Date.now() - recheck.renewedAt <= this.staleMs
           ) {
             if (Date.now() >= deadline) {
               return false;

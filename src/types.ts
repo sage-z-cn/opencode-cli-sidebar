@@ -160,6 +160,8 @@ export type WebviewMessage =
   | { type: "openWebdavDiff"; id: string }
   /** Open the OpenCode config directory in the OS file manager. */
   | { type: "openOpenCodeConfigDir" }
+  /** Abort the pre-start config sync from the sidebar overlay or status bar. */
+  | { type: "skipPreStartSync" }
   /* ===================== Extension settings dialog ===================== */
   /** Dialog open or scope switch: request every setting value and layer. */
   | { type: "requestExtensionSettingsData" }
@@ -269,9 +271,21 @@ export type HostMessage =
   | { type: "webviewVisible" }
   /**
    * Startup gate progress. `starting` means the shared OpenCode background
-   * service is not up yet, `idle` hides the in-sidebar indicator.
+   * service is not up yet, `preStartSync` means the pre-launch config sync is
+   * running, `idle` hides the in-sidebar indicator.
    */
-  | { type: "startupPhase"; phase: "starting" | "idle" }
+  | {
+      type: "startupPhase";
+      phase: StartupPhase;
+      /** Transfer progress; only present while `phase` is `preStartSync`. */
+      progress?: PreStartSyncProgress;
+    }
+  /**
+   * Settled pre-launch sync verdict. A separate message from `startupPhase`
+   * so it can be shown without re-showing the full-screen overlay, which
+   * would cover the terminal OpenCode is starting in.
+   */
+  | { type: "preStartSyncResult"; result: PreStartSyncResult }
   | {
       type: "platformInfo";
       platform: string;
@@ -366,6 +380,30 @@ export type HostMessage =
 
 /* ===================== WebDAV config sync payload types ===================== */
 
+/** Phases the in-sidebar startup indicator can render. */
+export type StartupPhase = "starting" | "preStartSync" | "idle";
+
+/**
+ * How the pre-launch config sync ended, as far as the user can tell.
+ * `synced` and `cooldown` mean the files are current; `failed` and `timeout`
+ * mean the launch proceeded without a completed sync. A user-initiated skip
+ * has no verdict: the user just made that decision, so nothing is shown.
+ */
+export type PreStartSyncResult = "synced" | "cooldown" | "failed" | "timeout";
+
+/**
+ * One progress tick of the pre-launch config sync.
+ *
+ * `scan` walks the remote tree, whose size is unknown up front, so it carries
+ * no counts. `transfer` moves files and reports `current`/`total`/`path`.
+ */
+export interface PreStartSyncProgress {
+  phase: "scan" | "transfer";
+  current: number;
+  total: number;
+  path?: string;
+}
+
 /** Granular auto-sync trigger toggles: master switch plus per-trigger items. */
 export interface WebDavAutoSyncConfig {
   enabled: boolean;
@@ -397,6 +435,10 @@ export interface WebDavSyncOptions {
   showStatusIcon: boolean;
   /** Omitted by callers that do not change the deletion policy. */
   deletions?: WebDavDeletionPolicy;
+  /** Sync the key config files before OpenCode starts. */
+  preStartSync?: boolean;
+  /** Cooldown window in minutes; 0 syncs on every launch. */
+  preStartSyncCooldownMinutes?: number;
 }
 
 /** Sync settings snapshot for the panel; server card plus immediate options. */
@@ -445,6 +487,7 @@ export type WebDavHistoryDirection = "up" | "down" | "both" | "none";
 /** What started a sync pass; recorded on each history entry. */
 export type WebDavSyncTrigger =
   | "startup"
+  | "preStart"
   | "localChange"
   | "poll"
   | "retry"
