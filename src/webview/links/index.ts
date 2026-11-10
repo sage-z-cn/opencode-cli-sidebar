@@ -58,6 +58,50 @@ type RowData = {
   readonly text: string | null;
   readonly cellOffsets: number[] | null;
   readonly tokens: ReadonlyArray<LineToken>;
+  readonly urlTokens: ReadonlyArray<LineToken>;
+};
+
+// CJK / fullwidth punctuation that always terminates a token: Chinese prose
+// owns these characters, so "index.ts。我先" or "off，立刻" must cut right
+// before them. Fullwidth letters/signs are included so fullwidth text is not
+// glued onto a path either.
+const isCjkPunctuation = (char: string): boolean => {
+  const code = char.codePointAt(0) ?? 0;
+  if (code === 0xb7) return true; // · middle dot used in CJK names
+  if (code >= 0x2010 && code <= 0x2027) return true; // — – ‘ ’ “ ” … ‥
+  if (code >= 0x3000 && code <= 0x303f) return true; // CJK Symbols and Punctuation
+  if (code >= 0xfe30 && code <= 0xfe4f) return true; // CJK Compatibility Forms
+  if (code >= 0xff01 && code <= 0xff65) return true; // Fullwidth ASCII variants
+  if (code >= 0xffe0 && code <= 0xffe6) return true; // Fullwidth signs
+  return false;
+};
+
+// CJK prose that may be glued directly onto a path with no separator
+// ("src/foo/bar.ts已经改完"). Unlike punctuation these characters are legal in
+// prose only, so a complete ASCII path before them is where the link ends.
+const isCjkText = (char: string): boolean => {
+  const code = char.codePointAt(0) ?? 0;
+  return (
+    (code >= 0x2e80 && code <= 0x9fff) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0x20000 && code <= 0x3fffd)
+  );
+};
+
+// A token that starts as a valid file reference can still have Chinese prose
+// glued onto its tail with no separator ("src/foo/bar.ts已经改完"). Cut at the
+// first CJK char only when the head is itself a complete reference, so the
+// prose is dropped while CJK filenames stay whole: "测试.md" and "报告.docx"
+// already read as references on their own, so nothing is cut.
+const truncateAtGluedCjkText = (text: string): string => {
+  for (let index = 1; index < text.length; index++) {
+    if (!isCjkText(text[index] ?? "")) continue;
+
+    const head = text.slice(0, index);
+    return isLikelyFileReference(head) ? head : text;
+  }
+  return text;
 };
 
 const isTokenBoundary = (char: string): boolean => {
@@ -70,14 +114,63 @@ const isTokenBoundary = (char: string): boolean => {
   // relative paths (./, ../). They are handled by trailing-punctuation strip.
   if (",;!?".includes(char)) return true;
 
-  // Treat CJK / fullwidth punctuation as boundaries so paths are not glued
-  // to surrounding localized text (e.g. "index.ts。我先" / "file.json，30").
-  const code = char.codePointAt(0) ?? 0;
-  if (code >= 0xff01 && code <= 0xff60) return true; // Fullwidth ASCII variants
-  if (code >= 0xffe0 && code <= 0xffe6) return true; // Fullwidth signs
-  if (code >= 0x3000 && code <= 0x303f) return true; // CJK Symbols and Punctuation
-  if (code >= 0xfe30 && code <= 0xfe4f) return true; // CJK Compatibility Forms
-  return false;
+  return isCjkPunctuation(char);
+};
+
+// URLs are tokenized separately from paths because their own grammar contains
+// characters that are token boundaries for paths: "?" starts the query string
+// and "," / ";" may appear inside it. Truncating a URL at those characters
+// would drop "?nch=off" and open the wrong page.
+const WEB_URL_RE = /https?:\/\/[A-Za-z0-9.-]+(?::\d+)?[^\s"'`<>\\^{}|\[\]]*/gi;
+
+const truncateAtCjkPunctuation = (text: string): string => {
+  for (let index = 0; index < text.length; index++) {
+    if (isCjkPunctuation(text[index] ?? "")) {
+      return text.slice(0, index);
+    }
+  }
+  return text;
+};
+
+// A bare host without a dot / port ("http://x") is almost always prose or a
+// truncated paste, so keep only URLs a browser would treat as a real site.
+const isLikelyWebUrl = (text: string): boolean => {
+  if (!/^https?:\/\/[A-Za-z0-9.-]+/i.test(text)) {
+    return false;
+  }
+
+  try {
+    const url = new URL(text);
+    if (!url.hostname) return false;
+    return (
+      url.hostname.includes(".") ||
+      url.hostname === "localhost" ||
+      /^[\d.]+$/.test(url.hostname)
+    );
+  } catch {
+    return false;
+  }
+};
+
+const collectUrlTokens = (lineText: string): LineToken[] => {
+  const tokens: LineToken[] = [];
+  const pattern = new RegExp(WEB_URL_RE.source, WEB_URL_RE.flags);
+
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(lineText)) !== null) {
+    const rawText = truncateAtCjkPunctuation(match[0]);
+    const text = stripTrailingPunctuation(rawText);
+    if (!text || !isLikelyWebUrl(text)) continue;
+
+    tokens.push({
+      text,
+      rawText,
+      startIndex: match.index,
+      endIndex: match.index + text.length,
+    });
+  }
+
+  return tokens;
 };
 
 // Approximate xterm cell width for a codepoint. CJK / fullwidth / emoji
@@ -177,7 +270,9 @@ const collectTokens = (lineText: string): LineToken[] => {
   const tokens: LineToken[] = [];
 
   for (const candidate of collectCandidateReferences(lineText)) {
-    const text = stripTrailingPunctuation(candidate.text);
+    const text = stripTrailingPunctuation(
+      truncateAtGluedCjkText(candidate.text),
+    );
     if (!text) continue;
     tokens.push({
       text,
@@ -402,14 +497,24 @@ const createRowReader = (terminal: Terminal) => {
 
     const line = row >= 0 ? terminal.buffer.active.getLine(row) : undefined;
     if (!line) {
-      const data: RowData = { text: null, cellOffsets: null, tokens: [] };
+      const data: RowData = {
+        text: null,
+        cellOffsets: null,
+        tokens: [],
+        urlTokens: [],
+      };
       cache.set(row, data);
       return data;
     }
 
     const text = line.translateToString(true);
     if (text.length > MAX_LINE_LENGTH) {
-      const data: RowData = { text: null, cellOffsets: null, tokens: [] };
+      const data: RowData = {
+        text: null,
+        cellOffsets: null,
+        tokens: [],
+        urlTokens: [],
+      };
       cache.set(row, data);
       return data;
     }
@@ -418,6 +523,7 @@ const createRowReader = (terminal: Terminal) => {
       text,
       cellOffsets: buildCellOffsets(text),
       tokens: collectTokens(text),
+      urlTokens: collectUrlTokens(text),
     };
     cache.set(row, data);
     return data;
@@ -580,6 +686,28 @@ const createFileLink = (
   return link;
 };
 
+const createUrlLink = (
+  row: number,
+  cellOffsets: ReadonlyArray<number>,
+  token: LineToken,
+): Link => {
+  const startCell = cellOffsets[token.startIndex] ?? 0;
+  const endCell = cellOffsets[token.endIndex] ?? startCell;
+  const url = token.text;
+
+  return {
+    text: url,
+    range: {
+      start: { x: startCell + 1, y: row + 1 },
+      end: { x: endCell, y: row + 1 },
+    },
+    decorations: { underline: true, pointerCursor: true },
+    activate: () => {
+      postMessage({ type: "openUrl", url });
+    },
+  };
+};
+
 const findCrossLineReference = (
   terminal: Terminal,
   requestedRow: number,
@@ -727,8 +855,17 @@ export function createLinkProvider(terminal: Terminal) {
         );
       }
 
+      for (const urlToken of current.urlTokens) {
+        links.push(createUrlLink(row, current.cellOffsets, urlToken));
+      }
+
       for (const token of current.tokens) {
         if (crossFragment && overlaps(token, crossFragment.token)) continue;
+        // Path tokenization splits a URL at "?" / "," / ";", so skip the
+        // fragments that fall inside a URL we already linked.
+        if (current.urlTokens.some((urlToken) => overlaps(token, urlToken))) {
+          continue;
+        }
         if (!isLikelyFileReference(token.text)) continue;
 
         const reference = parseFileReference(token.text);

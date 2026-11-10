@@ -26,14 +26,13 @@
 2. Create `Terminal` (cursorBlink/style, fontSize, fontFamily, theme, scrollback)
 3. `attachCustomKeyEventHandler(handler)`
 4. Load `FitAddon`
-5. Load `WebLinksAddon`
-6. `terminal.open(container)`
-7. Load `WebglAddon` (try/catch — silent fallback to canvas renderer, no addon swap)
-8. `registerLinkProvider(...)` — **after** renderer init so link underline layer sets up correctly
-9. Install wheel/contextmenu/drag/focus events
-10. `setupVisibilityHandling()` (IntersectionObserver, threshold 0.1)
-11. `setupResizeHandling()` (ResizeObserver + window.resize, 50ms debounce)
-12. `performInitialFit()` — three-phase (see below)
+5. `terminal.open(container)`
+6. Load `WebglAddon` (try/catch — silent fallback to canvas renderer, no addon swap)
+7. `registerLinkProvider(...)` — **after** renderer init so link underline layer sets up correctly; this is the only link provider (file paths and http(s) URLs, URLs post `openUrl`)
+8. Install wheel/contextmenu/drag/focus events
+9. `setupVisibilityHandling()` (IntersectionObserver, threshold 0.1)
+10. `setupResizeHandling()` (ResizeObserver + window.resize, 50ms debounce)
+11. `performInitialFit()` — three-phase (see below)
 
 ## Fit Timing
 

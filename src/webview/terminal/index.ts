@@ -1,7 +1,6 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { WebLinksAddon } from "@xterm/addon-web-links";
 import { readTerminalConfig } from "./config";
 import { createKeyboardHandler } from "./keyboard";
 import { copySelectionToClipboard } from "../clipboard";
@@ -93,14 +92,6 @@ export function initTerminal(
 
   const fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
-  terminal.loadAddon(
-    new WebLinksAddon((_, url) => {
-      postMessage({
-        type: "openUrl",
-        url: url,
-      });
-    }),
-  );
 
   terminal.open(container);
   terminal.focus();
@@ -119,7 +110,9 @@ export function initTerminal(
   }
 
   // Register link provider after renderer is initialized so the link
-  // underline layer is properly set up before any links are provided.
+  // underline layer is properly set up before any links are provided. This is
+  // the only provider: file paths and http(s) URLs are both recognized here
+  // (URLs post openUrl) so CJK prose glued to a URL cannot extend the link.
   terminal.registerLinkProvider(createLinkProvider(terminal));
 
   const refreshTerminal = () => terminal.refresh(0, terminal.rows - 1);

@@ -158,7 +158,16 @@ describe("createLinkProvider", () => {
     const malformedLinks = await provideLinksForLine("see http://example.com/not-a-file.ts");
     const oversizedLinks = await provideLinksForLine("a".repeat(10001));
 
-    expect(malformedLinks).toHaveLength(0);
+    // A scheme URL is a web link, never a file reference.
+    expect(malformedLinks).toHaveLength(1);
+    malformedLinks?.[0]?.activate();
+    expect(postMessage).toHaveBeenCalledWith({
+      type: "openUrl",
+      url: "http://example.com/not-a-file.ts",
+    });
+    expect(postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "openFile" }),
+    );
     expect(oversizedLinks).toBeUndefined();
   });
 
@@ -220,6 +229,45 @@ describe("createLinkProvider", () => {
     expect(postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ path: "src/webview/links/index.ts" }),
     );
+  });
+
+  it("keeps a URL query intact and cuts at a glued CJK comma", async () => {
+    const url = "http://192.168.0.63:8887/ftq/?nch=off";
+    const links = await provideLinksForLine(
+      `保存后先打开 ${url}，立刻回到内网并关掉自动跳转；确认正常后再决定`,
+    );
+
+    expect(links).toHaveLength(1);
+    const range = links?.[0]?.range;
+    const startCell = range?.start?.x ?? 0;
+    const endCell = range?.end?.x ?? 0;
+    expect(endCell - startCell + 1).toBe(url.length);
+
+    links?.[0]?.activate();
+    expect(postMessage).toHaveBeenCalledWith({ type: "openUrl", url });
+  });
+
+  it("cuts a path glued to CJK prose", async () => {
+    const links = await provideLinksForLine("文件 src/foo/bar.ts已经改完");
+
+    expect(links).toHaveLength(1);
+    expect(links?.[0]?.text).toBe("src/foo/bar.ts");
+    expect(links?.[0]?.range).toEqual({
+      start: { x: 6, y: 1 },
+      end: { x: 19, y: 1 },
+    });
+
+    links?.[0]?.activate();
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "openFile", path: "src/foo/bar.ts" }),
+    );
+  });
+
+  it("does not link a plain CJK sentence that contains CJK punctuation", async () => {
+    const links = await provideLinksForLine(
+      "先确认一下，然后回到内网；关掉自动跳转。再决定是否继续…",
+    );
+    expect(links).toHaveLength(0);
   });
 
   it("does not treat slash-joined plain words without an extension as a path", async () => {
