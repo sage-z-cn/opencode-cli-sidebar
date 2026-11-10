@@ -2890,6 +2890,18 @@ export class ConfigSyncService implements vscode.Disposable {
       config.disabledItems,
     ).filter((item) => item.enabled);
     await this.enqueueExclusive(async () => {
+      // Same manifest writer rule as a pass or a resolution: this path also
+      // does load-modify-save, so it must not interleave with a sibling
+      // window's pass.
+      const hasPassLock = await this.passLock.acquire(PASS_LOCK_ACQUIRE_MS);
+      if (!hasPassLock) {
+        this.log(
+          "warn",
+          "exclude purge deferred; another window holds the pass lock",
+        );
+        return;
+      }
+      this.startPassLockHeartbeat();
       let deletedCount = 0;
       let failedCount = 0;
       try {
@@ -2952,6 +2964,9 @@ export class ConfigSyncService implements vscode.Disposable {
             error instanceof Error ? error.message : String(error)
           }`,
         );
+      } finally {
+        this.stopPassLockHeartbeat();
+        await this.passLock.release().catch(() => undefined);
       }
     });
   }

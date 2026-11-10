@@ -15,7 +15,6 @@ import { OpenCodeApiClient } from "../services/OpenCodeApiClient";
 import { InstanceStore } from "../services/InstanceStore";
 import { InstanceRegistry } from "../services/InstanceRegistry";
 import { InstanceQuickPick } from "../services/InstanceQuickPick";
-import { InstanceController } from "../services/InstanceController";
 import { NativeTerminalManager } from "../services/NativeTerminalManager";
 import {
   getOpenCodeUpdateConfig,
@@ -38,7 +37,6 @@ import { OpenCodeReadiness } from "../services/OpenCodeReadiness";
 import { StartupCoordinator } from "../services/StartupCoordinator";
 import { IdeContextServer } from "../services/ideContext/IdeContextServer";
 import { PortManager } from "../services/PortManager";
-import { ConnectionResolver } from "../services/ConnectionResolver";
 import {
   TerminalBackendRegistry,
 } from "../services/terminalBackends";
@@ -86,7 +84,6 @@ export class ExtensionLifecycle {
   private instanceStore: InstanceStore | undefined;
   private instanceRegistry: InstanceRegistry | undefined;
   private instanceQuickPick: InstanceQuickPick | undefined;
-  private instanceController: InstanceController | undefined;
   private portManager: PortManager | undefined;
   private backendRegistry: TerminalBackendRegistry | undefined;
   private ideContextServer: IdeContextServer | undefined;
@@ -293,19 +290,10 @@ export class ExtensionLifecycle {
         this.instanceDiscoveryService,
       );
 
-      const connectionResolver = new ConnectionResolver(
-        this.instanceStore,
-        this.instanceDiscoveryService,
-        undefined,
-        logger,
-      );
-      this.instanceController = new InstanceController(
-        this.terminalManager,
-        this.instanceStore,
-        this.portManager,
-        logger,
-        connectionResolver,
-      );
+      // `InstanceController` and `ConnectionResolver` stay dormant: nothing
+      // in the current tree calls them, and constructing them only held
+      // references to the terminal manager and port manager that were never
+      // released. Wire them here if instance management is reintroduced.
 
       context.subscriptions.push(
         vscode.window.onDidCloseTerminal((terminal) => {

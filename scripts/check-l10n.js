@@ -46,6 +46,12 @@ const hostFiles = walk("src", isHostSource).filter(
 // Double quotes dominate this codebase, but all three string forms must be
 // read: missing one silently reports every key in that form as "extra".
 const hostKeys = new Set();
+/**
+ * Strings that may be looked up but cannot be proven to be keys: a file whose
+ * table is indexed dynamically. They only suppress "unused" verdicts; they
+ * never produce a "missing" one.
+ */
+const usedOnlyBottomKeys = new Set();
 for (const f of hostFiles) {
   const c = fs.readFileSync(f, "utf8");
   for (const m of c.matchAll(/l10n\.t\(\s*'([^'\\]*(?:\\.[^'\\]*)*)'/g)) {
@@ -61,6 +67,18 @@ for (const f of hostFiles) {
     });
     if (!k.includes("l10n.t")) hostKeys.add(unescape(k));
   }
+  /*
+   * `l10n.t(item.title)` — the wording comes from a data table in the same
+   * file. Literal scanning cannot resolve which entries are keys, so every
+   * string in that file counts as in use. Kept out of `hostKeys` because
+   * these are not all translations: command ids and plain data also live in
+   * such files, and treating them as keys would report them as missing.
+   */
+  if (/l10n\.t\(\s*[A-Za-z_$]/.test(c)) {
+    for (const m of c.matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'/g)) {
+      usedOnlyBottomKeys.add(unescape(m[1] ?? m[2] ?? ""));
+    }
+  }
 }
 
 /* ---------------- Webview: shared i18n helpers ---------------- */
@@ -74,9 +92,22 @@ for (const f of hostFiles) {
  *
  * The two shapes are scanned separately; scanning only the first argument of
  * shape 2 would report every identifier as missing and bury real mismatches.
+ *
+ * `tr` and `syncT` are the repo's thin wrappers around the same helpers, so
+ * they resolve identical keys; omitting them reports whole feature areas as
+ * unused and would make a cleanup delete live translations.
  */
-const TWO_ARG = /\b(?:t|translate)\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"\s*,\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")/g;
-const ONE_ARG = /\b(?:t|translate|has)\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"\s*[),]/g;
+const HELPER = "(?:t|translate|has|tr|syncT)";
+const TWO_ARG = new RegExp(
+  `\\b${HELPER}\\(\\s*"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)"\\s*,\\s*(?:'([^'\\\\]*(?:\\\\.[^'\\\\]*)*)'|"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)")`,
+  "g",
+);
+const ONE_ARG = new RegExp(
+  `\\b${HELPER}\\(\\s*"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)"\\s*[),]`,
+  "g",
+);
+/** `t(MAP[key])` — a lookup table index, not a literal key. */
+const DYNAMIC_LOOKUP = new RegExp(`\\b${HELPER}\\(\\s*([A-Za-z_$][\\w$]*)\\s*\\[`, "g");
 
 const webviewFiles = fs.existsSync("src/webview")
   ? walk("src/webview", isWebviewSource)
@@ -106,6 +137,51 @@ for (const f of webviewFiles) {
       webviewMissing.push({ file: f, key, shape: "direct" });
     }
   }
+
+  /*
+   * Shape 3: `t(MAP[key])` — the key comes from a lookup table, so neither
+   * literal scan above can see the wording. Every string value of that table
+   * is a real key; without this, the whole table is reported as unused and a
+   * future cleanup would delete live translations.
+   */
+  for (const lookup of source.matchAll(DYNAMIC_LOOKUP)) {
+    for (const key of collectMapValues(source, lookup[1])) {
+      webviewKeys.add(key);
+    }
+  }
+}
+
+/**
+ * Every string literal inside `const NAME = { ... }` in `source`, or nothing
+ * when the file has no such const. Depth-counts braces so nested objects and
+ * closures inside the table do not truncate the scan.
+ */
+function collectMapValues(source, name) {
+  const decl = new RegExp(`\\bconst\\s+${name}\\s*=\\s*\\{`, "g");
+  const match = decl.exec(source);
+  if (!match) {
+    return [];
+  }
+  const open = match.index + match[0].length - 1;
+  let depth = 0;
+  let end = open;
+  for (let i = open; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  const body = source.slice(open, end + 1);
+  const values = [];
+  for (const m of body.matchAll(/"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'/g)) {
+    values.push(unescape(m[1] ?? m[2] ?? ""));
+  }
+  return values;
 }
 
 /* ---------------- Report ---------------- */
@@ -130,7 +206,11 @@ if (missing.length > 0) {
 // EXTRA is informational: the bundle is shared with older releases and keeps
 // keys ahead of the code that reads them. Listing them all drowns the build
 // log, so only the count is reported unless --verbose is passed.
-const extra = [...bundleKeys].filter((k) => !allCodeKeys.has(k)).sort();
+// `usedOnlyBottomKeys` is subtracted here but never added to `allCodeKeys`, so
+// a dynamically indexed table cannot turn a data string into a "missing" key.
+const extra = [...bundleKeys]
+  .filter((k) => !allCodeKeys.has(k) && !usedOnlyBottomKeys.has(k))
+  .sort();
 console.log(`\nUnused bundle keys (informational): ${extra.length}`);
 if (process.argv.includes("--verbose")) {
   extra.forEach((k) => console.log(JSON.stringify(k)));
