@@ -10,6 +10,7 @@ import {
   statusIconFor,
   type SyncUiState,
 } from "./state";
+import { SYNC_ICONS } from "./icons";
 import { st } from "./strings";
 import {
   clearConflictSelection,
@@ -26,6 +27,8 @@ import {
   selectedConflictIds,
   setAllConflictsSelected,
   setConflictSelected,
+  startConflictBatchResolution,
+  startConflictResolution,
   syncNowButtonLabel,
 } from "./panes";
 
@@ -429,13 +432,26 @@ export function initPanel(handlers: {
   // injected locale like every other runtime string.
   el("dav-conflict-all-label").textContent = st.ckSelectAll;
   const keepSelected = el<HTMLButtonElement>("dav-conflict-keep");
-  keepSelected.textContent = st.ckKeepLocal;
+  const useSelected = el<HTMLButtonElement>("dav-conflict-use");
+  // Labels are swapped between their idle and busy form by the bar
+  // refresh. Both variants carry the spinner markup slot, so the
+  // init-time value is the idle one and the refresh only swaps classes.
+  keepSelected.dataset.idleLabel = st.ckKeepLocal;
+  keepSelected.dataset.busyLabel = `${SYNC_ICONS.spinner}${st.ckResolving}`;
   keepSelected.title = st.ckKeepLocalSelected;
   keepSelected.setAttribute("aria-label", st.ckKeepLocalSelected);
-  const useSelected = el<HTMLButtonElement>("dav-conflict-use");
-  useSelected.textContent = st.ckUseRemote;
+  useSelected.dataset.idleLabel = st.ckUseRemote;
+  useSelected.dataset.busyLabel = `${SYNC_ICONS.spinner}${st.ckResolving}`;
   useSelected.title = st.ckUseRemoteSelected;
   useSelected.setAttribute("aria-label", st.ckUseRemoteSelected);
+  for (const [button, label] of [
+    [keepSelected, st.ckKeepLocal],
+    [useSelected, st.ckUseRemote],
+  ] as const) {
+    button.textContent = label;
+    button.classList.remove("is-loading");
+    button.setAttribute("aria-busy", "false");
+  }
 
   el("dav-conflict-list").addEventListener("change", (event) => {
     const target = event.target as HTMLInputElement;
@@ -443,27 +459,28 @@ export function initPanel(handlers: {
       setConflictSelected(target.dataset.select ?? "", target.checked);
     }
   });
-  el<HTMLInputElement>("dav-conflict-all").addEventListener("change", (event) => {
+  el("dav-conflict-all").addEventListener("change", (event) => {
     setAllConflictsSelected((event.target as HTMLInputElement).checked);
   });
-  const resolveSelected = (resolution: "local" | "remote"): void => {
-    const ids = selectedConflictIds();
-    if (ids.length === 0) {
-      return;
-    }
-    clearConflictSelection();
-    handlers.onConflictResolveMany(ids, resolution);
-  };
-  keepSelected.addEventListener("click", () => resolveSelected("local"));
-  useSelected.addEventListener("click", () => resolveSelected("remote"));
+  keepSelected.addEventListener("click", () =>
+    startConflictBatchResolution("local", (payload) =>
+      handlers.onConflictResolveMany(payload.ids, payload.resolution),
+    ),
+  );
+  useSelected.addEventListener("click", () =>
+    startConflictBatchResolution("remote", (payload) =>
+      handlers.onConflictResolveMany(payload.ids, payload.resolution),
+    ),
+  );
 
   el("dav-conflict-list").addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
     const resolve = target.closest<HTMLElement>("[data-conflict]");
     if (resolve?.dataset.conflict && resolve.dataset.resolution) {
-      handlers.onConflictResolve(
+      startConflictResolution(
         resolve.dataset.conflict,
         resolve.dataset.resolution as "local" | "remote",
+        (payload) => handlers.onConflictResolve(payload.id, payload.resolution),
       );
       return;
     }

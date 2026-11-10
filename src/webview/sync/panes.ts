@@ -263,6 +263,50 @@ function conflictReason(kind: WebDavConflictEntry["kind"]): string {
  *  conflicts on every render so stale ids cannot leak into a batch. */
 const selectedConflicts = new Set<string>();
 
+/** Decisions posted to the host and still waiting for their snapshot.
+ *  Resolution touches the network, so cards and the batch bar show a busy
+ *  state until the conflict list confirms the outcome. Cleared by the next
+ *  snapshot render, where the resolved ids are gone or re-raised. */
+const resolvingConflicts = new Set<string>();
+
+/** Disable the batch bar for one resolution pass. */
+let batchBusy = false;
+
+export function clearConflictBusy(): void {
+  resolvingConflicts.clear();
+  batchBusy = false;
+}
+
+/** Ids the user just resolved are no longer actionable until the host
+ *  reports back, so a second click cannot double-post a decision. */
+function markConflictsResolving(ids: string[], batch: boolean): void {
+  for (const id of ids) {
+    resolvingConflicts.add(id);
+  }
+  if (batch) {
+    batchBusy = true;
+  }
+  refreshConflictBar();
+}
+
+/** Row-level busy flag: either this conflict or a batch covering it is
+ *  being applied. */
+function isConflictBusy(id: string): boolean {
+  return batchBusy || resolvingConflicts.has(id);
+}
+
+/** Per-conflict decision buttons; the busy form says what is happening
+ *  instead of leaving the label unchanged during the round-trip. */
+function resolutionButton(
+  id: string,
+  resolution: "local" | "remote",
+  label: string,
+  variant: string,
+): string {
+  const busy = isConflictBusy(id);
+  return `<button type="button" class="dav-btn${variant}${busy ? " is-loading" : ""}"${busy ? " disabled aria-busy=\"true\"" : ""} data-resolution="${resolution}" data-conflict="${escapeHtml(id)}">${busy ? `${SYNC_ICONS.spinner}${st.ckResolving}` : escapeHtml(label)}</button>`;
+}
+
 /** Mirror the selection set into the batch bar, select-all state and
  *  the highlighted cards. Reads the DOM for the current conflict rows. */
 function refreshConflictBar(): void {
@@ -274,6 +318,7 @@ function refreshConflictBar(): void {
     const id = check.dataset.select ?? "";
     const on = selectedConflicts.has(id);
     check.checked = on;
+    check.disabled = isConflictBusy(id);
     check
       .closest<HTMLElement>(".dav-conflict-card")
       ?.classList.toggle("is-selected", on);
@@ -291,7 +336,7 @@ function refreshConflictBar(): void {
     "dav-conflict-all",
   ) as HTMLInputElement | null;
   if (all) {
-    all.disabled = total === 0;
+    all.disabled = total === 0 || batchBusy;
     all.checked = total > 0 && selected === total;
     all.indeterminate = selected > 0 && selected < total;
   }
@@ -301,13 +346,32 @@ function refreshConflictBar(): void {
   }
   for (const id of ["dav-conflict-keep", "dav-conflict-use"]) {
     const button = document.getElementById(id) as HTMLButtonElement | null;
-    if (button) {
-      button.disabled = selected === 0;
+    if (!button) {
+      continue;
+    }
+    // Bars render on every state change; only touch the label markup when
+    // the busy flag actually flips so a running spinner is not restarted.
+    button.disabled = selected === 0 || batchBusy;
+    if (button.classList.contains("is-loading") !== batchBusy) {
+      button.classList.toggle("is-loading", batchBusy);
+      button.setAttribute("aria-busy", String(batchBusy));
+      button.innerHTML = barLabel(button, batchBusy);
     }
   }
 }
 
+/** Markup for a batch bar button: the spinner form while a decision is
+ *  applied, else the idle label captured at init. Both variants are
+ *  stored as innerHTML-ready strings on the button's dataset. */
+function barLabel(button: HTMLButtonElement, busy: boolean): string {
+  const label = busy ? button.dataset.busyLabel : button.dataset.idleLabel;
+  return label ?? "";
+}
+
 export function setConflictSelected(id: string, selected: boolean): void {
+  if (isConflictBusy(id)) {
+    return;
+  }
   if (selected) {
     selectedConflicts.add(id);
   } else {
@@ -317,13 +381,17 @@ export function setConflictSelected(id: string, selected: boolean): void {
 }
 
 export function setAllConflictsSelected(selected: boolean): void {
+  if (batchBusy) {
+    return;
+  }
   selectedConflicts.clear();
   if (selected) {
     document
       .querySelectorAll<HTMLInputElement>(".dav-conflict-check")
       .forEach((check) => {
-        if (check.dataset.select) {
-          selectedConflicts.add(check.dataset.select);
+        const id = check.dataset.select;
+        if (id && !isConflictBusy(id)) {
+          selectedConflicts.add(id);
         }
       });
   }
@@ -349,6 +417,10 @@ export function renderConflicts(state: SyncUiState): void {
   if (!host) {
     return;
   }
+  // A snapshot is the host's answer for every pending decision: whatever
+  // is still listed survived (re-raised conflict) and becomes actionable
+  // again, so the busy state always releases on data, never on a timer.
+  clearConflictBusy();
   const liveIds = new Set(state.conflicts.map((conflict) => conflict.id));
   for (const id of [...selectedConflicts]) {
     if (!liveIds.has(id)) {
@@ -365,10 +437,11 @@ export function renderConflicts(state: SyncUiState): void {
     state.conflicts
       .map((c) => {
         const selected = selectedConflicts.has(c.id);
+        const busy = isConflictBusy(c.id);
         return `
-  <div class="dav-conflict-card${selected ? " is-selected" : ""}" data-id="${escapeHtml(c.id)}">
+  <div class="dav-conflict-card${selected ? " is-selected" : ""}${busy ? " is-busy" : ""}" data-id="${escapeHtml(c.id)}"${busy ? ' aria-busy="true"' : ""}>
     <div class="dav-conflict-head">
-      <input type="checkbox" class="dav-conflict-check" data-select="${escapeHtml(c.id)}" aria-label="${escapeHtml(c.path)}"${selected ? " checked" : ""}>
+      <input type="checkbox" class="dav-conflict-check" data-select="${escapeHtml(c.id)}" aria-label="${escapeHtml(c.path)}"${selected ? " checked" : ""}${busy ? " disabled" : ""}>
       <div class="dav-conflict-path" title="${escapeHtml(c.path)}">${escapeHtml(c.path)}</div>
     </div>
     <div class="dav-conflict-meta">
@@ -377,13 +450,78 @@ export function renderConflicts(state: SyncUiState): void {
       <span>${escapeHtml(conflictReason(c.kind))}</span>
     </div>
     <div class="dav-act-row">
-      <button type="button" class="dav-btn" data-resolution="local" data-conflict="${escapeHtml(c.id)}">${st.ckKeepLocal}</button>
-      <button type="button" class="dav-btn dav-btn--secondary" data-resolution="remote" data-conflict="${escapeHtml(c.id)}">${st.ckUseRemote}</button>
+      ${resolutionButton(c.id, "local", st.ckKeepLocal, "")}
+      ${resolutionButton(c.id, "remote", st.ckUseRemote, " dav-btn--secondary")}
       <button type="button" class="dav-btn dav-btn--link" data-diff="${escapeHtml(c.id)}">${st.ckOpenDiff} ›</button>
     </div>
   </div>`;
       })
       .join("") + `<div class="dav-hint">${st.ckBackupHint}</div>`;
+  refreshConflictBar();
+}
+
+// ── Conflict decisions ──
+
+/** Single-card decision: the card and its buttons go busy immediately so
+ *  the network round-trip reads as work in progress. */
+export function startConflictResolution(
+  id: string,
+  resolution: "local" | "remote",
+  post: (payload: { id: string; resolution: "local" | "remote" }) => void,
+): void {
+  if (isConflictBusy(id)) {
+    return;
+  }
+  markConflictsResolving([id], false);
+  selectedConflicts.delete(id);
+  refreshConflictBar();
+  markConflictCardBusy(id);
+  post({ id, resolution });
+}
+
+/** Batch decision for the current selection; the bar spins and every
+ *  selected card disables until the confirming snapshot arrives. */
+export function startConflictBatchResolution(
+  resolution: "local" | "remote",
+  post: (payload: { ids: string[]; resolution: "local" | "remote" }) => void,
+): void {
+  if (batchBusy) {
+    return;
+  }
+  const ids = selectedConflictIds();
+  if (ids.length === 0) {
+    return;
+  }
+  markConflictsResolving(ids, true);
+  selectedConflicts.clear();
+  refreshConflictBar();
+  post({ ids, resolution });
+  for (const id of ids) {
+    markConflictCardBusy(id);
+  }
+}
+
+/** Patch one already-rendered card into its busy state without rebuilding
+ *  the list: keeps scroll position and avoids restarting sibling spinners. */
+function markConflictCardBusy(id: string): void {
+  const card = document.querySelector<HTMLElement>(
+    `.dav-conflict-card[data-id="${escapeHtml(id)}"]`,
+  );
+  if (!card) {
+    return;
+  }
+  card.classList.add("is-busy");
+  card.setAttribute("aria-busy", "true");
+  const check = card.querySelector<HTMLInputElement>(".dav-conflict-check");
+  if (check) {
+    check.disabled = true;
+  }
+  card.querySelectorAll<HTMLButtonElement>("[data-resolution]").forEach((btn) => {
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+    btn.classList.add("is-loading");
+    btn.innerHTML = `${SYNC_ICONS.spinner}${st.ckResolving}`;
+  });
   refreshConflictBar();
 }
 

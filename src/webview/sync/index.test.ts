@@ -812,6 +812,52 @@ describe("sync UI (webview)", () => {
   });
 
   describe("conflicts", () => {
+    it("uses one direction wording for every conflict kind", () => {
+      applyWebdavSyncData(
+        snapshot({
+          conflictCount: 3,
+          conflicts: [
+            { id: "c1", path: "AGENTS.md", kind: "content" },
+            { id: "c2", path: "opencode.json", kind: "localDeleted" },
+            { id: "c3", path: "skills/tool.md", kind: "remoteDeleted" },
+          ],
+        }),
+      );
+      const labels = (id: string): [string, string] => {
+        const card = document.querySelector<HTMLElement>(`[data-id="${id}"]`)!;
+        const buttons = card.querySelectorAll<HTMLButtonElement>(
+          "[data-resolution]",
+        );
+        return [buttons[0].textContent ?? "", buttons[1].textContent ?? ""];
+      };
+
+      // The same two labels apply to all kinds: the action names which
+      // side wins, so a deleted side reads as "adopt that side's state"
+      // instead of the ambiguous "keep" that broke on deleted files.
+      expect(labels("c1")).toEqual(["Use local version", "Use remote version"]);
+      expect(labels("c2")).toEqual(["Use local version", "Use remote version"]);
+      expect(labels("c3")).toEqual(["Use local version", "Use remote version"]);
+
+      // The reason line disambiguates what "local" means once files vanished.
+      const reason = (id: string): string =>
+        document
+          .querySelector<HTMLElement>(`[data-id="${id}"] .dav-conflict-meta`)
+          ?.textContent ?? "";
+      expect(reason("c2")).toContain("Deleted locally, still on remote");
+      expect(reason("c3")).toContain("Deleted on remote, still local");
+
+      // Resolution semantics are unchanged: local still wins.
+      document
+        .querySelector<HTMLElement>('[data-conflict="c2"][data-resolution="local"]')
+        ?.click();
+      expect(posted().pop()).toEqual({
+        type: "resolveWebdavConflict",
+        id: "c2",
+        resolution: "local",
+      });
+      applyWebdavSyncData(snapshot());
+    });
+
     it("renders cards per kind and posts resolve / diff decisions", () => {
       applyWebdavSyncData(
         snapshot({
@@ -840,6 +886,115 @@ describe("sync UI (webview)", () => {
       expect(posted().pop()).toEqual({ type: "openWebdavDiff", id: "c2" });
     });
 
+    it("shows a busy state on the card and its actions until the snapshot", () => {
+      applyWebdavSyncData(
+        snapshot({
+          conflictCount: 2,
+          conflicts: [
+            { id: "c1", path: "AGENTS.md", kind: "content" },
+            { id: "c2", path: "skills/tool.md", kind: "remoteDeleted" },
+          ],
+        }),
+      );
+      const card = (): HTMLElement =>
+        document.querySelector<HTMLElement>('[data-id="c1"]')!;
+      const postCount = (): number =>
+        posted().filter(
+          (m) => (m as { type: string }).type === "resolveWebdavConflict",
+        ).length;
+
+      document
+        .querySelector<HTMLElement>('[data-conflict="c1"][data-resolution="local"]')
+        ?.click();
+
+      // The decision card switches to the busy state immediately.
+      expect(card().classList.contains("is-busy")).toBe(true);
+      expect(card().getAttribute("aria-busy")).toBe("true");
+      const actionButtons = Array.from(
+        card().querySelectorAll<HTMLButtonElement>("[data-resolution]"),
+      );
+      expect(actionButtons).toHaveLength(2);
+      for (const btn of actionButtons) {
+        expect(btn.disabled).toBe(true);
+        expect(btn.classList.contains("is-loading")).toBe(true);
+        expect(btn.textContent).toContain("Applying");
+      }
+      expect(
+        card().querySelector<HTMLInputElement>(".dav-conflict-check")?.disabled,
+      ).toBe(true);
+      // Other conflicts stay actionable.
+      expect(
+        document
+          .querySelector<HTMLElement>('[data-id="c2"]')
+          ?.classList.contains("is-busy"),
+      ).toBe(false);
+
+      // A second click cannot double-post while the decision is in flight.
+      actionButtons[0].click();
+      actionButtons[1].click();
+      expect(postCount()).toBe(1);
+
+      // The confirming snapshot releases the busy state.
+      applyWebdavSyncData(
+        snapshot({
+          conflictCount: 1,
+          conflicts: [{ id: "c2", path: "skills/tool.md", kind: "remoteDeleted" }],
+        }),
+      );
+      expect(document.querySelector('[data-id="c1"]')).toBeNull();
+      applyWebdavSyncData(snapshot());
+    });
+
+    it("busies the batch bar and every selected card while applying", () => {
+      applyWebdavSyncData(
+        snapshot({
+          conflictCount: 2,
+          conflicts: [
+            { id: "c1", path: "AGENTS.md", kind: "content" },
+            { id: "c2", path: "skills/tool.md", kind: "remoteDeleted" },
+          ],
+        }),
+      );
+      const keep = document.getElementById("dav-conflict-keep") as HTMLButtonElement;
+      const all = document.getElementById("dav-conflict-all") as HTMLInputElement;
+      all.checked = true;
+      all.dispatchEvent(new Event("change", { bubbles: true }));
+
+      keep.click();
+      expect(keep.classList.contains("is-loading")).toBe(true);
+      expect(keep.disabled).toBe(true);
+      expect(keep.getAttribute("aria-busy")).toBe("true");
+      expect(keep.textContent).toContain("Applying");
+      expect(all.disabled).toBe(true);
+      expect(
+        document.querySelectorAll(".dav-conflict-card.is-busy"),
+      ).toHaveLength(2);
+
+      applyWebdavSyncData(snapshot());
+      expect(keep.classList.contains("is-loading")).toBe(false);
+      expect(keep.disabled).toBe(true);
+      expect(keep.textContent).toBe("Use local version");
+    });
+
+    it("renders the idle batch bar without spinner markup", () => {
+      applyWebdavSyncData(
+        snapshot({
+          conflictCount: 1,
+          conflicts: [{ id: "c1", path: "AGENTS.md", kind: "content" }],
+        }),
+      );
+      const keep = document.getElementById("dav-conflict-keep") as HTMLButtonElement;
+      const use = document.getElementById("dav-conflict-use") as HTMLButtonElement;
+      // The idle label is plain text: a stray innerHTML assignment used to
+      // leave the spinner SVG markup visible as literal text here.
+      expect(keep.textContent).toBe("Use local version");
+      expect(use.textContent).toBe("Use remote version");
+      expect(keep.innerHTML).not.toContain("svg");
+      expect(keep.classList.contains("is-loading")).toBe(false);
+      expect(keep.getAttribute("aria-busy")).toBe("false");
+      applyWebdavSyncData(snapshot());
+    });
+
     it("keeps the panel closed when a conflict delta arrives", () => {
       closeSyncPanel();
       applyWebdavSyncData(snapshot());
@@ -864,8 +1019,12 @@ describe("sync UI (webview)", () => {
       const use = document.getElementById("dav-conflict-use") as HTMLButtonElement;
       expect(bar.classList.contains("hidden")).toBe(false);
       expect(document.getElementById("dav-conflict-all-label")?.textContent).toBe("Select all");
-      expect(keep.textContent).toBe("Keep local");
-      expect(use.textContent).toBe("Use remote");
+      expect(keep.textContent).toBe("Use local version");
+      expect(use.textContent).toBe("Use remote version");
+      // The bar mirrors the card pairing: primary for the local side,
+      // secondary for the remote one, so the two surfaces read alike.
+      expect(keep.classList.contains("dav-btn--secondary")).toBe(false);
+      expect(use.classList.contains("dav-btn--secondary")).toBe(true);
       expect(all.checked).toBe(false);
       expect(all.indeterminate).toBe(false);
       expect(keep.disabled).toBe(true);

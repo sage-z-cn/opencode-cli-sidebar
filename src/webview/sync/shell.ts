@@ -220,7 +220,7 @@ export function renderSyncShell(d: SyncShellStrings): string {
             </label>
             <span class="dav-conflict-sel" id="dav-conflict-sel"></span>
             <span class="dav-conflict-bar-spacer"></span>
-            <button type="button" class="dav-btn dav-btn--secondary" id="dav-conflict-keep" disabled></button>
+            <button type="button" class="dav-btn" id="dav-conflict-keep" disabled></button>
             <button type="button" class="dav-btn dav-btn--secondary" id="dav-conflict-use" disabled></button>
           </div>
           <div id="dav-conflict-list"></div>

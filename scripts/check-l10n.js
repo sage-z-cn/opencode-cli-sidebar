@@ -18,13 +18,19 @@ function walk(dir) {
 
 const files = walk("src").filter((f) => !f.includes("test") && !f.includes("__tests__"));
 
-// Extract keys from l10n.t('...') calls
+// Extract keys from l10n.t('...'), l10n.t("...") and l10n.t(`...`) calls.
+// Double quotes dominate this codebase, so all three forms must be read;
+// missing a form silently reports every one of its keys as "extra".
 const codeKeys = new Set();
 for (const f of files) {
   const c = fs.readFileSync(f, "utf8");
   // Single-quoted strings: l10n.t('...')
   for (const m of c.matchAll(/l10n\.t\(\s*'([^'\\]*(?:\\.[^'\\]*)*)'/g)) {
-    codeKeys.add(m[1]);
+    codeKeys.add(unescape(m[1]));
+  }
+  // Double-quoted strings: l10n.t("...")
+  for (const m of c.matchAll(/l10n\.t\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g)) {
+    codeKeys.add(unescape(m[1]));
   }
   // Template literals: l10n.t(`...`)
   for (const m of c.matchAll(/l10n\.t\(\s*`([^`]+)`/g)) {
@@ -33,8 +39,13 @@ for (const f of files) {
       const paramMatch = match.match(/\{\s*(\w+)\s*\}/);
       return paramMatch ? `{${paramMatch[1]}}` : match;
     });
-    if (!k.includes("l10n.t")) codeKeys.add(k);
+    if (!k.includes("l10n.t")) codeKeys.add(unescape(k));
   }
+}
+
+/** Resolve the escape sequences that survive into bundle keys. */
+function unescape(s) {
+  return s.replace(/\\(.)/g, "$1");
 }
 
 const missing = [...codeKeys].filter((k) => !bundleKeys.has(k)).sort();
