@@ -5,6 +5,16 @@ All notable changes to the "OpenCode CLI Sidebar" extension will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+#### 6.0.0
+**New Features**
+- **Sync**: Add an opt-in config sync that runs before startup, gated so windows wait for the sync to finish before launching.
+
+**Bug Fixes**
+- **Sync**: Activate the shared status watcher in follower windows so status stays in sync across windows.
+- **Menus**: Keep the send-at-mention command out of the Output panel menu.
+
+**Improvements**
+- **Webview**: Migrate the webview UI to React for a smoother, more maintainable interface.
 
 #### 5.7.1
 **New Features**
