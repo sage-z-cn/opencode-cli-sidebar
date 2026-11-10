@@ -2065,7 +2065,7 @@ describe("ConfigSyncService engine", () => {
     expect(internals.watcher).toBeUndefined();
     expect(internals.pollTimer).toBeUndefined();
     // The follower created no config-directory watcher; only the shared
-    // status-file watcher exists from construction.
+    // status-file watcher exists, armed by initialize() for every window.
     expect(configDirWatcherCalls()).toBe(watcherCallsBefore);
     expect((await service.getSnapshot()).leader).toBe(false);
     expect(deltas.some((delta) => delta.leader === false)).toBe(false);
@@ -3180,13 +3180,45 @@ describe("cross-window status sharing", () => {
     expect(snapshotB.state).toBe("needsAuth");
   });
 
-  it("pushes a snapshot when another window rewrites the shared status", async () => {
+  it("arms the shared status watcher in a follower window too", async () => {
+    // Conflict resolution is manual, so a window that lost leadership must
+    // still hear about a sibling resolving a conflict.
+    const lockPath = path.join(syncStorageDir(storageDir), "lock.json");
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        lockId: "other-window",
+        pid: -1,
+        hostname: "elsewhere",
+        acquiredAt: Date.now(),
+        renewedAt: Date.now(),
+      }),
+      "utf8",
+    );
     writeLocal("cli.json", "local-new");
     client.addFile("cli.json", "remote-new");
     await serviceA.syncNow();
     await waitForConflicts(serviceA, 1);
 
-    // Capture the status-file watcher handlers of a freshly constructed
+    const postedB: HostMessage[] = [];
+    const serviceB = buildWindow(postedB);
+    serviceB.initialize();
+
+    const statusWatcher = (
+      serviceB as unknown as { statusWatcher?: { dispose: () => void } }
+    ).statusWatcher;
+    expect(statusWatcher).toBeDefined();
+    expect((await serviceB.getSnapshot()).leader).toBe(false);
+  });
+
+  it("pushes a snapshot when another window rewrites the shared status", async () => {
+    writeLocal("cli.json", "local-new");
+    client.addFile("cli.json", "remote-new");
+    await serviceA.syncNow();
+    const snapshotA = await waitForConflicts(serviceA, 1);
+
+    // Capture the status-file watcher handlers of a freshly initialized
     // sibling window; only that window registers under this mock.
     const statusHandlers: Array<() => void> = [];
     vi.mocked(vscode.workspace.createFileSystemWatcher).mockImplementation(((
@@ -3210,23 +3242,37 @@ describe("cross-window status sharing", () => {
     ) as never));
 
     const postedB: HostMessage[] = [];
-    buildWindow(postedB);
+    const serviceB = buildWindow(postedB);
+    serviceB.initialize();
     expect(statusHandlers.length).toBe(3);
+
+    // A sibling write: another window replaced the shared file, so this
+    // window's token no longer matches and adoption must happen. The sibling
+    // writes after our own queued status write settled.
+    await (serviceB as unknown as { statusWrite: Promise<void> }).statusWrite;
+    const store = new SyncStatusStore(storageDir);
+    const shared = await store.load();
+    expect(shared).toBeDefined();
+    await store.save({
+      ...(shared as SyncStatusData),
+      writeId: "sibling-write",
+      conflicts: [snapshotA.conflicts[0]],
+    });
 
     const onStatusChange = statusHandlers[0];
     expect(onStatusChange).toBeDefined();
+    // The sibling write already replaced the file; deliver the watcher
+    // event the way VS Code would, after the write settled.
     onStatusChange?.();
 
     await vi.waitFor(() => {
-      const messages = postedB.filter(
-        (m): m is Extract<HostMessage, { type: "webdavSyncData" }> =>
-          m.type === "webdavSyncData",
-      );
-      const last = messages[messages.length - 1];
-      if (!last || last.snapshot.conflictCount !== 1) {
+      if (lastSyncData(postedB)?.conflictCount !== 1) {
         throw new Error("waiting for the pushed shared snapshot");
       }
     });
+    // Exactly one push: a repeated adoption of the same list stays quiet.
+    const pushed = postedB.filter((m) => m.type === "webdavSyncData").length;
+    expect(pushed).toBe(1);
   });
 
   it("serializes status writes so revisions are not computed concurrently", async () => {
@@ -3319,4 +3365,98 @@ describe("cross-window status sharing", () => {
     expect(snapshot.conflictCount).toBe(1);
     expect(snapshot.conflicts).toEqual([foreignConflict]);
   });
+
+  it("pushes the resolved list so a panel holding stale cards converges", async () => {
+    writeLocal("cli.json", "local-new");
+    client.addFile("cli.json", "remote-new");
+    await serviceA.syncNow();
+    const snapshotA = await waitForConflicts(serviceA, 1);
+    const ids = snapshotA.conflicts.map((conflict) => conflict.id);
+
+    // Window B rendered the conflict cards, so its panel holds one entry.
+    const postedB: HostMessage[] = [];
+    const serviceB = buildWindow(postedB);
+    await serviceB.requestSyncData();
+    expect(lastSyncData(postedB)?.conflictCount).toBe(1);
+
+    // A resolution in this very window must reach B as a full snapshot:
+    // the delta never carries the list, so B would keep the stale ids.
+    await serviceB.resolveConflicts(ids, "local");
+    await vi.waitFor(() => {
+      if (lastSyncData(postedB)?.conflictCount !== 0) {
+        throw new Error("waiting for the resolved snapshot");
+      }
+      return lastSyncData(postedB);
+    });
+    expect(lastSyncData(postedB)?.conflicts).toEqual([]);
+  });
+
+  it("drops the settled conflict list in a sibling window after a resolution", async () => {
+    writeLocal("cli.json", "local-new");
+    client.addFile("cli.json", "remote-new");
+    await serviceA.syncNow();
+    const snapshotA = await waitForConflicts(serviceA, 1);
+    const ids = snapshotA.conflicts.map((conflict) => conflict.id);
+
+    // B remembers the pushed one-conflict list, then goes idle in the
+    // background while the user resolves the conflict in window A.
+    const postedB: HostMessage[] = [];
+    const serviceB = buildWindow(postedB);
+    await serviceB.requestSyncData();
+    expect(lastSyncData(postedB)?.conflictCount).toBe(1);
+
+    await serviceA.resolveConflicts(ids, "local");
+
+    await vi.waitFor(async () => {
+      await (
+        serviceB as unknown as { onExternalStatusFileChange: () => Promise<void> }
+      ).onExternalStatusFileChange();
+      if (lastSyncData(postedB)?.conflictCount !== 0) {
+        throw new Error("waiting for window B to settle the resolution");
+      }
+      return lastSyncData(postedB);
+    });
+    expect(lastSyncData(postedB)?.conflicts).toEqual([]);
+  });
+
+  it("refreshes the panel history when a sibling completes a pass", async () => {
+    writeLocal("cli.json", "v1");
+    await serviceA.syncNow();
+
+    // B has the panel open and already rendered the one persisted entry.
+    const postedB: HostMessage[] = [];
+    const serviceB = buildWindow(postedB);
+    await serviceB.requestSyncData();
+    expect(lastSyncData(postedB)?.history).toHaveLength(1);
+
+    // A sibling pass appends to the shared store; the conflict set is
+    // unchanged, so only the history signature can trigger the refresh.
+    writeLocal("AGENTS.md", "v2");
+    await serviceA.syncNow();
+    expect(
+      (context.globalState.get("webdavSync.history") as unknown[]).length,
+    ).toBe(2);
+
+    await vi.waitFor(async () => {
+      await (
+        serviceB as unknown as { onExternalStatusFileChange: () => Promise<void> }
+      ).onExternalStatusFileChange();
+      if ((lastSyncData(postedB)?.history ?? []).length !== 2) {
+        throw new Error("waiting for window B to refresh its history");
+      }
+      return lastSyncData(postedB);
+    });
+    expect(lastSyncData(postedB)?.history).toHaveLength(2);
+  });
 });
+
+/** Latest full snapshot posted to a window, for cross-window assertions. */
+function lastSyncData(
+  posted: HostMessage[],
+): Extract<HostMessage, { type: "webdavSyncData" }>["snapshot"] | undefined {
+  const messages = posted.filter(
+    (m): m is Extract<HostMessage, { type: "webdavSyncData" }> =>
+      m.type === "webdavSyncData",
+  );
+  return messages[messages.length - 1]?.snapshot;
+}

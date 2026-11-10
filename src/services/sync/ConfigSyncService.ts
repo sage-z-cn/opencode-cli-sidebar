@@ -380,6 +380,9 @@ export class ConfigSyncService implements vscode.Disposable {
   /** Serialized status persistence chain; awaited before adopting the shared
    * file so pending updates of our own are never read back as foreign. */
   private statusWrite: Promise<void> = Promise.resolve();
+  /** Conflict ids last pushed to the webview; removed conflicts reach the
+   *  panel only through a full snapshot, never through a delta. */
+  private lastPushedConflictIds: string[] = [];
 
   private failureStreak = 0;
   private nextBackoffMs = FIRST_BACKOFF_MS;
@@ -427,27 +430,6 @@ export class ConfigSyncService implements vscode.Disposable {
     );
     this.statusStore = new SyncStatusStore(this.globalStoragePath());
     this.statusStoreFilePath = this.statusStore.filePath;
-    try {
-      // Watch the machine-shared status file so conflicts resolved in a
-      // sibling window converge here without waiting for a panel refresh.
-      const pattern = new vscode.RelativePattern(
-        vscode.Uri.file(path.dirname(this.statusStoreFilePath)),
-        "status.json",
-      );
-      const watcher = vscode.workspace.createFileSystemWatcher(pattern);
-      const onEvent = () => void this.onExternalStatusFileChange();
-      watcher.onDidChange(onEvent);
-      watcher.onDidCreate(onEvent);
-      watcher.onDidDelete(onEvent);
-      this.statusWatcher = watcher;
-    } catch (error) {
-      this.logger.warn(
-        `[WebDavSync] failed to create status file watcher: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-
     this.history = this.loadHistory();
 
     this.disposables.push(
@@ -467,6 +449,9 @@ export class ConfigSyncService implements vscode.Disposable {
 
   /** Called once after activation: arms triggers and runs startup sync. */
   public initialize(): void {
+    // Conflict resolution is a manual action in any window, so the shared
+    // status watcher must run in leaders and followers alike.
+    this.startStatusWatcher();
     this.armTriggers();
     const config = readSyncConfig();
     if (
@@ -491,6 +476,39 @@ export class ConfigSyncService implements vscode.Disposable {
         }
       });
     }
+  }
+
+  /** Begin watching the machine-shared status file. Kept by every window,
+   *  leader or not: conflict resolution is a manual action in any window. */
+  private startStatusWatcher(): void {
+    this.stopStatusWatcher();
+    try {
+      const pattern = new vscode.RelativePattern(
+        vscode.Uri.file(path.dirname(this.statusStoreFilePath)),
+        "status.json",
+      );
+      // External file change events are unreliable for paths outside the
+      // workspace, so the watcher alone never guarantees convergence: each
+      // window also re-reads the file when the panel surfaces (see
+      // getSnapshot), which picks up anything a missed event left behind.
+      const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+      const onEvent = () => void this.onExternalStatusFileChange();
+      watcher.onDidChange(onEvent);
+      watcher.onDidCreate(onEvent);
+      watcher.onDidDelete(onEvent);
+      this.statusWatcher = watcher;
+    } catch (error) {
+      this.logger.warn(
+        `[WebDavSync] failed to create status file watcher: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private stopStatusWatcher(): void {
+    this.statusWatcher?.dispose();
+    this.statusWatcher = undefined;
   }
 
   /**
@@ -518,8 +536,7 @@ export class ConfigSyncService implements vscode.Disposable {
 
   public dispose(): void {
     this.disposed = true;
-    this.statusWatcher?.dispose();
-    this.statusWatcher = undefined;
+    this.stopStatusWatcher();
     this.stopAutoTimers();
     this.stopLockHeartbeat();
     this.clearLockRetryTimer();
@@ -597,9 +614,11 @@ export class ConfigSyncService implements vscode.Disposable {
   // ── Webview message entry points ──
 
   public async requestSyncData(): Promise<void> {
+    const snapshot = await this.getSnapshot();
+    this.lastPushedConflictIds = snapshot.conflicts.map((entry) => entry.id);
     this.postWebviewMessage({
       type: "webdavSyncData",
-      snapshot: await this.getSnapshot(),
+      snapshot,
     });
   }
 
@@ -3109,6 +3128,9 @@ export class ConfigSyncService implements vscode.Disposable {
     if (this.syncing && !force) {
       return false;
     }
+    // Settle a queued status write first. A slow local save can still be in
+    // flight, and reading the file mid-write would adopt our own older copy.
+    await this.statusWrite;
     const data = await this.statusStore.load().catch(() => undefined);
     if (!data || data.writeId === this.lastStatusWriteId) {
       return false;
@@ -3128,6 +3150,10 @@ export class ConfigSyncService implements vscode.Disposable {
   /** Watcher callback: a sibling window changed the shared status file. */
   private async onExternalStatusFileChange(): Promise<void> {
     try {
+      // Capture what the panel currently renders before adoption runs: the
+      // snapshot refresh below re-learns the pushed ids from the same state
+      // it just loaded, which would hide the change.
+      const shownIds = this.lastPushedConflictIds;
       if (await this.adoptSharedStatus()) {
         this.pushDelta({
           state: this.state,
@@ -3141,7 +3167,26 @@ export class ConfigSyncService implements vscode.Disposable {
             : {}),
           autoSyncPaused: this.autoSyncPaused,
         });
-        await this.requestSyncData();
+        // Deltas never carry the conflict list, so any difference between
+        // the adopted list and what this window's panel rendered — a
+        // sibling resolved entries (shrink) or raised new ones (grow) —
+        // would stay stale. History lives in the shared store and is only
+        // delivered by a full snapshot, so a sibling's completed pass (or a
+        // history clear) also needs one refresh. The newest entry's time is
+        // the signature: the list is capped, so its length stops changing.
+        const changed =
+          shownIds.length !== this.conflicts.size ||
+          shownIds.some((id) => !this.conflicts.has(id));
+        const persisted = this.loadHistory();
+        const historyChanged =
+          (persisted[persisted.length - 1]?.time ?? 0) !==
+          (this.history[this.history.length - 1]?.time ?? 0);
+        if (changed || historyChanged) {
+          this.logger.debug(
+            "[WebDavSync] shared state changed; refreshing the panel",
+          );
+          await this.requestSyncData();
+        }
       }
     } catch (error) {
       this.logger.debug(
