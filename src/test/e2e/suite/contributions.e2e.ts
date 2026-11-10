@@ -82,10 +82,12 @@ suite("Package contribution metadata", () => {
 
     assert.ok(
       editorContext.some(
-        ({ command, group }) =>
-          command === "opencode-cli-sidebar.sendAtMention" && group === "0_opencode_cli_sidebar",
+        ({ command, group, when }) =>
+          command === "opencode-cli-sidebar.sendAtMention" &&
+          group === "0_opencode_cli_sidebar" &&
+          when === "editorTextFocus && resourceScheme =~ /^(file|untitled)$/",
       ),
-      "editor/context should include sendAtMention",
+      "editor/context should scope sendAtMention to text editors so the Output panel does not inherit it",
     );
     assert.ok(
       explorerContext.some(

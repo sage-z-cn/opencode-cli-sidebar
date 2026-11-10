@@ -133,6 +133,7 @@
       "editor/context": [
         {
           "command": "opencode-cli-sidebar.sendAtMention",
+          "when": "editorTextFocus && resourceScheme =~ /^(file|untitled)$/",
           "group": "0_opencode_cli_sidebar"
         }
       ],
