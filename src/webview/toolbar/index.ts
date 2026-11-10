@@ -6,6 +6,7 @@ import { scheduleRefresh } from "../shared/utils";
 import { fitFullWidth } from "../terminal/fit";
 import { notifyOpenCodeUpdateCheckRequested } from "../update";
 import { openExtensionSettingsDialog } from "../extension-settings";
+import { has, t as translate } from "../shared/i18n/core";
 
 /** Matches package.json `opencode-cli-sidebar.fontSize` bounds/default. */
 const MIN_FONT_SIZE = 6;
@@ -49,10 +50,8 @@ export function applyFontSize(
 
 function formatFontSizeLabel(size: number): string {
   if (size === DEFAULT_FONT_SIZE) {
-    const strings =
-      (window as unknown as { __TOOLBAR_L10N__?: Record<string, string> })
-        .__TOOLBAR_L10N__ ?? {};
-    const defaultLabel = strings.default ?? "default";
+    // "default" is itself a bundle key, so it is both label and lookup key.
+    const defaultLabel = has("default") ? translate("default") : "default";
     return `${size}px (${defaultLabel})`;
   }
   return `${size}px`;
@@ -139,9 +138,6 @@ export function setupFontSizeMenu(
 }
 
 export function updateEditorAttachmentIcon(isEditorTab: boolean): void {
-  const strings =
-    (window as unknown as { __TOOLBAR_L10N__?: Record<string, string> })
-      .__TOOLBAR_L10N__ ?? {};
   const iconEl = document.getElementById("settings-toggle-editor-icon");
   const label = document.getElementById("settings-toggle-editor-label");
   if (iconEl) {
@@ -151,8 +147,12 @@ export function updateEditorAttachmentIcon(isEditorTab: boolean): void {
   }
   if (label) {
     label.textContent = isEditorTab
-      ? (strings.switchToSidebar ?? "Switch to Sidebar")
-      : (strings.switchToEditor ?? "Switch to Editor");
+      ? has("Switch to Sidebar")
+        ? translate("Switch to Sidebar")
+        : "Switch to Sidebar"
+      : has("Switch to Editor")
+        ? translate("Switch to Editor")
+        : "Switch to Editor";
   }
 }
 

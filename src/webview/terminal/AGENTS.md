@@ -2,23 +2,24 @@
 
 ## Scope
 
-- `src/webview/terminal/` owns the xterm.js lifecycle: instance creation, config parsing, keyboard routing, fit/resize/visibility, and HTML generation.
+- `src/webview/terminal/` owns the xterm.js lifecycle: instance creation, config parsing, keyboard routing, fit/resize/visibility, and the React mount wrapper.
 - Sibling webview modules (`messages/`, `dragdrop/`, `clipboard/`, `links/`, `toolbar/`, `shared/`) are documented in `src/webview/AGENTS.md`; this file covers the terminal subdir only.
 
 ## Files
 
 | File | Role |
 |---|---|
+| `TerminalApp.tsx` | React root: renders `<Toolbar>` + the empty `#terminal-container` div, wires focus ring and clipboard |
+| `useTerminal.ts` | Mounts `initTerminal()` once in an effect; mirrors `#root` config onto the container |
 | `index.ts` | `initTerminal()` — primary xterm bootstrap; returns `{ terminal, fitAddon, dispose }` |
-| `config.ts` | Parses `TerminalConfig` from `#terminal-container` `data-*` attributes |
-| `terminal-container.ts` | Emits the `<div id="terminal-container" data-*>` fragment |
+| `config.ts` | Parses `TerminalConfig` from `data-*` attributes |
 | `keyboard.ts` | `attachCustomKeyEventHandler` wiring; `ALWAYS_TERMINAL_CONTROL` set |
-| `resize.ts` | `ResizeObserver` + `IntersectionObserver` + initial-fit phases |
-| `fit.ts` / `fit.test.ts` | Full-width fit helpers — `fitFullWidth()` replaces every `fitAddon.fit()` call, reclaiming the 14px scrollbar reserve FitAddon subtracts when `scrollback > 0` |
-| `html.ts` | Full-page HTML composition (CSP, nonce, CSS/JS URIs, toolbar) |
-| `toolbar.ts` / `toolbar.html` | Toolbar render from `?raw` HTML, l10n-localized; the AI tool pill is a static OpenCode label |
+| `resize.ts` | `ResizeObserver` + `IntersectionObserver` + initial-fit phases; posts `ready` |
+| `fit.ts` | Full-width fit helpers — `fitFullWidth()` replaces every `fitAddon.fit()` call, reclaiming the 14px scrollbar reserve FitAddon subtracts when `scrollback > 0` |
+| `focus-indicator.ts` | Body-level focus ring overlay |
+| `background-sync.ts` | Background color sync with the host |
+| `toolbar.html` | Toolbar template with `{{t:key}}` / `{{icon:key}}` placeholders, rendered by `toolbar/Toolbar.tsx` |
 | `html-asset.d.ts` | Type decl for `*.html?raw` webpack loader |
-| `terminal.css` (in parent `src/webview/`) | All webview styles |
 
 ## initTerminal() Sequence (order-sensitive)
 
@@ -48,18 +49,18 @@ All fits route through `fitFullWidth()` in `fit.ts` instead of raw `fitAddon.fit
 
 `scheduleRefresh()` (in `../shared/utils.ts`) rAF-debounces `terminal.refresh()` so overlapping fits do not stack screen updates.
 
+## React Mount Contract
+
+- `useTerminal` runs `initTerminal` in an effect with `[]` deps. Never add dependencies: each re-run disposes the terminal.
+- The webview is **not** wrapped in `StrictMode` — see `src/webview/AGENTS.md`.
+- `ready` is posted from `performInitialFit`, so it only fires after xterm has measured itself. That message is what starts the PTY host-side; do not post it from React.
+
 ## Keyboard Routing (`keyboard.ts`)
 
 - `ALWAYS_TERMINAL_CONTROL` — shell/TUI control chords (Ctrl+C, Ctrl+D, etc.) are **always** routed to the terminal; never suppress for IDE shortcuts.
 - Paste (`Cmd/Ctrl+V`) and copy are intercepted and routed through the host via `setClipboard` / `triggerPaste` messages.
 - `Shift+Enter` → emits `\n`.
 - `sendKeybindingsToShell` setting toggles whether Ctrl/Cmd+letter/number chords pass through to the terminal.
-
-## Dual xterm Creation Paths
-
-- `initTerminal()` (here) creates the primary instance.
-- `TerminalManager` (in parent `src/webview/terminal-manager.ts`) has its own `.create()`. `main.ts` calls `initTerminal()` first, then `terminalManager.register(result)`. If `register()` is called with no instance, it falls back to `this.create()`.
-- Know which path owns the current instance before recreating or disposing.
 
 ## Drag/Drop Layers
 
@@ -75,8 +76,9 @@ All three share the same extraction logic but #2 has a duplicated copy. When cha
 - `*.html?raw` imports are inlined as source strings via webpack `asset/source` loader — the `.d.ts` declares the module shape.
 - CSP requires nonce on all inline scripts; `cspSource` comes from the host webview object.
 - WebGL fallback is silent — there is no explicit CanvasAddon swap.
+- Terminal config attributes live on `#root`, mirrored to `#terminal-container` on mount. Do not move them.
 
 ## Verification
 
-- Tests use `// @vitest-environment jsdom` and mock `../shared/vscode-api`.
-- `src/webview/**` is excluded from coverage thresholds; webview tests run but do not count.
+- Webview unit tests were removed during the React migration; `src/webview/**` is excluded from coverage thresholds.
+- Verify manually: initial fit, resize, sidebar hide/show, font-size changes, and paste-copy round trips.

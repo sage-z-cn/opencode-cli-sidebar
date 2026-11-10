@@ -94,8 +94,22 @@ export function updateSyncTooltip(state: SyncUiState): void {
 export function initSyncTooltip(handlers: {
   onDismiss: () => void;
 }): void {
-  const anchor = el("btn-dav-sync-panel");
-  const tip = el("dav-sync-tip");
+  const anchorEl = document.getElementById("btn-dav-sync-panel");
+  const tipEl = document.getElementById("dav-sync-tip");
+
+  if (!anchorEl || !tipEl) {
+    // The toolbar entry and the tooltip shell are rendered by the React tree
+    // and the dialog host. A missing one means boot ran too early; skip rather
+    // than throw and take down the rest of the sync UI.
+    console.warn("[sync] tooltip not initialized: missing toolbar button or shell", {
+      hasAnchor: Boolean(anchorEl),
+      hasTip: Boolean(tipEl),
+    });
+    return;
+  }
+
+  const anchor = anchorEl as HTMLButtonElement;
+  const tip = tipEl as HTMLDivElement;
 
   const scheduleOpen = (): void => {
     cancelCloseTimer();

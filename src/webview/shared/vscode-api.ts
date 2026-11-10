@@ -1,30 +1,13 @@
-import { WebviewMessage } from "../../types";
+import type { WebviewMessage } from "../../types";
+import { getBridge } from "./bridge";
 
-declare function acquireVsCodeApi(): {
-  postMessage: (message: WebviewMessage) => void;
-  getState: () => any;
-  setState: (state: any) => void;
-};
-
-export interface VsCodeApi {
-  postMessage: (message: WebviewMessage) => void;
-  getState: () => any;
-  setState: (state: any) => void;
-}
-
-let vscodeApi: VsCodeApi | null = null;
-
-export function getVsCodeApi(): VsCodeApi {
-  if (!vscodeApi) {
-    vscodeApi = acquireVsCodeApi();
-  }
-  return vscodeApi;
-}
-
-export function resetVsCodeApi(): void {
-  vscodeApi = null;
-}
-
+/**
+ * Raw `postMessage` for the terminal hot path.
+ *
+ * `acquireVsCodeApi()` may only be called once per webview document, and the
+ * bridge owns that single instance. Routing through it here keeps both
+ * channels on one API handle — a second `acquireVsCodeApi()` call throws.
+ */
 export function postMessage(message: WebviewMessage): void {
-  getVsCodeApi().postMessage(message);
+  getBridge().postMessage(message);
 }

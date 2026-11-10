@@ -44,7 +44,8 @@ import {
   toReferencePath,
   type ReferencePathStyle,
 } from "./relativeReference";
-import { renderTerminalHtml } from "../webview/terminal/html";
+import { WebviewRequestRouter } from "./WebviewRequestRouter";
+import { renderWebviewHtml } from "./webviewHtml";
 import { NativeTerminalManager } from "../services/NativeTerminalManager";
 import type { StartupGate } from "../services/StartupCoordinator";
 import { TerminalBackendRegistry } from "../services/terminalBackends";
@@ -74,6 +75,8 @@ export class TerminalProvider
   private readonly opencodeOperator: OpenCodeToolOperator;
   private readonly sessionRuntime: SessionRuntime;
   private readonly messageRouter: MessageRouter;
+
+  private readonly requestRouter: WebviewRequestRouter;
   private readonly dataThrottleService: DataThrottleService;
   private readonly keymapService = new OpenCodeKeymapService();
   private readonly openCodeCliSettingsService = new OpenCodeCliSettingsService();
@@ -226,6 +229,12 @@ export class TerminalProvider
       this.instanceStore,
     );
 
+    this.requestRouter = new WebviewRequestRouter(
+      this.context,
+      this.logger,
+      (message) => this.postWebviewMessage(message),
+    );
+
     // Self-update status drives the webview UI. Subscribed in the
     // constructor so events are never missed across webview reloads; pushes
     // before the webview exists are dropped and covered by the
@@ -304,16 +313,20 @@ export class TerminalProvider
       localResourceRoots: [this.context.extensionUri],
     };
 
+    // Listener must be attached before the HTML is assigned: assigning `html`
+    // starts loading the webview script immediately, and the script's first
+    // message is the l10n bundle request. Registering afterwards loses that
+    // request, which leaves the whole UI untranslated.
+    webviewView.webview.onDidReceiveMessage((message) => {
+      this.handleMessage(message);
+    });
+
     webviewView.webview.html = this.getHtmlForWebview(webviewView.webview);
 
     const processAlive = this.sessionRuntime.hasLiveTerminalProcess();
     if (this.sessionRuntime.isStartedFlag() && !processAlive) {
       this.sessionRuntime.resetState();
     }
-
-    webviewView.webview.onDidReceiveMessage((message) => {
-      this.handleMessage(message);
-    });
 
     if (processAlive) {
       this.sessionRuntime.reconnectListeners();
@@ -1644,6 +1657,12 @@ export class TerminalProvider
   }
 
   private handleMessage(message: unknown): void {
+    // Bridge requests carry a request envelope; the terminal hot path and all
+    // legacy messages stay flat and go to MessageRouter unchanged.
+    if (WebviewRequestRouter.isRequest(message)) {
+      void this.requestRouter.dispatch(message);
+      return;
+    }
     this.messageRouter.handleMessage(message);
   }
 
@@ -1902,26 +1921,13 @@ export class TerminalProvider
 
     const terminalConfig = this.getTerminalConfig();
 
-    const html = renderTerminalHtml({
+    return renderWebviewHtml({
       cspSource: webview.cspSource,
       nonce,
       cssUri,
       scriptUri,
-      fontSize: String(terminalConfig.fontSize),
-      fontFamily: terminalConfig.fontFamily,
-      cursorBlink: String(terminalConfig.cursorBlink),
-      cursorStyle: terminalConfig.cursorStyle,
-      scrollback: String(terminalConfig.scrollback),
-      sendKeybindingsToShell: String(terminalConfig.sendKeybindingsToShell),
-      focusIndicatorMode:
-        terminalConfig.focusIndicatorMode ?? "bottomBorder",
-      focusIndicatorBorderWidth: String(
-        terminalConfig.focusIndicatorBorderWidth ?? 2,
-      ),
-      uiLanguage: vscode.env.language,
+      terminalConfig,
     });
-
-    return html;
   }
 
   private getNonce(): string {
@@ -1946,16 +1952,19 @@ export class TerminalProvider
   private initializeEditorPanel(panel: vscode.WebviewPanel): void {
     this._panel = panel;
     panel.webview.options = this.getEditorPanelOptions();
+
+    // Attach before assigning `html`, for the same reason as
+    // `resolveWebviewView`: the first webview message is the l10n request.
+    panel.webview.onDidReceiveMessage((message) => {
+      this.handleMessage(message);
+    });
+
     panel.webview.html = this.getHtmlForWebview(panel.webview);
 
     const processAlive = this.sessionRuntime.hasLiveTerminalProcess();
     if (this.sessionRuntime.isStartedFlag() && !processAlive) {
       this.sessionRuntime.resetState();
     }
-
-    panel.webview.onDidReceiveMessage((message) => {
-      this.handleMessage(message);
-    });
 
     if (processAlive) {
       this.sessionRuntime.reconnectListeners();

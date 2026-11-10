@@ -9,6 +9,22 @@ html {
   flex-direction: column;
 }
 
+/* React mounts the toolbar and the terminal container inside #root, so it has
+   to take over body's flex role: fill the viewport and stack its children. */
+#root {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The dialog host is a plain wrapper around absolutely positioned overlays;
+   its contents must not participate in the flex column above. */
+#oc-dialog-host {
+  display: contents;
+}
+
 #terminal-container {
   flex: 1;
   min-height: 0;

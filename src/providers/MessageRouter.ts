@@ -501,6 +501,9 @@ export class MessageRouter {
     }
 
     if (!this.provider.isStarted()) {
+      this.logger.info(
+        `[MessageRouter] webview ready (${cols}x${rows}); starting OpenCode session`,
+      );
       void this.provider.startOpenCode();
     } else {
       const size = this.provider.getLastKnownTerminalSize();

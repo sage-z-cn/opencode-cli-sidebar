@@ -8,6 +8,7 @@
  *
  * Browser-only: no host APIs, no process access.
  */
+import { has, t as translate } from "../shared/i18n/core";
 
 type StartupPhase = "starting" | "idle";
 
@@ -21,20 +22,11 @@ let textElement: HTMLDivElement | null = null;
 /** Survives a re-init so the indicator reflects the current gate phase. */
 let currentPhase: StartupPhase = "idle";
 
-function l10nStrings(): Record<string, string> {
-  const injected =
-    typeof window === "undefined"
-      ? undefined
-      : (
-          window as unknown as {
-            __OC_STARTUP_L10N__?: Record<string, string>;
-          }
-        ).__OC_STARTUP_L10N__;
-  return injected ?? L10N_FALLBACK;
-}
-
 function message(key: keyof typeof L10N_FALLBACK): string {
-  return l10nStrings()[key] ?? L10N_FALLBACK[key];
+  // The bundle is keyed by English source text, so resolve through the
+  // fallback rather than through this short identifier.
+  const fallback = L10N_FALLBACK[key];
+  return has(fallback) ? translate(fallback) : fallback;
 }
 
 /**

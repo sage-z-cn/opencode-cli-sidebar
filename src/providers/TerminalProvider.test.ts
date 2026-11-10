@@ -168,13 +168,17 @@ describe("TerminalProvider", () => {
     expect(view.webview.onDidReceiveMessage).toBeDefined();
   });
 
-  it("writes html containing terminal container to the resolved webview", () => {
+  it("writes the React shell html to the resolved webview", () => {
     mockConfiguration();
     provider = createProvider();
     const { view } = resolveProvider(provider);
 
-    expect(view.webview.html).toContain("terminal-container");
+    // The terminal container is rendered client-side by React, so the host
+    // HTML only carries the mount point, the bundle, and the terminal config
+    // attributes.
+    expect(view.webview.html).toContain('id="root"');
     expect(view.webview.html).toContain("webview.js");
+    expect(view.webview.html).toContain("data-font-size");
   });
 
   it("restores a restorable disconnected process on webview view resolve", async () => {

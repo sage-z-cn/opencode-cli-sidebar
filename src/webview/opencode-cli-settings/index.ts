@@ -13,15 +13,13 @@ import type {
 import { postMessage } from "../shared/vscode-api";
 import { ICONS, icon } from "../shared/icons";
 import { openKeymapModal } from "../keymap";
+import { has, t as translate } from "../shared/i18n/core";
 
-const l10nStrings: Record<string, string> =
-  (typeof window !== "undefined"
-    ? (window as unknown as { __OC_CLI_SETTINGS_L10N__?: Record<string, string> })
-        .__OC_CLI_SETTINGS_L10N__
-    : undefined) ?? {};
-
-function t(key: string, fallback: string): string {
-  return l10nStrings[key] ?? fallback;
+function t(_key: string, fallback: string): string {
+  // The l10n bundle is keyed by English source text, not by these short
+  // identifiers, so the fallback is the lookup key. The identifier stays
+  // first so call sites remain self-describing and stable across edits.
+  return has(fallback) ? translate(fallback) : fallback;
 }
 
 function formatMessage(

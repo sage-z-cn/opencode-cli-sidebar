@@ -21,17 +21,15 @@ import {
   translationLanguage,
   type ExtractedChangelog,
 } from "./translation";
+import { has, t as translate } from "../shared/i18n/core";
 
-// ── Strings (injected host-side; see update/l10n.ts) ──
+// ── Strings (shared i18n dictionary; the host serves the l10n bundle) ──
 
-const l10nStrings: Record<string, string> =
-  (typeof window !== "undefined"
-    ? (window as unknown as { __OC_UPDATE_L10N__?: Record<string, string> })
-        .__OC_UPDATE_L10N__
-    : undefined) ?? {};
-
-function t(key: string, fallback: string): string {
-  return l10nStrings[key] ?? fallback;
+function t(_key: string, fallback: string): string {
+  // The l10n bundle is keyed by English source text, not by these short
+  // identifiers, so the fallback is the lookup key. The identifier stays
+  // first so call sites remain self-describing and stable across edits.
+  return has(fallback) ? translate(fallback) : fallback;
 }
 
 function format(template: string, ...values: string[]): string {
@@ -43,28 +41,38 @@ function format(template: string, ...values: string[]): string {
 
 const DEFAULT_METHODS = ["curl", "npm", "pnpm", "bun", "yarn", "vp", "brew"];
 
-const STEP_LABELS: Record<string, string> = {
-  "prepare-target": t("stepPrepareTarget", "Resolve latest version"),
-  "prepare-local": t("stepPrepareLocal", "Read installed version"),
-  execute: t("stepExecute", "Downloading and installing"),
-  reshim: t("stepReshim", "Sync nvm shim"),
-  verify: t("stepVerify", "Verify version"),
-  "remediate-trust": t("stepRemediateTrust", "Apply nvm trust setting"),
-  "remediate-reshim": t("stepRemediateReshim", "Run nvm reshim"),
-  installing: t("stepInstalling", "Install OpenCode CLI"),
-};
+/**
+ * Update step and method labels.
+ *
+ * Built on demand: the i18n dictionary resolves asynchronously after this
+ * module is imported, so top-level literals would freeze English text.
+ */
+function buildStepLabels(): Record<string, string> {
+  return {
+    "prepare-target": t("stepPrepareTarget", "Resolve latest version"),
+    "prepare-local": t("stepPrepareLocal", "Read installed version"),
+    execute: t("stepExecute", "Downloading and installing"),
+    reshim: t("stepReshim", "Sync nvm shim"),
+    verify: t("stepVerify", "Verify version"),
+    "remediate-trust": t("stepRemediateTrust", "Apply nvm trust setting"),
+    "remediate-reshim": t("stepRemediateReshim", "Run nvm reshim"),
+    installing: t("stepInstalling", "Install OpenCode CLI"),
+  };
+}
 
-const METHOD_DESCS: Record<string, string> = {
-  curl: t("descCurl", "Download and run the official install script"),
-  npm: t("descNpm", "Install via the npm global package"),
-  pnpm: t("descPnpm", "Install via the pnpm global package"),
-  bun: t("descBun", "Install via the bun global package"),
-  yarn: t("descYarn", "Install via the yarn global package"),
-  vp: t("descVp", "Install via the vp tool"),
-  brew: t("descBrew", "Install via Homebrew"),
-  scoop: t("descScoop", "Install via Scoop"),
-  choco: t("descChoco", "Install via Chocolatey"),
-};
+function buildMethodDescs(): Record<string, string> {
+  return {
+    curl: t("descCurl", "Download and run the official install script"),
+    npm: t("descNpm", "Install via the npm global package"),
+    pnpm: t("descPnpm", "Install via the pnpm global package"),
+    bun: t("descBun", "Install via the bun global package"),
+    yarn: t("descYarn", "Install via the yarn global package"),
+    vp: t("descVp", "Install via the vp tool"),
+    brew: t("descBrew", "Install via Homebrew"),
+    scoop: t("descScoop", "Install via Scoop"),
+    choco: t("descChoco", "Install via Chocolatey"),
+  };
+}
 
 const HINT_TTL_MS = 4500;
 const ABORT_ARM_MS = 5000;
@@ -413,7 +421,7 @@ function progressStepCount(): string {
 
 function progressStepText(): string {
   const stepId = status?.step ?? "";
-  return STEP_LABELS[stepId] ?? status?.detail ?? stepId;
+  return buildStepLabels()[stepId] ?? status?.detail ?? stepId;
 }
 
 /**
@@ -899,7 +907,7 @@ function buildMethodsContent(): {
         escapeHtml(t("methodDetected", "Detected install method")) +
         "</span>";
     }
-    let desc = METHOD_DESCS[id] ?? "";
+    let desc = buildMethodDescs()[id] ?? "";
     if (isLast && isDet) {
       desc += " · " + t("methodDetected", "Detected install method");
     }
@@ -983,7 +991,7 @@ function buildProgressContent(): {
       '"><span class="ocu-dlg-step-ic">' +
       (entry.ok ? ICONS.check : ICONS.x) +
       "</span>" +
-      escapeHtml(entry.label || STEP_LABELS[entry.step] || entry.step) +
+      escapeHtml(entry.label || buildStepLabels()[entry.step] || entry.step) +
       "</li>";
   }
   if (busy) {

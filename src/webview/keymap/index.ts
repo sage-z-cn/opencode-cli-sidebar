@@ -16,16 +16,14 @@ import {
 } from "../../services/openCodeKeymapState";
 import { postMessage } from "../shared/vscode-api";
 import { ICONS, icon } from "../shared/icons";
+import { has, t as translate } from "../shared/i18n/core";
 
-/** 注入方为 terminal/html.ts 的 nonce 脚本 window.__KEYMAP_L10N__；缺失时回退英文。 */
-const keymapL10n: Record<string, string> =
-  (typeof window !== "undefined"
-    ? (window as unknown as { __KEYMAP_L10N__?: Record<string, string> })
-        .__KEYMAP_L10N__
-    : undefined) ?? {};
-
-function t(key: string, fallback: string): string {
-  return keymapL10n[key] ?? fallback;
+/** 字典来自共享 i18n 模块（宿主下发的 l10n bundle）；缺失时回退英文。 */
+function t(_key: string, fallback: string): string {
+  // The l10n bundle is keyed by English source text, not by these short
+  // identifiers, so the fallback is the lookup key. The identifier stays
+  // first so call sites remain self-describing and stable across edits.
+  return has(fallback) ? translate(fallback) : fallback;
 }
 
 /** 位置参数模板（{0}/{1}…），与 l10n.t 的占位符风格一致。 */
@@ -50,16 +48,28 @@ const GROUP_ORDER = [
   "whichkey",
 ] as const;
 
-const GROUP_LABELS: Record<string, string> = {
-  general: t("groupGeneral", "General"),
-  session: t("groupSession", "Session"),
-  nav: t("groupNav", "Navigation / Messages"),
-  model: t("groupModel", "Models / Agents"),
-  input: t("groupInput", "Input / Prompts"),
-  dialog: t("groupDialog", "Dialogs"),
-  diff: t("groupDiff", "Diff viewer"),
-  whichkey: t("groupWhichkey", "Which-key"),
-};
+/**
+ * Key group labels.
+ *
+ * Built on demand: the i18n dictionary resolves asynchronously after this
+ * module is imported, so a top-level object literal would freeze English.
+ */
+function buildGroupLabels(): Record<string, string> {
+  return {
+    general: t("groupGeneral", "General"),
+    session: t("groupSession", "Session"),
+    nav: t("groupNav", "Navigation / Messages"),
+    model: t("groupModel", "Models / Agents"),
+    input: t("groupInput", "Input / Prompts"),
+    dialog: t("groupDialog", "Dialogs"),
+    diff: t("groupDiff", "Diff viewer"),
+    whichkey: t("groupWhichkey", "Which-key"),
+  };
+}
+
+function groupLabel(key: string): string {
+  return buildGroupLabels()[key] ?? key;
+}
 
 type CaptureState = {
   mode: "add" | "replace";
@@ -251,7 +261,7 @@ function renderSideNav(): void {
     return `<button type="button" class="sn-item${on ? " is-on" : ""}${
       n === 0 ? " is-empty" : ""
     }" data-group="${key}" aria-current="${on ? "true" : "false"}"><span>${
-      GROUP_LABELS[key]
+      groupLabel(key)
     }</span><span class="sn-count">${n}</span></span></button>`;
   }).join("");
 }
@@ -266,7 +276,7 @@ function renderList(): void {
     const list = visibleInGroup(g);
     if (!list.length) continue;
     total += list.length;
-    html += `<div class="group-label" id="km-group-${g}">${GROUP_LABELS[g]} <span class="gl-count">(${
+    html += `<div class="group-label" id="km-group-${g}">${groupLabel(g)} <span class="gl-count">(${
       list.length
     })</span></div>`;
     for (const item of list) {

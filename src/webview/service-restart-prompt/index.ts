@@ -11,19 +11,14 @@
 import type { ServiceRestartPromptAction } from "../../types";
 import { postMessage } from "../shared/vscode-api";
 import { ICONS, icon } from "../shared/icons";
+import { has, t as translate } from "../shared/i18n/core";
 
-/** 注入方为 terminal/html.ts 的 nonce 脚本 window.__SERVICE_RESTART_L10N__；缺失时回退英文。 */
-const l10nStrings: Record<string, string> =
-  (typeof window !== "undefined"
-    ? (
-        window as unknown as {
-          __SERVICE_RESTART_L10N__?: Record<string, string>;
-        }
-      ).__SERVICE_RESTART_L10N__
-    : undefined) ?? {};
-
-function t(key: string, fallback: string): string {
-  return l10nStrings[key] ?? fallback;
+/** 字典来自共享 i18n 模块（宿主下发的 l10n bundle）；缺失时回退英文。 */
+function t(_key: string, fallback: string): string {
+  // The l10n bundle is keyed by English source text, not by these short
+  // identifiers, so the fallback is the lookup key. The identifier stays
+  // first so call sites remain self-describing and stable across edits.
+  return has(fallback) ? translate(fallback) : fallback;
 }
 
 function escapeHtml(s: string): string {

@@ -1,26 +1,25 @@
 /**
  * WebDAV sync UI runtime strings.
  *
- * English fallbacks live here; the extension host injects translated
- * values as `window.__OC_SYNC_L10N__` (see sync/l10n.ts + terminal/html.ts),
- * mirroring the update module's pattern.
+ * Values resolve through the shared webview i18n dictionary (`t`). The
+ * `fallback` argument is only used when the dictionary has no entry, which
+ * keeps English as the source of truth instead of duplicating it here.
  */
 
-const injected: Record<string, string> =
-  typeof window !== "undefined"
-    ? (window as unknown as { __OC_SYNC_L10N__?: Record<string, string> })
-        .__OC_SYNC_L10N__ ?? {}
-    : {};
+import { has, t as translate } from "../shared/i18n/core";
 
-/** Look up a sync UI string: injected translation first, English fallback.
- * Placeholders are substituted on the resolved template, so injected strings
- * may keep `{0}`-style markers. */
+/** Look up a sync UI string: dictionary translation first, English fallback.
+ * Placeholders are substituted on the resolved template.
+ *
+ * The bundle is keyed by English source text, so `fallback` is the lookup key;
+ * `key` only names the call site. */
 export function syncT(
-  key: string,
+  _key: string,
   fallback: string,
   ...values: unknown[]
 ): string {
-  return fmt(injected[key] ?? fallback, ...values);
+  const template = has(fallback) ? translate(fallback) : fallback;
+  return fmt(template, ...values);
 }
 
 function fmt(template: string, ...values: unknown[]): string {
@@ -31,7 +30,8 @@ function fmt(template: string, ...values: unknown[]): string {
 }
 
 // ── Toolbar status / aria ──
-export const st = {
+function buildStrings() {
+  return {
   iconSyncing: syncT("iconSyncing", "Syncing configuration"),
   iconPending: (n: number) =>
     syncT("iconPending", "{0} file(s) pending upload", n),
@@ -162,6 +162,31 @@ export const st = {
   saveFail: (msg: string) => syncT("saveFail", "Save failed · {0}", msg),
   testing: syncT("testing", "Testing…"),
   passSetBadge: syncT("passSetBadge", "Stored in system keychain"),
-};
+  };
+}
+
+export type SyncStrings = ReturnType<typeof buildStrings>;
+
+/**
+ * Lazily resolved sync UI strings.
+ *
+ * Every value is computed on first access rather than at module evaluation:
+ * the i18n bundle arrives asynchronously after this module is imported, so a
+ * plain object literal would freeze English text before translations load.
+ */
+export const st: SyncStrings = new Proxy({} as SyncStrings, {
+  get(_target, prop, receiver) {
+    return Reflect.get(buildStrings(), prop, receiver);
+  },
+  has(_target, prop) {
+    return Reflect.has(buildStrings(), prop);
+  },
+  ownKeys() {
+    return Reflect.ownKeys(buildStrings());
+  },
+  getOwnPropertyDescriptor(_target, prop) {
+    return Reflect.getOwnPropertyDescriptor(buildStrings(), prop);
+  },
+});
 
 export { fmt as syncFormat };

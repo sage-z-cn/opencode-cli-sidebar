@@ -13,16 +13,11 @@ import type {
 } from "../../types";
 import { postMessage } from "../shared/vscode-api";
 import { openSyncPanel } from "../sync";
+import { has, t } from "../shared/i18n/core";
 
-const l10nStrings: Record<string, string> =
-  (typeof window !== "undefined"
-    ? (window as unknown as { __EXT_SETTINGS_L10N__?: Record<string, string> })
-        .__EXT_SETTINGS_L10N__
-    : undefined) ?? {};
-
-/** Look up a runtime string: injected translation first, English source second. */
+/** Look up a runtime string: shared dictionary first, English source second. */
 function tr(text: string): string {
-  return l10nStrings[text] ?? text;
+  return has(text) ? t(text) : text;
 }
 
 function escapeHtml(value: unknown): string {
