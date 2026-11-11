@@ -508,6 +508,12 @@ export interface WebDavHistoryEntry {
   downloads?: number;
   /** Remote files removed as part of the pass (e.g. by an exclude purge). */
   deletes?: number;
+  /**
+   * Relative paths moved by the pass, shallowest first so top-level files
+   * lead the sample. Capped on persist; the action counts remain the
+   * authoritative total. Absent on entries persisted by older versions.
+   */
+  paths?: string[];
   result: "success" | "partial" | "failed";
   message?: string;
 }

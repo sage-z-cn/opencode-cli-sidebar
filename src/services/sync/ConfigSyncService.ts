@@ -59,6 +59,8 @@ import {
 const CONFIG_SECTION = "opencode-cli-sidebar";
 const HISTORY_KEY = "webdavSync.history";
 const HISTORY_LIMIT = 20;
+/** Paths kept per history entry; matches the panel's inline preview. Counts stay authoritative. */
+const HISTORY_PATH_LIMIT = 5;
 const LOG_LIMIT = 200;
 const BACKUP_KEEP = 5;
 const LOCAL_CHANGE_DEBOUNCE_MS = 30_000;
@@ -220,6 +222,38 @@ export function webdavSecretKey(url: string, username: string): string {
 /** Inputs that decide which stored secret applies and whether sync is on. */
 function needsAuthConfigKey(config: SyncEngineConfig): string {
   return JSON.stringify([config.enabled, config.url, config.username]);
+}
+
+/** Slash count; drives the shallow-first order of the journal sample. */
+function pathDepth(rel: string): number {
+  let depth = 0;
+  for (const ch of rel) {
+    if (ch === "/") {
+      depth += 1;
+    }
+  }
+  return depth;
+}
+
+/**
+ * Merge per-action path groups into a persisted sample. Shorter paths come
+ * first, so top-level config files always make the cut; ties sort by name.
+ */
+function collectHistoryPaths(
+  ...groups: ReadonlyArray<readonly string[]>
+): string[] | undefined {
+  const unique = new Set<string>();
+  for (const group of groups) {
+    for (const rel of group) {
+      unique.add(rel);
+    }
+  }
+  if (unique.size === 0) {
+    return undefined;
+  }
+  return [...unique]
+    .sort((a, b) => pathDepth(a) - pathDepth(b) || (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, HISTORY_PATH_LIMIT);
 }
 
 export type SyncActionType =
@@ -407,6 +441,8 @@ export class ConfigSyncService implements vscode.Disposable {
   private pendingCount = 0;
   /** Remote deletions completed by an exclude purge, reported by the next pass. */
   private pendingExcludeDeletes = 0;
+  /** Path sample of those purge deletions, reported with the same entry. */
+  private pendingExcludeDeletePaths: string[] = [];
   private lastSyncAt: number | undefined;
   private syncing = false;
   private conflicts = new Map<string, WebDavConflictEntry>();
@@ -2120,6 +2156,10 @@ export class ConfigSyncService implements vscode.Disposable {
     let completedUploads = 0;
     let completedDownloads = 0;
     let completedDeletes = 0;
+    // Path samples for the journal entry; counts stay authoritative.
+    const completedUploadPaths: string[] = [];
+    const completedDownloadPaths: string[] = [];
+    const completedDeletePaths: string[] = [];
     try {
       const client = await this.createClientFromSettings(
         config,
@@ -2343,6 +2383,7 @@ export class ConfigSyncService implements vscode.Disposable {
             // Checkpoint so an aborted pass resumes without redoing files.
             await manifest.save();
             completedUploads++;
+            completedUploadPaths.push(rel);
           }
           reportTransfer(rel);
         } catch (error) {
@@ -2381,6 +2422,7 @@ export class ConfigSyncService implements vscode.Disposable {
           if (downloaded) {
             await manifest.save();
             completedDownloads++;
+            completedDownloadPaths.push(rel);
           }
           reportTransfer(rel);
         } catch (error) {
@@ -2419,6 +2461,7 @@ export class ConfigSyncService implements vscode.Disposable {
           manifest.remove(rel);
           await manifest.save();
           completedDeletes++;
+          completedDeletePaths.push(rel);
           this.log("info", `deleted remotely (deletion propagated): ${rel}`);
         } catch (error) {
           if (
@@ -2476,6 +2519,7 @@ export class ConfigSyncService implements vscode.Disposable {
           manifest.remove(rel);
           await manifest.save();
           completedDeletes++;
+          completedDeletePaths.push(rel);
           this.log("info", `deleted locally (deletion propagated): ${rel}`);
         } catch (error) {
           if (
@@ -2550,13 +2594,20 @@ export class ConfigSyncService implements vscode.Disposable {
       const transferred =
         completedUploads + completedDownloads + completedDeletes;
       if (!scoped || transferred > 0) {
+        const excludeDeletes = this.takeExcludeDeletes(trigger);
         this.appendHistory({
           time: now,
           direction,
           files: transferred,
           uploads: completedUploads,
           downloads: completedDownloads,
-          deletes: this.takeExcludeDeletes(trigger) + completedDeletes,
+          deletes: excludeDeletes.count + completedDeletes,
+          paths: collectHistoryPaths(
+            completedUploadPaths,
+            completedDownloadPaths,
+            completedDeletePaths,
+            excludeDeletes.paths,
+          ),
           result,
           trigger,
         });
@@ -2627,7 +2678,14 @@ export class ConfigSyncService implements vscode.Disposable {
           this.log("warn", "scoped sync rate limited; launch continues");
           return "failed";
         }
-        this.handleRateLimited(error, trigger, completedUploads, completedDownloads);
+        this.handleRateLimited(
+          error,
+          trigger,
+          completedUploads,
+          completedDownloads,
+          completedUploadPaths,
+          completedDownloadPaths,
+        );
         return "failed";
       }
       if (error instanceof WebDavFatalError) {
@@ -2635,13 +2693,15 @@ export class ConfigSyncService implements vscode.Disposable {
           this.handleAuthFailure(trigger, error);
           return "failed";
         }
+        const excludeDeletes = this.takeExcludeDeletes(trigger);
         this.appendHistory({
           time: Date.now(),
           direction: "none",
           files: 0,
           uploads: 0,
           downloads: 0,
-          deletes: this.takeExcludeDeletes(trigger),
+          deletes: excludeDeletes.count,
+          paths: collectHistoryPaths(excludeDeletes.paths),
           result: "failed",
           // A 403 is a permission problem (read-only share, path ACL,
           // proxy), not a wrong password. Say so instead of echoing the
@@ -2693,13 +2753,15 @@ export class ConfigSyncService implements vscode.Disposable {
     error: WebDavFatalError,
   ): void {
     this.enterNeedsAuth();
+    const excludeDeletes = this.takeExcludeDeletes(trigger);
     this.appendHistory({
       time: Date.now(),
       direction: "none",
       files: 0,
       uploads: 0,
       downloads: 0,
-      deletes: this.takeExcludeDeletes(trigger),
+      deletes: excludeDeletes.count,
+      paths: collectHistoryPaths(excludeDeletes.paths),
       result: "failed",
       message: l10n.t("The server rejected the sign-in details."),
       trigger,
@@ -2715,13 +2777,15 @@ export class ConfigSyncService implements vscode.Disposable {
   ): void {
     this.failureStreak++;
     this.state = "error";
+    const excludeDeletes = this.takeExcludeDeletes(trigger);
     this.appendHistory({
       time: Date.now(),
       direction: "none",
       files: 0,
       uploads: 0,
       downloads: 0,
-      deletes: this.takeExcludeDeletes(trigger),
+      deletes: excludeDeletes.count,
+      paths: collectHistoryPaths(excludeDeletes.paths),
       result: "failed",
       message: error.message,
       trigger,
@@ -2756,6 +2820,8 @@ export class ConfigSyncService implements vscode.Disposable {
     trigger: SyncTrigger,
     completedUploads: number,
     completedDownloads: number,
+    uploadPaths: readonly string[] = [],
+    downloadPaths: readonly string[] = [],
   ): void {
     const config = readSyncConfig();
     const windowMs =
@@ -2784,13 +2850,15 @@ export class ConfigSyncService implements vscode.Disposable {
             ? "down"
             : "none";
     this.state = "error";
+    const excludeDeletes = this.takeExcludeDeletes(trigger);
     this.appendHistory({
       time: Date.now(),
       direction,
       files: completedUploads + completedDownloads,
       uploads: completedUploads,
       downloads: completedDownloads,
-      deletes: this.takeExcludeDeletes(trigger),
+      deletes: excludeDeletes.count,
+      paths: collectHistoryPaths(uploadPaths, downloadPaths, excludeDeletes.paths),
       result: "partial",
       message: `rate limited by server; resuming in ${seconds}s`,
       trigger,
@@ -2934,6 +3002,7 @@ export class ConfigSyncService implements vscode.Disposable {
             manifest.remove(rel);
             forgotAny = true;
             deletedCount++;
+            this.pendingExcludeDeletePaths.push(rel);
             this.log("info", `excluded from sync; deleted remotely: ${rel}`);
           } catch (error) {
             failedCount++;
@@ -3509,13 +3578,18 @@ export class ConfigSyncService implements vscode.Disposable {
   }
 
   /** Claim purge deletions for the journal entry of the reconcile pass. */
-  private takeExcludeDeletes(trigger: SyncTrigger): number {
+  private takeExcludeDeletes(trigger: SyncTrigger): {
+    count: number;
+    paths: string[];
+  } {
     if (trigger !== "excludeChange") {
-      return 0;
+      return { count: 0, paths: [] };
     }
-    const deletes = this.pendingExcludeDeletes;
+    const count = this.pendingExcludeDeletes;
+    const paths = this.pendingExcludeDeletePaths;
     this.pendingExcludeDeletes = 0;
-    return deletes;
+    this.pendingExcludeDeletePaths = [];
+    return { count, paths };
   }
 
   private appendHistory(entry: WebDavHistoryEntry): void {
@@ -3534,7 +3608,8 @@ export class ConfigSyncService implements vscode.Disposable {
       last.deletes === entry.deletes &&
       last.result === entry.result &&
       last.trigger === entry.trigger &&
-      last.message === entry.message
+      last.message === entry.message &&
+      (last.paths?.join("\n") ?? "") === (entry.paths?.join("\n") ?? "")
     ) {
       // The same event is already the latest persisted entry; skip.
       this.history = persisted;

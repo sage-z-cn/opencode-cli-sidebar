@@ -671,6 +671,42 @@ describe("ConfigSyncService engine", () => {
     expect(client.calls.put).toEqual([]);
   });
 
+  it("samples moved file paths in history while the counts stay complete", async () => {
+    for (let i = 0; i < 25; i += 1) {
+      writeLocal(`skills/s${String(i).padStart(2, "0")}/SKILL.md`, `skill ${i}`);
+    }
+    await service.syncNow();
+
+    const latest = (await service.getSnapshot()).history[0];
+    expect(latest).toMatchObject({
+      direction: "up",
+      files: 25,
+      uploads: 25,
+      downloads: 0,
+      deletes: 0,
+      result: "success",
+    });
+    // The journal keeps only the rendered sample; the counts above cover the rest.
+    expect(latest.paths).toHaveLength(5);
+    expect(latest.paths?.every((rel) => rel.startsWith("skills/"))).toBe(true);
+  });
+
+  it("orders the history path sample shallowest first", async () => {
+    for (let i = 0; i < 25; i += 1) {
+      writeLocal(`skills/s${String(i).padStart(2, "0")}/SKILL.md`, `skill ${i}`);
+    }
+    // A root file collected after the skills tree must still lead the sample.
+    writeLocal("oh-my-opencode-slim.json", "{}");
+    await service.syncNow();
+
+    const latest = (await service.getSnapshot()).history[0];
+    expect(latest.uploads).toBe(26);
+    expect(latest.paths).toHaveLength(5);
+    expect(latest.paths?.[0]).toBe("oh-my-opencode-slim.json");
+    const depths = (latest.paths ?? []).map((rel) => rel.split("/").length);
+    expect(depths).toEqual([...depths].sort((a, b) => a - b));
+  });
+
   it("records no-op passes for every trigger including polls", async () => {
     // Deterministic clock so the second run's lastSyncAt is provably new.
     let clock = 1_700_000_000_000;
@@ -695,6 +731,7 @@ describe("ConfigSyncService engine", () => {
         uploads: 1,
         downloads: 0,
         deletes: 0,
+        paths: ["cli.json"],
         result: "success",
         trigger: "manual",
       });
@@ -772,6 +809,7 @@ describe("ConfigSyncService engine", () => {
     expect(messages[0].snapshot.history[0]).toMatchObject({
       direction: "up",
       files: 1,
+      paths: ["cli.json"],
       result: "success",
       trigger: "manual",
     });
@@ -2754,10 +2792,15 @@ describe("ConfigSyncService engine", () => {
     expect(client.files.has("AGENTS.md")).toBe(true);
     expect(client.files.has("outside/foreign.md")).toBe(true);
 
-    // The purge count lands on the reconcile pass that runs right after.
+    // The purge count lands on the reconcile pass that runs right after,
+    // together with the purged path sample.
     await vi.waitFor(async () => {
       const [latest] = (await service.getSnapshot()).history;
-      if (latest?.trigger !== "excludeChange" || latest.deletes !== 1) {
+      if (
+        latest?.trigger !== "excludeChange" ||
+        latest.deletes !== 1 ||
+        latest.paths?.[0] !== "notes/drop.md"
+      ) {
         throw new Error("excludeChange history entry not recorded yet");
       }
     });

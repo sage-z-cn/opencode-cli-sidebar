@@ -2821,11 +2821,15 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .dav-hist-t { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; color: var(--vscode-descriptionForeground, #8a8a8a); }
 .dav-hist-trig { font-size: 11px; color: var(--vscode-descriptionForeground, #8a8a8a); white-space: nowrap; }
 /* Summary cell: direction glyph + count per transfer kind, then the
-   optional message (separated by a dot when both are present). */
-.dav-hist-sum { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+   optional message (separated by a dot when both are present). The moved
+   file names sit on their own line below, ellipsized past the preview. */
+.dav-hist-sum {
+  display: grid; grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 6px; row-gap: 2px; align-items: baseline; min-width: 0;
+}
 .dav-hist-act {
+  grid-column: 1; grid-row: 1;
   display: inline-flex; align-items: baseline; gap: 7px; white-space: nowrap;
-  flex-shrink: 0;
   font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
   color: var(--vscode-descriptionForeground, #8a8a8a);
 }
@@ -2833,10 +2837,23 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .dav-hist-down { color: var(--vscode-textLink-foreground, #3794ff); }
 .dav-hist-del { color: var(--vscode-errorForeground, #f87171); }
 .dav-hist-msg {
-  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  grid-column: 2; grid-row: 1;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--vscode-descriptionForeground, #8a8a8a); font-size: 11px;
 }
 .dav-hist-msg::before { content: "·"; margin-right: 6px; }
+.dav-hist-files {
+  grid-column: 1 / -1; grid-row: 2;
+  display: flex; align-items: baseline; gap: 6px; min-width: 0;
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+/* Names truncate; the count tail keeps its width so ellipsis never eats it. */
+.dav-hist-names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dav-hist-more {
+  flex-shrink: 0; white-space: nowrap;
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
 /* Status chips: soft tint mixed from the status color into the theme background,
    pill-shaped, borderless — quiet next to the solid .dav-nav-count pill. */
 .dav-badge {
@@ -2903,6 +2920,10 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   .dav-hist-head > span:last-child { display: none; }
   .dav-hist-row .dav-hist-sum { grid-column: 1 / -1; grid-row: 2; }
   .dav-hist-row .dav-hist-msg {
+    white-space: normal; overflow: visible; text-overflow: clip; word-break: break-all;
+  }
+  .dav-hist-row .dav-hist-files { flex-wrap: wrap; }
+  .dav-hist-row .dav-hist-names {
     white-space: normal; overflow: visible; text-overflow: clip; word-break: break-all;
   }
   /* Items pane: flex rows adapt naturally; only soften the group gap

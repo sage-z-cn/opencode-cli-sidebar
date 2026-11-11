@@ -117,6 +117,7 @@ function buildStrings() {
   histUploads: (n: number) => syncT("histUploads", "{0} uploaded", n),
   histDownloads: (n: number) => syncT("histDownloads", "{0} downloaded", n),
   histDeletes: (n: number) => syncT("histDeletes", "{0} deleted", n),
+  histMore: (n: number) => syncT("histMore", "+{0} more", n),
   histUnknownTime: syncT("histUnknownTime", "—"),
   trigNone: syncT("trigNone", "—"),
   trigStartup: syncT("trigStartup", "Startup"),

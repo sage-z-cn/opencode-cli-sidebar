@@ -602,6 +602,37 @@ function historyActions(h: WebDavHistoryEntry): string {
   }
 }
 
+/** File names shown inline before the list collapses into a count. */
+const HISTORY_PATH_PREVIEW = 5;
+
+/** Total files the pass moved; counts stay authoritative when paths are capped. */
+function historyFileTotal(h: WebDavHistoryEntry): number {
+  if (
+    h.uploads === undefined &&
+    h.downloads === undefined &&
+    h.deletes === undefined
+  ) {
+    return h.files;
+  }
+  return (h.uploads ?? 0) + (h.downloads ?? 0) + (h.deletes ?? 0);
+}
+
+/** Inline list of the files a pass moved; long passes end in a "+N" tail. */
+function historyFiles(h: WebDavHistoryEntry): string {
+  const paths = Array.isArray(h.paths) ? h.paths : [];
+  if (paths.length === 0) {
+    return "";
+  }
+  const shown = paths.slice(0, HISTORY_PATH_PREVIEW);
+  const hidden = historyFileTotal(h) - shown.length;
+  const label = shown.map((rel) => escapeHtml(rel)).join(" · ");
+  const more =
+    hidden > 0
+      ? `<span class="dav-hist-more">${escapeHtml(st.histMore(hidden))}</span>`
+      : "";
+  return `<span class="dav-hist-files"><span class="dav-hist-names">${label}</span>${more}</span>`;
+}
+
 function triggerLabel(trigger: WebDavHistoryEntry["trigger"]): string {
   switch (trigger) {
     case "startup":
@@ -656,6 +687,7 @@ export function renderHistory(state: SyncUiState): void {
     <span class="dav-hist-sum">
       <span class="dav-hist-act">${historyActions(h)}</span>
       ${h.message ? `<span class="dav-hist-msg">${escapeHtml(h.message)}</span>` : ""}
+      ${historyFiles(h)}
     </span>
   </div>`,
     )

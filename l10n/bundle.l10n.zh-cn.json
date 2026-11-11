@@ -1000,6 +1000,7 @@
   "requests": "次请求",
   "success": "成功",
   "unlimited": "不限制",
+  "+{0} more": "另 {0} 项",
   "{0} conflict(s) to resolve": "{0} 个冲突待处理",
   "{0} conflict(s) · last sync {1}": "冲突 {0} · 上次同步 {1}",
   "{0} deleted": "已删除 {0} 项",
