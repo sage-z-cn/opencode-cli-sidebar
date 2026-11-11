@@ -61,6 +61,9 @@ const state: SettingsState = {
   pluginLatestVersions: {},
 };
 
+/** Loaded by both the TUI and the OpenCode server, so updates touch both configs. */
+const OMO_SLIM_PLUGIN_NAME = "oh-my-opencode-slim";
+
 let pluginAddFormOpen = false;
 let pluginCheckPending = false;
 /**
@@ -664,6 +667,27 @@ function pluginStatusHtml(
 }
 
 /**
+ * Updating oh-my-opencode-slim also rewrites the server config
+ * (`opencode.json(c)`), and OpenCode hot-reloads server plugins as soon as that
+ * file changes. Say so before the click so a running turn is not interrupted
+ * without warning.
+ */
+function pluginServerConfigHint(
+  name: string,
+  info: OpenCodeCliPluginUpdateInfo | undefined,
+): string {
+  if (
+    name !== OMO_SLIM_PLUGIN_NAME ||
+    pluginRestartPending.has(name) ||
+    !info?.hasUpdate ||
+    !info.latest
+  ) {
+    return "";
+  }
+  return `<div class="occs-plugin-hint">${escapeHtml(t("pluginServerConfigHint", "Update also rewrites the OpenCode server config; plugins reload immediately."))}</div>`;
+}
+
+/**
  * Row actions for one plugin entry. `index` is the real array position handed
  * down by `pluginsSectionHtml`, not a name lookup, so duplicate package names
  * cannot target the wrong row.
@@ -794,6 +818,7 @@ function pluginItemHtml(plugin: unknown, index: number): string {
       <div class="occs-plugin-meta">${meta}</div>
       ${armed ? "" : pluginActionsHtml(name, index)}
     </div>
+    ${armed ? "" : pluginServerConfigHint(name, info)}
     ${detail}
   </div>`;
 }

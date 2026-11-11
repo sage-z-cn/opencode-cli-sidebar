@@ -2,6 +2,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  applyEdits,
+  modify,
+  parse as parseJsonc,
+  type ParseError,
+} from "jsonc-parser";
+import {
   OPENCODE_BUILTIN_THEMES,
   OPENCODE_CLI_SETTINGS_CATALOG,
   findOpenCodeCliSetting,
@@ -12,7 +18,11 @@ import {
   mergeThemeCatalogs,
 } from "./aiTools/openCodeThemeDiscovery";
 import { l10n } from "../i18n";
-import { resolveOpenCodeCliConfigPath } from "./openCodeConfigPath";
+import {
+  OH_MY_OPENCODE_SLIM_PACKAGE,
+  resolveOpenCodeCliConfigPath,
+  resolveOpenCodeGlobalConfigPath,
+} from "./openCodeConfigPath";
 import { OutputChannelService } from "./OutputChannelService";
 import { isVersionNewer } from "./semver";
 import type { OpenCodeCliPluginUpdateInfo } from "../types";
@@ -53,6 +63,9 @@ export interface OpenCodeCliSettingsPayload {
 
 /** How long a registry `latest` answer is reused across settings loads. */
 const PLUGIN_LATEST_CACHE_TTL_MS = 60_000;
+
+/** OpenCode server config names; both are loaded when both exist. */
+const SERVER_CONFIG_NAMES = ["opencode.json", "opencode.jsonc"] as const;
 
 /**
  * Reads/writes OpenCode cli.json settings other than `keybinds`.
@@ -394,6 +407,7 @@ export class OpenCodeCliSettingsService {
   public async updatePluginVersion(
     index: number,
     version: string,
+    projectDir?: string,
   ): Promise<void> {
     const ver = version.trim();
     if (!Number.isInteger(index) || index < 0) {
@@ -403,19 +417,30 @@ export class OpenCodeCliSettingsService {
       throw new Error("Plugin version is required");
     }
     try {
-      const targetName = this.pluginNameAtIndex(index);
+      const target = this.pluginSpecAtIndex(index);
+      // oh-my-opencode-slim is loaded by both the TUI (cli.json) and the
+      // OpenCode server (opencode.json), so a version update has to reach both
+      // configs or the server keeps running the previously cached version.
+      if (target.name === OH_MY_OPENCODE_SLIM_PACKAGE) {
+        await this.syncServerPluginVersion(
+          target.name,
+          ver,
+          followsLatest(target.version),
+          projectDir,
+        );
+      }
       await this.mutateDoc((doc) => {
         const existing = Array.isArray(doc.plugins)
           ? (doc.plugins as unknown[])
           : [];
-        const target = existing.findIndex(
-          (plugin) => parsePluginSpec(plugin)?.name === targetName,
+        const updated = existing.findIndex(
+          (plugin) => parsePluginSpec(plugin)?.name === target.name,
         );
-        if (target < 0) {
-          throw new Error(`Plugin "${targetName}" is no longer configured.`);
+        if (updated < 0) {
+          throw new Error(`Plugin "${target.name}" is no longer configured.`);
         }
         doc.plugins = existing.map((plugin, i) => {
-          if (i !== target) return plugin;
+          if (i !== updated) return plugin;
           const parsed = parsePluginSpec(plugin);
           // Follow-latest entries must not gain a version: OpenCode re-resolves
           // the registry on restart, so writing an exact pin would be a change
@@ -437,6 +462,177 @@ export class OpenCodeCliSettingsService {
         );
       }
       throw error;
+    }
+  }
+
+  /**
+   * Mirror a plugin version into the OpenCode server configs so both plugin
+   * hosts load the same package version.
+   *
+   * oh-my-opencode-slim is declared twice: `cli.json` feeds the TUI plugin
+   * list while `opencode.json(c)` feeds the server plugin list. Updating only
+   * cli.json leaves the server on its previously cached version. The configs
+   * may be JSONC with comments, so edits are applied to the source text
+   * instead of re-serializing the document.
+   *
+   * Both config variants are loaded when both exist, and project configs load
+   * after the global one, so every discovered file that declares the package
+   * is updated. Files without the package are left byte-for-byte untouched.
+   */
+  private async syncServerPluginVersion(
+    name: string,
+    version: string,
+    followLatest: boolean,
+    projectDir?: string,
+  ): Promise<void> {
+    for (const configPath of this.serverConfigPaths(projectDir)) {
+      this.syncServerPluginInFile(configPath, name, version, followLatest);
+    }
+  }
+
+  /**
+   * Existing server config files: both variants in the resolved global config
+   * directory, then both variants at the project root and in its `.opencode`
+   * folder. Files without the package are left byte-for-byte untouched.
+   */
+  private serverConfigPaths(projectDir?: string): string[] {
+    const files = new Set<string>();
+    const addDirectory = (dir: string): void => {
+      for (const name of SERVER_CONFIG_NAMES) {
+        const file = path.join(dir, name);
+        if (fs.existsSync(file)) {
+          files.add(path.resolve(file));
+        }
+      }
+    };
+    const globalConfig = resolveOpenCodeGlobalConfigPath();
+    if (fs.existsSync(globalConfig)) {
+      addDirectory(path.dirname(globalConfig));
+    }
+    if (projectDir) {
+      const root = path.resolve(projectDir);
+      addDirectory(root);
+      addDirectory(path.join(root, ".opencode"));
+    }
+    return [...files];
+  }
+
+  /** Update the package spec of one config file, preserving its formatting. */
+  private syncServerPluginInFile(
+    configPath: string,
+    name: string,
+    version: string,
+    followLatest: boolean,
+  ): void {
+    const fail = (cause: unknown): Error => {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      this.logger.error(
+        `[OpenCodeCliSettingsService] Cannot update ${configPath}: ${detail}`,
+      );
+      return new Error(
+        l10n.t(
+          "Cannot update the OpenCode plugin config. Fix {0} and try again.",
+          path.resolve(configPath),
+        ),
+      );
+    };
+
+    let text: string;
+    try {
+      text = fs.readFileSync(configPath, "utf8");
+    } catch (error) {
+      throw fail(error);
+    }
+    // jsonc-parser reports a BOM as an invalid symbol; strip it while editing
+    // and put it back on write so files saved that way stay unchanged.
+    const bom = text.startsWith("\uFEFF");
+    const body = bom ? text.slice(1) : text;
+
+    const errors: ParseError[] = [];
+    const doc = parseJsonc(body, errors, {
+      allowTrailingComma: true,
+    }) as unknown;
+    if (errors.length > 0) {
+      throw fail(
+        new Error(
+          `invalid JSON at offset ${errors[0].offset} (error ${errors[0].error})`,
+        ),
+      );
+    }
+    const plugins =
+      doc &&
+      typeof doc === "object" &&
+      !Array.isArray(doc) &&
+      Array.isArray((doc as { plugins?: unknown }).plugins)
+        ? (doc as { plugins: unknown[] }).plugins
+        : [];
+    const indices = plugins.flatMap((plugin, index) =>
+      parsePluginSpec(plugin)?.name === name ? [index] : [],
+    );
+    if (indices.length === 0) {
+      return;
+    }
+
+    const formattingOptions = {
+      insertSpaces: true,
+      tabSize: 2,
+      eol: body.includes("\r\n") ? "\r\n" : "\n",
+    };
+    let next = body;
+    for (const index of indices) {
+      const current = plugins[index];
+      const parsed = parsePluginSpec(current);
+      if (!parsed) {
+        continue;
+      }
+      const nextSpec = followLatest ? parsed.name : `${parsed.name}@${version}`;
+      if (typeof current === "string") {
+        if (current === nextSpec) {
+          continue;
+        }
+        next = applyEdits(
+          next,
+          modify(next, ["plugins", index], nextSpec, { formattingOptions }),
+        );
+        continue;
+      }
+      // Edit only `package` (and a legacy `version` value) so comments and
+      // formatting elsewhere in the entry survive. Replacing the whole object
+      // would drop comments inside it.
+      const record = current as Record<string, unknown>;
+      if (record.package !== nextSpec) {
+        next = applyEdits(
+          next,
+          modify(next, ["plugins", index, "package"], nextSpec, {
+            formattingOptions,
+          }),
+        );
+      }
+      if (typeof record.version === "string") {
+        if (followLatest) {
+          next = applyEdits(
+            next,
+            modify(next, ["plugins", index, "version"], undefined, {
+              formattingOptions,
+            }),
+          );
+        } else if (record.version !== version) {
+          next = applyEdits(
+            next,
+            modify(next, ["plugins", index, "version"], version, {
+              formattingOptions,
+            }),
+          );
+        }
+      }
+    }
+    if (next === body) {
+      return;
+    }
+    try {
+      fs.writeFileSync(configPath, `${bom ? "\uFEFF" : ""}${next}`, "utf8");
+    } catch (error) {
+      throw fail(error);
     }
   }
 
@@ -464,11 +660,14 @@ export class OpenCodeCliSettingsService {
   }
 
   /**
-   * Package name configured at `index`. The index is only a selector: every
-   * write resolves the entry by this name so a concurrent rewrite of cli.json
-   * cannot redirect the write to a different plugin.
+   * Parsed package spec at `index`. The index is only a selector: every write
+   * resolves the entry by this name so a concurrent rewrite of cli.json cannot
+   * redirect the write to a different plugin.
    */
-  private pluginNameAtIndex(index: number): string {
+  private pluginSpecAtIndex(index: number): {
+    name: string;
+    version: string | null;
+  } {
     const doc = this.readDoc(this.resolveConfigPath());
     const plugins = Array.isArray(doc.plugins) ? (doc.plugins as unknown[]) : [];
     const plugin = plugins[index];
@@ -479,7 +678,7 @@ export class OpenCodeCliSettingsService {
     if (!parsed) {
       throw new Error("This plugin entry cannot be updated.");
     }
-    return parsed.name;
+    return parsed;
   }
 
   /**

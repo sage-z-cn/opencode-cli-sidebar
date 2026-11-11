@@ -1235,6 +1235,12 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .occs-plugin-item:hover,
 .occs-plugin-item.is-open { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08)); }
 .occs-plugin-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Sits under the name row: server-config side effects need room to read. */
+.occs-plugin-hint {
+  padding: 2px 0 0 18px;
+  font-size: 10.5px; line-height: 14px;
+  color: var(--vscode-charts-yellow, #cca700);
+}
 .occs-plugin-toggle {
   display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0;
   margin: 0; padding: 0; border: none; background: none;

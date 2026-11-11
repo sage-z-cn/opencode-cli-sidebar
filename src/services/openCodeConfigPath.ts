@@ -103,7 +103,7 @@ export type OpenCodeGlobalFileTarget =
   | "ohMyOpenCodeSlim";
 
 /** Plugin package that owns the oh-my-opencode-slim config files. */
-const OH_MY_OPENCODE_SLIM_PACKAGE = "oh-my-opencode-slim";
+export const OH_MY_OPENCODE_SLIM_PACKAGE = "oh-my-opencode-slim";
 
 /** Config file names the oh-my-opencode-slim plugin may use, json first. */
 const OH_MY_OPENCODE_SLIM_CONFIG_NAMES = [

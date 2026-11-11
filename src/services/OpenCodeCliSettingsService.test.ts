@@ -741,6 +741,294 @@ describe("OpenCodeCliSettingsService", () => {
     expect(doc.plugins[2]).toEqual({ package: "obj-pkg", options: { a: 1 } });
   });
 
+  it("updatePluginVersion mirrors oh-my-opencode-slim into opencode.jsonc", async () => {
+    const serverPath = path.join(dir, "opencode.jsonc");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: ["oh-my-opencode-slim@3.0.6", "other-pkg@1.0.0"],
+      }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      serverPath,
+      `{
+  // server-side plugin list
+  "plugins": ["oh-my-opencode-slim@3.0.6", { "package": "other-pkg@1.0.0", "options": { "a": 1 } }]
+}
+`,
+      "utf8",
+    );
+
+    await service.updatePluginVersion(0, "3.0.7");
+
+    const cli = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    expect(cli.plugins[0]).toBe("oh-my-opencode-slim@3.0.7");
+    const serverText = fs.readFileSync(serverPath, "utf8");
+    // The JSONC comment and the unrelated entry survive the edit.
+    expect(serverText).toContain("// server-side plugin list");
+    const server = JSON.parse(
+      serverText.replace(/^\s*\/\/.*$/gm, ""),
+    ) as { plugins: unknown[] };
+    expect(server.plugins[0]).toBe("oh-my-opencode-slim@3.0.7");
+    expect(server.plugins[1]).toEqual({
+      package: "other-pkg@1.0.0",
+      options: { a: 1 },
+    });
+  });
+
+  it("updatePluginVersion keeps server-side plugin options when mirroring", async () => {
+    const serverPath = path.join(dir, "opencode.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["oh-my-opencode-slim@3.0.6"] }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      serverPath,
+      JSON.stringify({
+        plugins: [
+          {
+            package: "oh-my-opencode-slim@3.0.6",
+            options: { theme: "dark" },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    await service.updatePluginVersion(0, "3.0.8");
+
+    const server = JSON.parse(fs.readFileSync(serverPath, "utf8")) as {
+      plugins: Array<Record<string, unknown>>;
+    };
+    expect(server.plugins[0]).toEqual({
+      package: "oh-my-opencode-slim@3.0.8",
+      options: { theme: "dark" },
+    });
+  });
+
+  it("updatePluginVersion leaves a server config without the package alone", async () => {
+    const serverPath = path.join(dir, "opencode.json");
+    const original = JSON.stringify({ plugins: ["other-pkg@1.0.0"] });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["oh-my-opencode-slim@3.0.6"] }),
+      "utf8",
+    );
+    fs.writeFileSync(serverPath, original, "utf8");
+
+    await service.updatePluginVersion(0, "3.0.7");
+
+    expect(fs.readFileSync(serverPath, "utf8")).toBe(original);
+    const cli = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    expect(cli.plugins[0]).toBe("oh-my-opencode-slim@3.0.7");
+  });
+
+  it("updatePluginVersion does not touch the server config for other plugins", async () => {
+    const serverPath = path.join(dir, "opencode.json");
+    const original = JSON.stringify({
+      plugins: ["oh-my-opencode-slim@3.0.6"],
+    });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["other-pkg@1.0.0"] }),
+      "utf8",
+    );
+    fs.writeFileSync(serverPath, original, "utf8");
+
+    await service.updatePluginVersion(0, "2.0.0");
+
+    expect(fs.readFileSync(serverPath, "utf8")).toBe(original);
+  });
+
+  it("updatePluginVersion rejects an unreadable server config before writing cli.json", async () => {
+    const serverPath = path.join(dir, "opencode.json");
+    const cliOriginal = JSON.stringify({
+      plugins: ["oh-my-opencode-slim@3.0.6"],
+    });
+    fs.writeFileSync(configPath, cliOriginal, "utf8");
+    fs.writeFileSync(serverPath, '{"plugins": [', "utf8");
+
+    await expect(
+      service.updatePluginVersion(0, "3.0.7"),
+    ).rejects.toThrow(/OpenCode plugin config/);
+    expect(fs.readFileSync(configPath, "utf8")).toBe(cliOriginal);
+  });
+
+  it("updatePluginVersion keeps the server entry following latest when cli.json does", async () => {
+    const serverPath = path.join(dir, "opencode.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["oh-my-opencode-slim"] }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      serverPath,
+      JSON.stringify({ plugins: ["oh-my-opencode-slim@3.0.6"] }),
+      "utf8",
+    );
+
+    await service.updatePluginVersion(0, "3.0.8");
+
+    const cli = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    expect(cli.plugins[0]).toBe("oh-my-opencode-slim");
+    const server = JSON.parse(fs.readFileSync(serverPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    expect(server.plugins[0]).toBe("oh-my-opencode-slim");
+  });
+
+  it("updatePluginVersion works when no server config exists", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["oh-my-opencode-slim@3.0.6"] }),
+      "utf8",
+    );
+
+    await service.updatePluginVersion(0, "3.0.7");
+
+    const cli = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      plugins: unknown[];
+    };
+    expect(cli.plugins[0]).toBe("oh-my-opencode-slim@3.0.7");
+    expect(fs.existsSync(path.join(dir, "opencode.json"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "opencode.jsonc"))).toBe(false);
+  });
+
+  it("updatePluginVersion preserves a BOM and inline comments in server JSONC", async () => {
+    const serverPath = path.join(dir, "opencode.jsonc");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["oh-my-opencode-slim@3.0.6"] }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      serverPath,
+      "\uFEFF" +
+        [
+          "{",
+          "  // server config",
+          '  "plugins": [',
+          "    {",
+          '      "package": "oh-my-opencode-slim@3.0.6", // keep me',
+          '      "options": { "a": 1 }, // keep options',
+          "    }",
+          "  ]",
+          "}",
+          "",
+        ].join("\n"),
+      "utf8",
+    );
+
+    await service.updatePluginVersion(0, "3.0.7");
+
+    const raw = fs.readFileSync(serverPath, "utf8");
+    expect(raw.startsWith("\uFEFF")).toBe(true);
+    expect(raw).toContain("// server config");
+    expect(raw).toContain('"package": "oh-my-opencode-slim@3.0.7", // keep me');
+    expect(raw).toContain('"options": { "a": 1 }, // keep options');
+  });
+
+  it("updatePluginVersion updates a legacy server-side version field", async () => {
+    const serverPath = path.join(dir, "opencode.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["oh-my-opencode-slim@3.0.6"] }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      serverPath,
+      JSON.stringify({
+        plugins: [
+          {
+            package: "oh-my-opencode-slim@3.0.6",
+            version: "3.0.6",
+            options: { a: 1 },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    await service.updatePluginVersion(0, "3.0.7");
+
+    const server = JSON.parse(fs.readFileSync(serverPath, "utf8")) as {
+      plugins: Array<Record<string, unknown>>;
+    };
+    expect(server.plugins[0]).toEqual({
+      package: "oh-my-opencode-slim@3.0.7",
+      version: "3.0.7",
+      options: { a: 1 },
+    });
+  });
+
+  it("updatePluginVersion updates both global config variants", async () => {
+    const jsonPath = path.join(dir, "opencode.json");
+    const jsoncPath = path.join(dir, "opencode.jsonc");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["oh-my-opencode-slim@3.0.6"] }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      jsonPath,
+      JSON.stringify({ plugins: ["oh-my-opencode-slim@3.0.6"] }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      jsoncPath,
+      '{\n  // server note\n  "plugins": ["oh-my-opencode-slim@3.0.6"]\n}\n',
+      "utf8",
+    );
+
+    await service.updatePluginVersion(0, "3.0.7");
+
+    expect(fs.readFileSync(jsonPath, "utf8")).toContain(
+      "oh-my-opencode-slim@3.0.7",
+    );
+    const jsonc = fs.readFileSync(jsoncPath, "utf8");
+    expect(jsonc).toContain('"oh-my-opencode-slim@3.0.7"');
+    expect(jsonc).toContain("// server note");
+  });
+
+  it("updatePluginVersion updates project server configs", async () => {
+    const projectDir = path.join(dir, "project");
+    const projectConfig = path.join(projectDir, "opencode.jsonc");
+    const dotConfig = path.join(projectDir, ".opencode", "opencode.json");
+    fs.mkdirSync(path.dirname(dotConfig), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ plugins: ["oh-my-opencode-slim@3.0.6"] }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      projectConfig,
+      '{\n  "plugins": ["oh-my-opencode-slim@3.0.6"]\n}\n',
+      "utf8",
+    );
+    fs.writeFileSync(
+      dotConfig,
+      JSON.stringify({ plugins: ["oh-my-opencode-slim@3.0.6"] }),
+      "utf8",
+    );
+
+    await service.updatePluginVersion(0, "3.0.7", projectDir);
+
+    expect(fs.readFileSync(projectConfig, "utf8")).toContain(
+      "oh-my-opencode-slim@3.0.7",
+    );
+    expect(fs.readFileSync(dotConfig, "utf8")).toContain(
+      "oh-my-opencode-slim@3.0.7",
+    );
+  });
+
   it("setPluginOptions promotes a string entry and keeps its version", async () => {
     fs.writeFileSync(
       configPath,

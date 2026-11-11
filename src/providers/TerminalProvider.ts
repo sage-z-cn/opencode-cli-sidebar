@@ -1562,7 +1562,11 @@ export class TerminalProvider
     version: string,
   ): Promise<void> {
     try {
-      await this.openCodeCliSettingsService.updatePluginVersion(index, version);
+      await this.openCodeCliSettingsService.updatePluginVersion(
+        index,
+        version,
+        this.resolveProjectDir(),
+      );
       this.postWebviewMessage({
         type: "openCodeCliSettingsSaveResult",
         ok: true,
