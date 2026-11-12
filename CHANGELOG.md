@@ -5,6 +5,12 @@ All notable changes to the "OpenCode CLI Sidebar" extension will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+#### 6.0.1
+**New Features**
+- **Sync**: Add a sync mode setting along with force pull and force push commands for manual control over syncing.
+- **Sync**: Record sampled file paths on sync history entries so past syncs show which files were involved.
+- **OpenCode**: Mirror plugin version updates into the server config automatically.
+
 #### 6.0.0
 **New Features**
 - **Sync**: Add an opt-in config sync that runs before startup, gated so windows wait for the sync to finish before launching.
