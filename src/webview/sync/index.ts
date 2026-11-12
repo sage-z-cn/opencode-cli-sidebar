@@ -331,6 +331,8 @@ export function initSyncUi(): void {
 
   initPanel({
     onSyncNow: () => postMessage({ type: "syncWebdavNow" }),
+    onForcePull: () => postMessage({ type: "forcePullWebdav" }),
+    onForcePush: () => postMessage({ type: "forcePushWebdav" }),
     onSaveServer: () => {
       const { config, password } = collectServerConfig();
       lastSaveKind = "server";

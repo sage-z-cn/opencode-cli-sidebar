@@ -13,6 +13,7 @@ import type {
 } from "../../types";
 import {
   ConfigSyncService,
+  decideFollowServerAction,
   decideSyncAction,
   webdavSecretKey,
   type WebDavClientLike,
@@ -543,6 +544,68 @@ describe("ConfigSyncService decision matrix", () => {
   });
 });
 
+describe("decideFollowServerAction", () => {
+  it("downloads whenever the server has a different version", () => {
+    expect(
+      decideFollowServerAction({
+        localHash: "local",
+        remoteHash: "remote",
+        baselineHash: "local",
+      }),
+    ).toEqual({ type: "download" });
+    expect(
+      decideFollowServerAction({
+        localHash: "local",
+        remoteHash: "remote",
+        baselineHash: null,
+      }),
+    ).toEqual({ type: "download" });
+    expect(
+      decideFollowServerAction({
+        localHash: null,
+        remoteHash: "remote",
+        baselineHash: "remote",
+      }),
+    ).toEqual({ type: "download" });
+  });
+
+  it("mirrors a server deletion only when the file was synced before", () => {
+    expect(
+      decideFollowServerAction({
+        localHash: "local",
+        remoteHash: null,
+        baselineHash: "local",
+      }),
+    ).toEqual({ type: "deleteLocal" });
+    // Never-synced local files stay put: switching an established local
+    // config to follow-server must not delete what the user never uploaded.
+    expect(
+      decideFollowServerAction({
+        localHash: "local",
+        remoteHash: null,
+        baselineHash: null,
+      }),
+    ).toEqual({ type: "skip" });
+  });
+
+  it("never uploads and never deletes remotely", () => {
+    expect(
+      decideFollowServerAction({
+        localHash: "same",
+        remoteHash: "same",
+        baselineHash: null,
+      }),
+    ).toEqual({ type: "agree" });
+    expect(
+      decideFollowServerAction({
+        localHash: null,
+        remoteHash: null,
+        baselineHash: "old",
+      }),
+    ).toEqual({ type: "forget" });
+  });
+});
+
 describe("ConfigSyncService engine", () => {
   let storageDir: string;
   let configDir: string;
@@ -565,8 +628,13 @@ describe("ConfigSyncService engine", () => {
     return fs.readFileSync(path.join(configDir, ...rel.split("/")), "utf8");
   }
 
-  function backupCount(rel: string): number {
-    const dir = path.join(syncStorageDir(storageDir), "backups", ...parentOf(rel) ? parentOf(rel).split("/") : []);
+  function backupCount(rel: string, root = "backups"): number {
+    const parent = parentOf(rel);
+    const dir = path.join(
+      syncStorageDir(storageDir),
+      root,
+      ...(parent ? parent.split("/") : []),
+    );
     if (!fs.existsSync(dir)) {
       return 0;
     }
@@ -3256,6 +3324,272 @@ describe("ConfigSyncService engine", () => {
     // A launch notification would compete with the startup indicator.
     expect(deltas.some((delta) => delta.notice !== undefined)).toBe(false);
     expect(readLocal("cli.json")).toBe("from-server");
+  });
+
+  it("applies the server version in follow-server mode without uploading", async () => {
+    settings["sync.mode"] = "followServer";
+    writeLocal("cli.json", "local");
+    client.addFile("cli.json", "server");
+    writeLocal("skills/local-only.md", "mine");
+
+    await service.syncNow();
+
+    expect(readLocal("cli.json")).toBe("server");
+    expect(client.calls.put).toEqual([]);
+    // Never synced before: kept, not deleted and not uploaded.
+    expect(readLocal("skills/local-only.md")).toBe("mine");
+    expect(backupCount("cli.json")).toBe(1);
+  });
+
+  it("mirrors a server deletion in follow-server mode once a baseline exists", async () => {
+    writeLocal("cli.json", "one");
+    await service.syncNow();
+    settings["sync.mode"] = "followServer";
+    client.files.delete("cli.json");
+
+    await service.syncNow();
+
+    expect(fs.existsSync(path.join(configDir, "cli.json"))).toBe(false);
+    expect(backupCount("cli.json")).toBe(1);
+  });
+
+  it("never mirrors a server deletion during a scoped pass in follow mode", async () => {
+    writeLocal("cli.json", "one");
+    await service.syncNow();
+    settings["sync.mode"] = "followServer";
+    client.files.delete("cli.json");
+
+    await service.runScopedPass({
+      scopePaths: ["cli.json"],
+      signal: new AbortController().signal,
+    });
+
+    // The launch runs before any UI exists; deletion belongs to the full pass.
+    expect(readLocal("cli.json")).toBe("one");
+  });
+
+  it("refuses to apply a missing server folder in follow mode", async () => {
+    writeLocal("cli.json", "one");
+    await service.syncNow();
+    settings["sync.mode"] = "followServer";
+    // Root PROPFIND 404: wrong path or a deleted server folder.
+    client.dirs.delete("");
+    client.files.clear();
+
+    await service.syncNow();
+
+    expect(readLocal("cli.json")).toBe("one");
+    expect(client.calls.del).toEqual([]);
+    expect((await service.getSnapshot()).state).toBe("idle");
+  });
+
+  it("runs a pass when the mode changes through settings", async () => {
+    const listener = vi.mocked(vscode.workspace.onDidChangeConfiguration).mock
+      .calls[0]?.[0] as
+      | ((event: { affectsConfiguration: (section: string) => boolean }) => void)
+      | undefined;
+    expect(listener).toBeTypeOf("function");
+
+    writeLocal("cli.json", "local");
+    client.addFile("cli.json", "server");
+    settings["sync.mode"] = "followServer";
+
+    listener?.({
+      affectsConfiguration: (section) =>
+        section === "opencode-cli-sidebar.sync",
+    });
+
+    const internal = service as unknown as { syncing: boolean };
+    const deadline = Date.now() + 3000;
+    while (internal.syncing && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(readLocal("cli.json")).toBe("server");
+    expect(client.calls.put).toEqual([]);
+  });
+
+  it("force pull mirrors the server tree onto the local scope", async () => {
+    const forced = new ConfigSyncService(makeContext(storageDir), {
+      logger,
+      postWebviewMessage: (message) => posted.push(message),
+      isWebviewVisible: () => true,
+      clientFactory: () => client,
+      confirmDestructiveAction: async () => true,
+    });
+    try {
+      client.addFile("cli.json", "server");
+      client.dirs.add("skills");
+      client.addFile("skills/a.md", "a");
+      writeLocal("cli.json", "stale");
+      writeLocal("skills/extra.md", "extra");
+
+      await forced.forcePullFromServer();
+
+      expect(readLocal("cli.json")).toBe("server");
+      expect(readLocal("skills/a.md")).toBe("a");
+      expect(fs.existsSync(path.join(configDir, "skills/extra.md"))).toBe(false);
+      expect(client.calls.put).toEqual([]);
+      expect(backupCount("cli.json")).toBe(1);
+      expect(backupCount("skills/extra.md")).toBe(1);
+      expect((await forced.getSnapshot()).history[0]).toMatchObject({
+        trigger: "forcePull",
+        downloads: 2,
+        deletes: 1,
+      });
+    } finally {
+      forced.dispose();
+    }
+  });
+
+  it("force pull refuses an empty server instead of deleting local files", async () => {
+    const forced = new ConfigSyncService(makeContext(storageDir), {
+      logger,
+      postWebviewMessage: (message) => posted.push(message),
+      isWebviewVisible: () => true,
+      clientFactory: () => client,
+      confirmDestructiveAction: async () => true,
+    });
+    try {
+      writeLocal("cli.json", "keep");
+
+      await forced.forcePullFromServer();
+
+      expect(readLocal("cli.json")).toBe("keep");
+      expect(client.calls.del).toEqual([]);
+      expect((await forced.getSnapshot()).state).toBe("idle");
+    } finally {
+      forced.dispose();
+    }
+  });
+
+  it("force push mirrors the local scope and backs up server-only files", async () => {
+    const forced = new ConfigSyncService(makeContext(storageDir), {
+      logger,
+      postWebviewMessage: (message) => posted.push(message),
+      isWebviewVisible: () => true,
+      clientFactory: () => client,
+      confirmDestructiveAction: async () => true,
+    });
+    try {
+      writeLocal("cli.json", "mine");
+      client.addFile("cli.json", "stale");
+      client.dirs.add("skills");
+      client.addFile("skills/gone.md", "server-only");
+
+      await forced.forcePushToServer();
+
+      expect(client.files.get("cli.json")?.content.toString()).toBe("mine");
+      expect(client.files.has("skills/gone.md")).toBe(false);
+      // Forced uploads are unconditional PUTs.
+      expect(
+        client.putConditions.every(
+          (entry) => entry.ifMatch === undefined && !entry.ifNoneMatchStar,
+        ),
+      ).toBe(true);
+      expect(backupCount("skills/gone.md", "backups-remote")).toBe(1);
+      expect((await forced.getSnapshot()).history[0]).toMatchObject({
+        trigger: "forcePush",
+        uploads: 1,
+        deletes: 1,
+      });
+    } finally {
+      forced.dispose();
+    }
+  });
+
+  it("force push keeps server-only files when an upload fails", async () => {
+    const forced = new ConfigSyncService(makeContext(storageDir), {
+      logger,
+      postWebviewMessage: (message) => posted.push(message),
+      isWebviewVisible: () => true,
+      clientFactory: () => client,
+      confirmDestructiveAction: async () => true,
+    });
+    try {
+      writeLocal("cli.json", "mine");
+      writeLocal("skills/keep.md", "keep");
+      client.addFile("cli.json", "stale");
+      client.dirs.add("skills");
+      client.addFile("skills/gone.md", "server-only");
+      client.putFailures.push("unsupported");
+
+      await forced.forcePushToServer();
+
+      // A partial upload cannot produce a faithful mirror; the server-only
+      // file must survive so the server is not left half-replaced.
+      expect(client.files.has("skills/gone.md")).toBe(true);
+      expect(client.calls.del).toEqual([]);
+      expect((await forced.getSnapshot()).history[0]).toMatchObject({
+        trigger: "forcePush",
+        result: "partial",
+        deletes: 0,
+      });
+    } finally {
+      forced.dispose();
+    }
+  });
+
+  it("asks the webview to confirm a force operation", async () => {
+    writeLocal("cli.json", "mine");
+    client.addFile("cli.json", "server");
+
+    const pass = service.forcePullFromServer();
+    const request = posted.find(
+      (message): message is Extract<HostMessage, { type: "showWebdavConfirm" }> =>
+        message.type === "showWebdavConfirm",
+    );
+    expect(request).toMatchObject({
+      type: "showWebdavConfirm",
+      confirmLabel: "Restore from server",
+    });
+    expect(request?.body).toContain("Replace the local OpenCode configuration");
+
+    service.answerWebdavConfirm(request?.requestId ?? "", true);
+    await pass;
+
+    expect(readLocal("cli.json")).toBe("server");
+  });
+
+  it("runs nothing when the webview confirmation is cancelled", async () => {
+    writeLocal("cli.json", "mine");
+    client.addFile("cli.json", "server");
+
+    const pass = service.forcePullFromServer();
+    const request = posted.find(
+      (message): message is Extract<HostMessage, { type: "showWebdavConfirm" }> =>
+        message.type === "showWebdavConfirm",
+    );
+    service.answerWebdavConfirm(request?.requestId ?? "", false);
+    await pass;
+
+    expect(readLocal("cli.json")).toBe("mine");
+    expect(client.calls.propfind).toEqual([]);
+    expect(client.calls.get).toEqual([]);
+    expect(client.calls.put).toEqual([]);
+  });
+
+  it("force push does nothing when the confirmation is declined", async () => {
+    const forced = new ConfigSyncService(makeContext(storageDir), {
+      logger,
+      postWebviewMessage: (message) => posted.push(message),
+      isWebviewVisible: () => true,
+      clientFactory: () => client,
+      confirmDestructiveAction: async () => false,
+    });
+    try {
+      writeLocal("cli.json", "mine");
+      client.addFile("cli.json", "remote");
+
+      await forced.forcePushToServer();
+
+      expect(client.calls.put).toEqual([]);
+      expect(client.calls.del).toEqual([]);
+      expect(client.files.get("cli.json")?.content.toString()).toBe("remote");
+    } finally {
+      forced.dispose();
+    }
   });
 });
 

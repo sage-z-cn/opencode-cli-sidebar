@@ -10,6 +10,8 @@ const vscode = await vi.importActual<typeof import("../../test/mocks/vscode")>(
 describe("registerSyncCommands", () => {
   let registered: Map<string, (...args: unknown[]) => unknown>;
   let syncNow: ReturnType<typeof vi.fn>;
+  let forcePullFromServer: ReturnType<typeof vi.fn>;
+  let forcePushToServer: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     registered = new Map();
@@ -21,17 +23,34 @@ describe("registerSyncCommands", () => {
       return { dispose: vi.fn() };
     }) as never);
     syncNow = vi.fn(async () => undefined);
+    forcePullFromServer = vi.fn(async () => undefined);
+    forcePushToServer = vi.fn(async () => undefined);
   });
 
   it("registers the sync-now command and forwards to the service", async () => {
     const service = { syncNow } as unknown as ConfigSyncService;
     const disposables = registerSyncCommands({ configSyncService: service });
 
-    expect(disposables).toHaveLength(2);
+    expect(disposables).toHaveLength(4);
     expect(registered.has("opencode-cli-sidebar.webdavSyncNow")).toBe(true);
 
     await registered.get("opencode-cli-sidebar.webdavSyncNow")?.();
     expect(syncNow).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers the one-way operations and forwards to the service", async () => {
+    const service = {
+      syncNow,
+      forcePullFromServer,
+      forcePushToServer,
+    } as unknown as ConfigSyncService;
+    registerSyncCommands({ configSyncService: service });
+
+    await registered.get("opencode-cli-sidebar.webdavForcePull")?.();
+    await registered.get("opencode-cli-sidebar.webdavForcePush")?.();
+
+    expect(forcePullFromServer).toHaveBeenCalledTimes(1);
+    expect(forcePushToServer).toHaveBeenCalledTimes(1);
   });
 
   it("forwards the pre-start skip to the injected gate", () => {
@@ -44,9 +63,15 @@ describe("registerSyncCommands", () => {
 
   it("tolerates a missing service without throwing", async () => {
     const disposables = registerSyncCommands({ configSyncService: undefined });
-    expect(disposables).toHaveLength(2);
+    expect(disposables).toHaveLength(4);
     const invoke = registered.get("opencode-cli-sidebar.webdavSyncNow");
     await expect(Promise.resolve(invoke?.())).resolves.toBeUndefined();
+    await expect(
+      Promise.resolve(registered.get("opencode-cli-sidebar.webdavForcePull")?.()),
+    ).resolves.toBeUndefined();
+    await expect(
+      Promise.resolve(registered.get("opencode-cli-sidebar.webdavForcePush")?.()),
+    ).resolves.toBeUndefined();
   });
 
   it("is wired into the shared command registration", async () => {

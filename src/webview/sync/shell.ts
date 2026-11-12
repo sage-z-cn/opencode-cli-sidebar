@@ -40,6 +40,16 @@ export interface SyncShellStrings {
   fSelfSignedHint: string;
   fShowIcon: string;
   fShowIconHint: string;
+  syncMode: string;
+  modeBidirectional: string;
+  modeFollowServer: string;
+  modeHintBidirectional: string;
+  modeHintFollowServer: string;
+  manualActionsTitle: string;
+  forcePullBtn: string;
+  forcePullHint: string;
+  forcePushBtn: string;
+  forcePushHint: string;
   fPreStart: string;
   fPreStartHint: string;
   preStartCooldown: string;
@@ -147,14 +157,33 @@ export function renderSyncShell(d: SyncShellStrings): string {
           </div>
           <label class="dav-check dav-block-gap"><input type="checkbox" id="dav-f-showicon"><span>${d.fShowIcon}<span class="dav-hint">${d.fShowIconHint}</span></span></label>
           <div class="dav-select-row">
-            <label class="dav-select-label" for="dav-f-deletions">${d.deletionPolicy}</label>
-            <select class="dav-select" id="dav-f-deletions">
-              <option value="prompt">${d.deletionPrompt}</option>
-              <option value="ignore">${d.deletionIgnore}</option>
-              <option value="propagate">${d.deletionPropagate}</option>
+            <label class="dav-select-label" for="dav-f-mode">${d.syncMode}</label>
+            <select class="dav-select" id="dav-f-mode">
+              <option value="bidirectional">${d.modeBidirectional}</option>
+              <option value="followServer">${d.modeFollowServer}</option>
             </select>
           </div>
-          <div class="dav-hint">${d.deletionHint}</div>
+          <div class="dav-hint" id="dav-mode-hint">${d.modeHintBidirectional}</div>
+          <div class="dav-deletion-group" id="dav-deletion-group">
+            <div class="dav-select-row">
+              <label class="dav-select-label" for="dav-f-deletions">${d.deletionPolicy}</label>
+              <select class="dav-select" id="dav-f-deletions">
+                <option value="prompt">${d.deletionPrompt}</option>
+                <option value="ignore">${d.deletionIgnore}</option>
+                <option value="propagate">${d.deletionPropagate}</option>
+              </select>
+            </div>
+            <div class="dav-hint">${d.deletionHint}</div>
+          </div>
+          <div class="dav-item-head-label dav-manual-head">${d.manualActionsTitle}</div>
+          <div class="dav-manual-action">
+            <button type="button" class="dav-btn dav-btn--secondary" id="dav-btn-force-pull">${d.forcePullBtn}</button>
+            <div class="dav-hint">${d.forcePullHint}</div>
+          </div>
+          <div class="dav-manual-action">
+            <button type="button" class="dav-btn dav-btn--danger" id="dav-btn-force-push">${d.forcePushBtn}</button>
+            <div class="dav-hint">${d.forcePushHint}</div>
+          </div>
         </div>
         <div class="dav-pane" data-pane="server" id="dav-pane-server">
           <div class="dav-field">

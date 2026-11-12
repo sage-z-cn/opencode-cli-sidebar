@@ -23,5 +23,26 @@ export function registerSyncCommands(
       deps.skipPreStartSync?.();
     },
   );
-  return [syncNowCommand, skipPreStartSyncCommand];
+  const forcePullCommand = vscode.commands.registerCommand(
+    "opencode-cli-sidebar.webdavForcePull",
+    async () => {
+      // The confirmation lives in the webview, so make sure the view exists
+      // before the service posts the prompt.
+      await vscode.commands.executeCommand("opencode-cli-sidebar.focus");
+      await deps.configSyncService?.forcePullFromServer();
+    },
+  );
+  const forcePushCommand = vscode.commands.registerCommand(
+    "opencode-cli-sidebar.webdavForcePush",
+    async () => {
+      await vscode.commands.executeCommand("opencode-cli-sidebar.focus");
+      await deps.configSyncService?.forcePushToServer();
+    },
+  );
+  return [
+    syncNowCommand,
+    skipPreStartSyncCommand,
+    forcePullCommand,
+    forcePushCommand,
+  ];
 }

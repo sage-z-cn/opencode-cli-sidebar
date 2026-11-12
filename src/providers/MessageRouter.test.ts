@@ -1348,6 +1348,9 @@ describe("MessageRouter WebDAV sync branches", () => {
       addExclude: vi.fn(async () => undefined),
       removeExclude: vi.fn(async () => undefined),
       syncNow: vi.fn(async () => undefined),
+      forcePullFromServer: vi.fn(async () => undefined),
+      forcePushToServer: vi.fn(async () => undefined),
+      answerWebdavConfirm: vi.fn(),
       requestLog: vi.fn(async () => undefined),
       clearHistory: vi.fn(async () => undefined),
       resolveConflict: vi.fn(async () => undefined),
@@ -1502,6 +1505,22 @@ describe("MessageRouter WebDAV sync branches", () => {
 
     await router.handleMessage({ type: "syncWebdavNow" });
     expect(syncService.syncNow).toHaveBeenCalledTimes(1);
+
+    await router.handleMessage({ type: "forcePullWebdav" });
+    expect(syncService.forcePullFromServer).toHaveBeenCalledTimes(1);
+
+    await router.handleMessage({ type: "forcePushWebdav" });
+    expect(syncService.forcePushToServer).toHaveBeenCalledTimes(1);
+
+    await router.handleMessage({
+      type: "webdavConfirmAnswer",
+      requestId: "req-1",
+      confirmed: true,
+    });
+    expect(syncService.answerWebdavConfirm).toHaveBeenCalledWith(
+      "req-1",
+      true,
+    );
 
     await router.handleMessage({ type: "requestWebdavLog" });
     expect(syncService.requestLog).toHaveBeenCalledTimes(1);

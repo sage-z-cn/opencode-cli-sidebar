@@ -12,7 +12,9 @@ import {
 } from "./state";
 import { SYNC_ICONS } from "./icons";
 import { st } from "./strings";
+import { isWebdavConfirmVisible } from "./confirm";
 import {
+  applyModeUi,
   applyPreStartCooldownEnabled,
   clearConflictSelection,
   collectConnectionDraft,
@@ -197,6 +199,12 @@ export function renderPanel(state: SyncUiState): void {
   syncBtn.classList.toggle("is-loading", syncing);
   syncBtn.setAttribute("aria-busy", String(syncing));
   syncBtn.innerHTML = syncNowButtonLabel(syncing);
+  for (const id of ["dav-btn-force-pull", "dav-btn-force-push"]) {
+    const button = document.getElementById(id) as HTMLButtonElement | null;
+    if (button) {
+      button.disabled = syncing;
+    }
+  }
   const foot = el("dav-foot-st");
   foot.textContent = footerText(state);
   foot.classList.toggle("is-warn", footerTone(state) === "warn");
@@ -249,6 +257,7 @@ export function applySnapshotToPanel(
   }
   applyMasterEnabled(snapshot.settings.autoSync.enabled);
   applyPollEnabled(snapshot.settings.autoSync.remotePoll);
+  applyModeUi(snapshot.settings.mode);
   applyPreStartCooldownEnabled(snapshot.settings.preStartSync ?? false);
 }
 
@@ -291,6 +300,8 @@ function wireAddErrorClear(inputId: string, errorId: string): void {
 
 export function initPanel(handlers: {
   onSyncNow: () => void;
+  onForcePull: () => void;
+  onForcePush: () => void;
   onSaveServer: () => void;
   onTest: () => void;
   onApplyOptions: () => void;
@@ -311,7 +322,11 @@ export function initPanel(handlers: {
   document.addEventListener("keydown", (event) => {
     if (
       event.key === "Escape" &&
-      !el("dav-overlay").classList.contains("hidden")
+      !el("dav-overlay").classList.contains("hidden") &&
+      // The confirmation sits above the panel; its own Esc handler owns the
+      // key while it is open, so closing the panel here would stack one
+      // dismissal on top of the other.
+      !isWebdavConfirmVisible()
     ) {
       closeSyncPanel();
     }
@@ -319,6 +334,8 @@ export function initPanel(handlers: {
 
   el("dav-modal-close").addEventListener("click", closeSyncPanel);
   el("dav-foot-sync").addEventListener("click", handlers.onSyncNow);
+  el("dav-btn-force-pull").addEventListener("click", handlers.onForcePull);
+  el("dav-btn-force-push").addEventListener("click", handlers.onForcePush);
   el("dav-btn-save").addEventListener("click", handlers.onSaveServer);
   el("dav-btn-test").addEventListener("click", handlers.onTest);
   el("dav-unconfigured-go").addEventListener("click", () => switchPane("server"));
@@ -364,6 +381,15 @@ export function initPanel(handlers: {
     handlers.onApplyOptions,
   );
   el("dav-f-deletions").addEventListener("change", handlers.onApplyOptions);
+  const modeSelect = el<HTMLSelectElement>("dav-f-mode");
+  modeSelect.addEventListener("change", () => {
+    // Apply the dependent controls immediately; the persisted snapshot will
+    // confirm the same value on its way back.
+    applyModeUi(
+      modeSelect.value === "followServer" ? "followServer" : "bidirectional",
+    );
+    handlers.onApplyOptions();
+  });
 
   // History pane: quiet clear action in the header meta row.
   el("dav-hist-clear").addEventListener("click", handlers.onClearHistory);

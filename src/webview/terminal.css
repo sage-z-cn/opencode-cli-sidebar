@@ -2498,6 +2498,37 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   color: var(--vscode-button-secondaryForeground, var(--vscode-foreground, #d4d4d4));
 }
 .dav-btn--secondary:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(128,128,128,0.18)); }
+/* Destructive one-way operations: outlined error tone, never the primary fill */
+.dav-btn--danger {
+  background: transparent;
+  color: var(--vscode-errorForeground, #f87171);
+  outline: 1px solid var(--vscode-errorForeground, #f87171);
+  outline-offset: -1px;
+}
+.dav-btn--danger:hover { background: rgba(248, 113, 113, 0.12); }
+/* In-webview confirmation for one-way sync operations (above dav-overlay) */
+.dav-confirm-overlay {
+  position: fixed; inset: 0; z-index: 3200;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--vscode-widget-shadow, rgba(0, 0, 0, 0.55));
+}
+.dav-confirm-overlay.hidden { display: none; }
+.dav-confirm {
+  width: min(400px, 92vw);
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background, #161616));
+  border: 1px solid var(--vscode-panel-border, #2e2e2e);
+  border-radius: 8px;
+  padding: 14px 16px;
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+}
+.dav-confirm-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.dav-confirm-desc {
+  font-size: 12px; line-height: 1.5;
+  color: var(--vscode-descriptionForeground); margin-bottom: 14px;
+}
+.dav-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .dav-btn--link { background: none; color: var(--vscode-textLink-foreground, var(--vscode-focusBorder, #007fd4)); padding: 3px 4px; }
 /* 服务器卡片存在未保存改动时的保存按钮高亮 */
 .dav-btn--attention {
@@ -2685,6 +2716,10 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   padding: 3px 6px; font-size: 12px; font-family: inherit;
 }
 .dav-select:focus { outline: 1px solid var(--vscode-focusBorder, #007fd4); border-color: var(--vscode-focusBorder, #007fd4); }
+.dav-manual-head { margin-top: 24px; }
+.dav-deletion-group.hidden { display: none; }
+.dav-manual-action { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 12px; }
+.dav-manual-action .dav-hint { margin-top: 0; }
 /* Server pane: rate-limit row, same compact number-input language as the poll row */
 .dav-ratelimit-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 4px; font-size: 12px; flex-wrap: wrap; }
 .dav-ratelimit-row label { color: var(--vscode-foreground, #d4d4d4); }

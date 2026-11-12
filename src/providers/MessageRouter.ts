@@ -176,6 +176,14 @@ export class MessageRouter {
       case "serviceRestartPromptAnswer":
         this.provider.answerServiceRestartPrompt(message.action);
         break;
+      case "webdavConfirmAnswer":
+        if (typeof message.requestId === "string") {
+          getActiveConfigSyncService()?.answerWebdavConfirm(
+            message.requestId,
+            message.confirmed === true,
+          );
+        }
+        break;
       case "openSettings":
         this.provider.openSettings();
         break;
@@ -394,6 +402,12 @@ export class MessageRouter {
         break;
       case "syncWebdavNow":
         await getActiveConfigSyncService()?.syncNow();
+        break;
+      case "forcePullWebdav":
+        await getActiveConfigSyncService()?.forcePullFromServer();
+        break;
+      case "forcePushWebdav":
+        await getActiveConfigSyncService()?.forcePushToServer();
         break;
       case "requestWebdavLog":
         await getActiveConfigSyncService()?.requestLog();

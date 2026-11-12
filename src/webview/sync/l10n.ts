@@ -54,6 +54,24 @@ export function buildSyncShellStrings(): SyncShellStrings {
     fShowIconHint: t(
       "Shown on the config sync toolbar button; appears for syncing, pending, conflicts and errors only",
     ),
+    syncMode: t("Sync mode"),
+    modeBidirectional: t("Bidirectional"),
+    modeFollowServer: t("Follow server"),
+    modeHintBidirectional: t(
+      "Local changes upload to the server; server changes download to this machine.",
+    ),
+    modeHintFollowServer: t(
+      "Only the server version is applied. Local changes are replaced at the next sync and nothing is uploaded.",
+    ),
+    manualActionsTitle: t("Manual actions"),
+    forcePullBtn: t("Restore from server"),
+    forcePullHint: t(
+      "After confirmation, replace the local sync items with the server version. Local files are backed up before they are overwritten or removed.",
+    ),
+    forcePushBtn: t("Upload to server"),
+    forcePushHint: t(
+      "After confirmation, replace the server sync items with this machine's version. Server files that do not exist locally are backed up before they are removed.",
+    ),
     fPreStart: t("Sync key config before OpenCode starts"),
     fPreStartHint: t(
       "Holds the launch until opencode.json, cli.json and the oh-my-opencode-slim config are current",

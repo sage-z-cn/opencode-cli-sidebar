@@ -1825,12 +1825,16 @@ export class TerminalProvider
 
   private isQueueableHostMessage(
     message: unknown,
-  ): message is Extract<HostMessage, { type: "activeSession" }> {
+  ): message is Extract<
+    HostMessage,
+    { type: "activeSession" | "showWebdavConfirm" }
+  > {
     return (
       typeof message === "object" &&
       message !== null &&
       "type" in message &&
-      message.type === "activeSession"
+      (message.type === "activeSession" ||
+        message.type === "showWebdavConfirm")
     );
   }
 

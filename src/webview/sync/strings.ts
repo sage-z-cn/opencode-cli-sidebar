@@ -34,7 +34,7 @@ function buildStrings() {
   return {
   iconSyncing: syncT("iconSyncing", "Syncing configuration"),
   iconPending: (n: number) =>
-    syncT("iconPending", "{0} file(s) pending upload", n),
+    syncT("iconPending", "{0} file(s) pending sync", n),
   iconConflict: (n: number) =>
     syncT("iconConflict", "{0} conflict(s) to resolve", n),
   iconError: syncT("iconError", "Sync error"),
@@ -45,7 +45,7 @@ function buildStrings() {
   stSyncing: syncT("stSyncing", "Syncing…"),
   stIdle: syncT("stIdle", "Sync is enabled"),
   stPending: (n: number) =>
-    syncT("stPending", "{0} file(s) pending upload", n),
+    syncT("stPending", "{0} file(s) pending sync", n),
   stConflict: (n: number) =>
     syncT("stConflict", "{0} file(s) need conflict resolution", n),
   stError: syncT("stError", "Cannot reach the sync server"),
@@ -58,6 +58,14 @@ function buildStrings() {
   manualMode: syncT("manualMode", "Manual-only mode"),
   pausedBadge: syncT("pausedBadge", "Auto sync paused after repeated errors"),
   actSyncNow: syncT("actSyncNow", "Sync now"),
+  modeHintBidirectional: syncT(
+    "modeHintBidirectional",
+    "Local changes upload to the server; server changes download to this machine.",
+  ),
+  modeHintFollowServer: syncT(
+    "modeHintFollowServer",
+    "Only the server version is applied. Local changes are replaced at the next sync and nothing is uploaded.",
+  ),
 
   // ── Items pane ──
   itemTagBuiltin: syncT("itemTagBuiltin", "built-in"),
@@ -128,6 +136,9 @@ function buildStrings() {
   trigConfigSave: syncT("trigConfigSave", "Config save"),
   trigExcludeChange: syncT("trigExcludeChange", "Scope change"),
   trigManual: syncT("trigManual", "Manual"),
+  trigModeChange: syncT("trigModeChange", "Mode change"),
+  trigForcePull: syncT("trigForcePull", "Restore from server"),
+  trigForcePush: syncT("trigForcePush", "Upload to server"),
 
   // ── Log pane ──
   logEmpty: syncT("logEmpty", "No sync activity yet"),

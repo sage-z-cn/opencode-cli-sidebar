@@ -18,6 +18,9 @@ export interface MessageHandlerCallbacks {
   onShowServiceRestartPrompt?: (
     message: Extract<HostMessage, { type: "showServiceRestartPrompt" }>,
   ) => void;
+  onShowWebdavConfirm?: (
+    message: Extract<HostMessage, { type: "showWebdavConfirm" }>,
+  ) => void;
   onPlatformInfo?: (
     message: Extract<HostMessage, { type: "platformInfo" }>,
   ) => void;
@@ -212,6 +215,10 @@ export function createMessageHandler(
 
         case "showServiceRestartPrompt":
           callbacks.onShowServiceRestartPrompt?.(message);
+          break;
+
+        case "showWebdavConfirm":
+          callbacks.onShowWebdavConfirm?.(message);
           break;
 
         case "keymapData":

@@ -16,6 +16,7 @@ import type {
   WebDavSyncOptions,
   WebDavSyncSettings,
   WebDavSyncItemUi,
+  WebDavSyncMode,
   WebDavSyncSnapshot,
   WebDavSyncState,
   WebDavSyncStatusDelta,
@@ -69,6 +70,8 @@ const FIRST_BACKOFF_MS = 60_000;
 const MAX_BACKOFF_MS = 16 * 60_000;
 const MAX_CONSECUTIVE_FAILURES = 5;
 const REQUEST_TIMEOUT_MS = 15_000;
+/** How long a webview confirmation may stay unanswered before it is cancelled. */
+const WEBVIEW_CONFIRM_TIMEOUT_MS = 120_000;
 const DIFF_CLEANUP_DELAY_MS = 60_000;
 const MIN_RATE_LIMIT_RESUME_MS = 30_000;
 const MAX_RATE_LIMIT_RESUME_MS = 35 * 60_000;
@@ -92,6 +95,12 @@ const LAUNCH_RECONCILE_FRESH_MS = 5 * 60_000;
 /** What can start a sync pass; mirrors the persisted history trigger values. */
 export type SyncTrigger = WebDavSyncTrigger;
 
+/** Direction of one pass; the forced passes bypass the merge policies. */
+export type SyncPassDirection = "merge" | "forcePull" | "forcePush";
+
+/** Sync direction for this machine, read from `sync.mode`. */
+export type SyncMode = WebDavSyncMode;
+
 /**
  * Terminal state of one pass. The launch gate needs to tell a skipped pass
  * from a failed one, and a pass that never ran (another window held the
@@ -107,6 +116,18 @@ export class SyncAbortError extends Error {
   }
 }
 
+/**
+ * A pass that refuses to run for a user-facing reason (empty server, empty
+ * local scope, unsupported combination). Unlike a transport failure it must
+ * not touch the circuit breaker; the message is shown as a notice.
+ */
+export class SyncGuidanceError extends Error {
+  public constructor(public readonly userMessage: string) {
+    super(userMessage);
+    this.name = "SyncGuidanceError";
+  }
+}
+
 /** Options that narrow one pass; all optional, absent means a full pass. */
 export interface SyncPassOptions {
   /** Restrict the pass to these relative paths (launch path). */
@@ -115,6 +136,8 @@ export interface SyncPassOptions {
   signal?: AbortSignal;
   /** Reports scan and transfer progress. */
   onProgress?: (progress: PreStartSyncProgress) => void;
+  /** Omitted means the normal three-way merge. */
+  direction?: SyncPassDirection;
 }
 
 export type SyncConflictPolicy = "prompt" | "preferLocal" | "preferRemote";
@@ -128,6 +151,7 @@ export type SyncDeletionPolicy = WebDavDeletionPolicy;
 
 export interface SyncEngineConfig {
   enabled: boolean;
+  mode: SyncMode;
   url: string;
   username: string;
   basePath: string;
@@ -172,6 +196,11 @@ export function readSyncConfig(): SyncEngineConfig {
   );
   return {
     enabled: config.get<boolean>("sync.enabled", false),
+    mode:
+      config.get<WebDavSyncMode>("sync.mode", "bidirectional") ===
+      "followServer"
+        ? "followServer"
+        : "bidirectional",
     url: (config.get<string>("sync.url", "") ?? "").trim(),
     username: config.get<string>("sync.username", "") ?? "",
     basePath:
@@ -361,6 +390,41 @@ export function decideSyncAction(input: SyncDecisionInput): SyncAction {
     : { type: "skip" };
 }
 
+/**
+ * Follow-server decision: the remote tree is authoritative.
+ *
+ * - A remote file always wins; it is downloaded when the local copy differs.
+ * - A remote deletion mirrors to local only when this machine had synced the
+ *   file before (baseline). A local-only file that never entered a baseline
+ *   is left untouched: switching a machine with existing local config to this
+ *   mode must not delete files the user never uploaded.
+ * - This mode never uploads and never deletes remotely.
+ * - No conflicts are produced here; backup failures surfaced by the transfer
+ *   helpers remain the only exception.
+ */
+export function decideFollowServerAction(input: {
+  localHash: string | null;
+  remoteHash: string | null;
+  baselineHash: string | null;
+}): SyncAction {
+  const localExists = input.localHash !== null;
+  const remoteExists = input.remoteHash !== null;
+  const hasBaseline = input.baselineHash !== null;
+
+  if (!localExists && !remoteExists) {
+    return hasBaseline ? { type: "forget" } : { type: "none" };
+  }
+  if (!remoteExists) {
+    return hasBaseline ? { type: "deleteLocal" } : { type: "skip" };
+  }
+  if (!localExists) {
+    return { type: "download" };
+  }
+  return input.localHash === input.remoteHash
+    ? { type: "agree" }
+    : { type: "download" };
+}
+
 /** Minimal client surface the engine depends on (mockable in tests). */
 export interface WebDavClientLike {
   propfind(path: string, depth: 0 | 1): Promise<WebDavStat[]>;
@@ -394,6 +458,14 @@ export interface ConfigSyncServiceDeps {
    * never throw.
    */
   waitForOpenCodeReady?: () => Promise<unknown>;
+  /**
+   * Confirmation gate for destructive one-way passes. Defaults to the
+   * in-webview confirmation dialog; tests replace it so no UI is involved.
+   */
+  confirmDestructiveAction?: (
+    message: string,
+    confirmLabel: string,
+  ) => Promise<boolean>;
 }
 
 interface RemoteTree {
@@ -428,6 +500,10 @@ export class ConfigSyncService implements vscode.Disposable {
   ) => WebDavClientLike;
   private readonly configDirProvider: () => string;
   private readonly waitForOpenCodeReady?: () => Promise<unknown>;
+  private readonly confirmDestructiveAction: (
+    message: string,
+    confirmLabel: string,
+  ) => Promise<boolean>;
 
   private readonly disposables: vscode.Disposable[] = [];
   private readonly _onDidChange = new vscode.EventEmitter<WebDavSyncStatusDelta>();
@@ -438,6 +514,18 @@ export class ConfigSyncService implements vscode.Disposable {
    *  a later settings edit can tell whether the verdict is still relevant. */
   private needsAuthConfigKey: string | undefined;
   private autoSyncPaused = false;
+  /** Non-zero while a forced one-way pass owns the config directory. */
+  private autoSyncSuspended = 0;
+  /** Last sync mode this window observed; drives settings-driven passes. */
+  private lastSeenMode: SyncMode;
+  /** In-flight in-webview confirmation for a destructive one-way pass. */
+  private pendingWebviewConfirm:
+    | {
+        requestId: string;
+        resolve: (confirmed: boolean) => void;
+        timer: ReturnType<typeof setTimeout>;
+      }
+    | undefined;
   private pendingCount = 0;
   /** Remote deletions completed by an exclude purge, reported by the next pass. */
   private pendingExcludeDeletes = 0;
@@ -530,6 +618,10 @@ export class ConfigSyncService implements vscode.Disposable {
     this.configDirProvider =
       deps.configDirProvider ?? (() => resolveOpenCodeConfigDir());
     this.waitForOpenCodeReady = deps.waitForOpenCodeReady;
+    this.confirmDestructiveAction =
+      deps.confirmDestructiveAction ??
+      ((message, confirmLabel) =>
+        this.confirmInWebview(message, confirmLabel));
     this.syncLock = new SyncProcessLock(
       path.join(syncStorageDir(this.globalStoragePath()), "lock.json"),
     );
@@ -540,6 +632,7 @@ export class ConfigSyncService implements vscode.Disposable {
     this.statusStore = new SyncStatusStore(this.globalStoragePath());
     this.statusStoreFilePath = this.statusStore.filePath;
     this.history = this.loadHistory();
+    this.lastSeenMode = readSyncConfig().mode;
 
     this.disposables.push(
       vscode.workspace.onDidChangeConfiguration((event) => {
@@ -551,6 +644,15 @@ export class ConfigSyncService implements vscode.Disposable {
         );
         this.clearNeedsAuthIfConfigChanged();
         this.armTriggers();
+        const previousMode = this.lastSeenMode;
+        const currentMode = readSyncConfig().mode;
+        this.lastSeenMode = currentMode;
+        if (currentMode !== previousMode) {
+          // A Settings UI / settings.json edit must take effect like the
+          // panel's selector. runSync is single-flight, so a panel-driven
+          // pass already in flight absorbs this duplicate.
+          void this.runSync("modeChange").catch(() => undefined);
+        }
       }),
     );
     this.disposables.push(this._onDidChange);
@@ -665,6 +767,7 @@ export class ConfigSyncService implements vscode.Disposable {
 
   public dispose(): void {
     this.disposed = true;
+    this.cancelPendingWebviewConfirm();
     this.stopStatusWatcher();
     this.stopAutoTimers();
     this.stopLockHeartbeat();
@@ -720,6 +823,7 @@ export class ConfigSyncService implements vscode.Disposable {
         acceptSelfSigned: config.acceptSelfSigned,
         rateLimitMaxRequests: config.rateLimitMaxRequests,
         rateLimitWindowMinutes: config.rateLimitWindowMinutes,
+        mode: config.mode,
         autoSync: {
           enabled: config.autoSyncEnabled,
           onStartup: config.autoSyncOnStartup,
@@ -875,8 +979,16 @@ export class ConfigSyncService implements vscode.Disposable {
    */
   public async applySyncOptions(options: WebDavSyncOptions): Promise<void> {
     try {
+      const previousMode = readSyncConfig().mode;
       const target = vscode.workspace.getConfiguration(CONFIG_SECTION);
       const global = vscode.ConfigurationTarget.Global;
+      if (options.mode) {
+        await target.update(
+          "sync.mode",
+          options.mode === "followServer" ? "followServer" : "bidirectional",
+          global,
+        );
+      }
       await target.update(
         "sync.autoSyncEnabled",
         !!options.autoSync?.enabled,
@@ -929,6 +1041,11 @@ export class ConfigSyncService implements vscode.Disposable {
       this.armTriggers();
       this.postWebviewMessage({ type: "webdavSaveResult", ok: true });
       this.log("info", "sync options applied; triggers reconfigured");
+      if (options.mode && readSyncConfig().mode !== previousMode) {
+        // Applying the new direction immediately avoids a window where the
+        // panel says "follow server" while the old direction still holds.
+        void this.runSync("modeChange").catch(() => undefined);
+      }
       this.pushDelta({ state: this.state, autoSyncPaused: this.autoSyncPaused });
     } catch (error) {
       this.logger.error(
@@ -1171,6 +1288,119 @@ export class ConfigSyncService implements vscode.Disposable {
       return;
     }
     await this.runSync("manual");
+  }
+
+  /**
+   * Manual one-way restore: make the local sync scope match the server tree.
+   * Always confirmed, never influenced by `sync.mode`. Local files are backed
+   * up before they are replaced or removed, and an empty server aborts the
+   * pass so a misconfigured base path cannot wipe the local config.
+   */
+  public async forcePullFromServer(): Promise<void> {
+    const config = readSyncConfig();
+    if (!config.enabled || !config.url) {
+      this.pushDelta({
+        notice: l10n.t(
+          "Configure the sync server before restoring configuration from it.",
+        ),
+      });
+      await this.requestSyncData();
+      return;
+    }
+    const confirmed = await this.confirmDestructiveAction(
+      l10n.t(
+        "Replace the local OpenCode configuration with the server version? Local files are backed up before they are overwritten or removed.",
+      ),
+      l10n.t("Restore from server"),
+    );
+    if (!confirmed) {
+      return;
+    }
+    await this.runSync("forcePull", { direction: "forcePull" });
+  }
+
+  /**
+   * Manual one-way upload: make the server tree match the local sync scope,
+   * including removing server files that do not exist locally. Always
+   * confirmed, never influenced by `sync.mode`. Server files are copied into
+   * the local backup directory before they are removed.
+   */
+  public async forcePushToServer(): Promise<void> {
+    const config = readSyncConfig();
+    if (!config.enabled || !config.url) {
+      this.pushDelta({
+        notice: l10n.t(
+          "Configure the sync server before uploading configuration to it.",
+        ),
+      });
+      await this.requestSyncData();
+      return;
+    }
+    const confirmed = await this.confirmDestructiveAction(
+      l10n.t(
+        "Replace the server configuration with this machine's version? Server files that do not exist locally are backed up and then removed.",
+      ),
+      l10n.t("Upload to server"),
+    );
+    if (!confirmed) {
+      return;
+    }
+    await this.runSync("forcePush", { direction: "forcePush" });
+  }
+
+  /** Resolves the pending in-webview confirmation; called by MessageRouter. */
+  public answerWebdavConfirm(requestId: string, confirmed: boolean): void {
+    const pending = this.pendingWebviewConfirm;
+    if (!pending || pending.requestId !== requestId) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingWebviewConfirm = undefined;
+    pending.resolve(confirmed);
+  }
+
+  /**
+   * Show a confirmation inside the webview and wait for its answer. A new
+   * request cancels the previous one so two destructive prompts can never be
+   * pending at once. The timeout guards against a webview that was reloaded
+   * or closed while the prompt was visible.
+   */
+  private confirmInWebview(
+    message: string,
+    confirmLabel: string,
+  ): Promise<boolean> {
+    this.cancelPendingWebviewConfirm();
+    const requestId = crypto.randomUUID();
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        if (this.pendingWebviewConfirm?.requestId !== requestId) {
+          return;
+        }
+        this.pendingWebviewConfirm = undefined;
+        this.log("warn", "sync confirmation timed out");
+        resolve(false);
+      }, WEBVIEW_CONFIRM_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingWebviewConfirm = { requestId, resolve, timer };
+      this.postWebviewMessage({
+        type: "showWebdavConfirm",
+        requestId,
+        title: l10n.t("Confirm sync operation"),
+        body: message,
+        confirmLabel,
+        cancelLabel: l10n.t("Cancel"),
+      });
+    });
+  }
+
+  private cancelPendingWebviewConfirm(): void {
+    const pending = this.pendingWebviewConfirm;
+    if (!pending) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingWebviewConfirm = undefined;
+    pending.resolve(false);
   }
 
   // ── Conflict resolution & diff ──
@@ -1815,6 +2045,15 @@ export class ConfigSyncService implements vscode.Disposable {
   }
 
   private async triggerAuto(trigger: SyncTrigger): Promise<void> {
+    // A forced pull/push owns the whole tree for its duration; a watcher or
+    // poll pass landing inside it would only race the mirror it is applying.
+    if (this.autoSyncSuspended > 0) {
+      this.log(
+        "debug",
+        `auto sync skipped (${trigger}); a forced pass is in progress`,
+      );
+      return;
+    }
     // Only the leader window runs automatic passes. Startup, watcher,
     // poller, backoff retries and rate-limit resumes all funnel through
     // here; manual sync, conflict resolution and server-card saves call
@@ -1910,6 +2149,28 @@ export class ConfigSyncService implements vscode.Disposable {
     void this.persistStatus();
   }
 
+  /**
+   * Stop every automatic channel in this window for the duration of a forced
+   * one-way pass. The release re-arms them, so a mode change or a new server
+   * card still takes effect. Cross-window safety does not depend on this
+   * flag: the pass lock makes a sibling's auto pass return "busy".
+   */
+  private suspendAutoSync(): () => void {
+    this.autoSyncSuspended += 1;
+    this.stopAutoTimers();
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.autoSyncSuspended = Math.max(0, this.autoSyncSuspended - 1);
+      if (this.autoSyncSuspended === 0 && !this.disposed) {
+        this.armTriggers();
+      }
+    };
+  }
+
   private stopAutoTimers(): void {
     this.watcher?.dispose();
     this.watcher = undefined;
@@ -1957,7 +2218,11 @@ export class ConfigSyncService implements vscode.Disposable {
         }
       }
       this.log("debug", `sync already running; ${trigger} merged and skipped`);
-      if (trigger === "manual") {
+      if (
+        trigger === "manual" ||
+        trigger === "forcePull" ||
+        trigger === "forcePush"
+      ) {
         this.pushDelta({
           notice: l10n.t(
             "A sync is already in progress. Try again when it finishes.",
@@ -2069,9 +2334,13 @@ export class ConfigSyncService implements vscode.Disposable {
     // Renew for the whole pass: the staleness window is far shorter than a
     // full reconcile over a real config directory.
     this.startPassLockHeartbeat();
+    const forcePass =
+      options.direction !== undefined && options.direction !== "merge";
+    const releaseAutoSync = forcePass ? this.suspendAutoSync() : undefined;
     try {
       return await this.executeLockedPass(trigger, options, config);
     } finally {
+      releaseAutoSync?.();
       this.stopPassLockHeartbeat();
       await this.passLock.release().catch(() => undefined);
     }
@@ -2203,27 +2472,57 @@ export class ConfigSyncService implements vscode.Disposable {
         this.pendingCount = 0;
       }
 
+      const passDirection = options.direction ?? "merge";
+      const inScope = (rel: string): boolean =>
+        isPathUnderItems(rel, items) &&
+        !isPathExcluded(rel, excludes) &&
+        !isPathBlacklisted(rel) &&
+        (scopeSet === undefined || scopeSet.has(rel));
+      const localInScope = [...localFiles].filter(inScope);
+      const remoteInScope = [...remote.files.keys()].filter(inScope);
+      // In follow mode a missing base path means the server folder is gone or
+      // the configured path is wrong. Mirroring that empty tree would delete
+      // the entire local sync scope, so refuse the pass instead. The forced
+      // pull has the same guard; a normal follow pass must not behave worse.
+      if (config.mode === "followServer" && remote.baseMissing) {
+        throw new SyncGuidanceError(
+          l10n.t(
+            "The sync server folder does not exist. Check the server settings.",
+          ),
+        );
+      }
+      // A mirror against an empty source would erase the other side: an
+      // uninitialised (or mispointed) server must never wipe the local
+      // config, and an empty local scope must never wipe the server.
+      if (passDirection === "forcePull" && remoteInScope.length === 0) {
+        throw new SyncGuidanceError(
+          l10n.t("The sync server has no configuration to restore yet."),
+        );
+      }
+      if (passDirection === "forcePush" && localInScope.length === 0) {
+        throw new SyncGuidanceError(
+          l10n.t("There are no local configuration files to upload."),
+        );
+      }
+
       // A scoped pass has a closed candidate list: its scope plus whatever it
       // already knows is local. Pulling every manifest path in would iterate
-      // the whole history just to filter it out again.
+      // the whole history just to filter it out again. Forced passes only
+      // visit files inside the current scope: manifest entries that are no
+      // longer part of the enabled items must not be deleted by a mirror.
       const allPaths = new Set<string>(
-        scoped
-          ? [...(scopeSet ?? []), ...localFiles, ...remote.files.keys()]
-          : [
-              ...remote.files.keys(),
-              ...localFiles,
-              ...manifest.paths(),
-            ],
+        passDirection === "forcePull"
+          ? [...remoteInScope, ...localInScope, ...manifest.paths()]
+          : passDirection === "forcePush"
+            ? [...localInScope, ...remoteInScope, ...manifest.paths()]
+            : scoped
+              ? [...(scopeSet ?? []), ...localFiles, ...remote.files.keys()]
+              : [...remote.files.keys(), ...localFiles, ...manifest.paths()],
       );
 
       for (const rel of allPaths) {
         // The credential deny-list outranks every item and pattern match.
-        if (
-          !isPathUnderItems(rel, items) ||
-          isPathExcluded(rel, excludes) ||
-          isPathBlacklisted(rel) ||
-          (scopeSet !== undefined && !scopeSet.has(rel))
-        ) {
+        if (!inScope(rel)) {
           continue;
         }
         const entry = manifest.get(rel);
@@ -2244,13 +2543,29 @@ export class ConfigSyncService implements vscode.Disposable {
             localHash = null;
           }
         }
-        if (localHash !== null && localHash !== baselineHash && !scoped) {
-          // A scoped pass is about to bring exactly these files up to date,
-          // so counting them as pending would leave a count that survives
-          // the pass and is never reconciled.
-          this.pendingCount++;
-        }
         const stat = remote.files.get(rel);
+        // Forced directions do not consult baselines or conflict policies:
+        // the source side is authoritative by definition.
+        if (passDirection === "forcePull") {
+          if (stat) {
+            downloads.push(rel);
+          } else if (localHash !== null) {
+            localDeletes.push(rel);
+          } else {
+            forgets.push(rel);
+          }
+          continue;
+        }
+        if (passDirection === "forcePush") {
+          if (localHash !== null) {
+            uploads.push(rel);
+          } else if (stat) {
+            remoteDeletes.push(rel);
+          } else {
+            forgets.push(rel);
+          }
+          continue;
+        }
         let remoteHash: string | null = null;
         if (stat) {
           const etagUnchanged =
@@ -2276,17 +2591,41 @@ export class ConfigSyncService implements vscode.Disposable {
             }
           }
         }
-        const action = decideSyncAction({
-          localHash,
-          remoteHash,
-          baselineHash,
-          // A scoped launch pass runs before the user has seen any UI, so it
-          // must never resolve a difference on its own: no deletion is
-          // mirrored and no side wins a conflict silently.
-          onConflict: scoped ? "prompt" : config.onConflict,
-          deletions: scoped ? "ignore" : config.deletions,
-        });
-        switch (action.type) {
+        if (!scoped) {
+          if (config.mode === "followServer") {
+            // Follow mode has no upload backlog: pending means "waiting to
+            // be replaced by the server copy".
+            if (remoteHash !== null && localHash !== remoteHash) {
+              this.pendingCount++;
+            }
+          } else if (localHash !== null && localHash !== baselineHash) {
+            // A scoped pass is about to bring exactly these files up to date,
+            // so counting them as pending would leave a count that survives
+            // the pass and is never reconciled.
+            this.pendingCount++;
+          }
+        }
+        const action =
+          config.mode === "followServer"
+            ? decideFollowServerAction({ localHash, remoteHash, baselineHash })
+            : decideSyncAction({
+                localHash,
+                remoteHash,
+                baselineHash,
+                // A scoped launch pass runs before the user has seen any UI, so it
+                // must never resolve a difference on its own: no deletion is
+                // mirrored and no side wins a conflict silently.
+                onConflict: scoped ? "prompt" : config.onConflict,
+                deletions: scoped ? "ignore" : config.deletions,
+              });
+        // Follow mode makes the server authoritative, but a launch pass must
+        // still not remove local files before the user has seen any UI: the
+        // deletion is left to the full pass that follows the launch.
+        const effectiveAction =
+          scoped && action.type === "deleteLocal"
+            ? ({ type: "skip" } as SyncAction)
+            : action;
+        switch (effectiveAction.type) {
           case "upload":
             uploads.push(rel);
             break;
@@ -2377,6 +2716,7 @@ export class ConfigSyncService implements vscode.Disposable {
             remote.baseMissing,
             { exists: remoteStat !== undefined, etag: remoteStat?.etag ?? null },
             (entry) => nextConflicts.set(entry.id, entry),
+            passDirection === "forcePush",
           );
           remote.baseMissing = false;
           if (uploaded) {
@@ -2416,7 +2756,11 @@ export class ConfigSyncService implements vscode.Disposable {
             manifest,
             remote.files.get(rel) ?? null,
             remoteContentCache.get(rel) ?? null,
-            capturedStats.get(rel) ?? null,
+            // A forced restore overwrites the local copy even when it changed
+            // during the pass; that is the whole point of the operation.
+            passDirection === "forcePull"
+              ? null
+              : (capturedStats.get(rel) ?? null),
             (entry) => nextConflicts.set(entry.id, entry),
           );
           if (downloaded) {
@@ -2447,11 +2791,46 @@ export class ConfigSyncService implements vscode.Disposable {
           remoteContentCache.delete(rel);
         }
       }
+      // A forced push that already failed an upload cannot produce a faithful
+      // mirror. Deleting server-only files now would leave the server without
+      // the files this pass failed to upload, so keep them and report partial.
+      const skipRemoteDeletes =
+        passDirection === "forcePush" && fileErrors > 0;
+      if (skipRemoteDeletes) {
+        this.log(
+          "warn",
+          "forced push kept remote-only files because at least one upload failed",
+        );
+      }
       // Propagated deletions run after transfers so a file that was also
       // queued for upload/download keeps the transfer's outcome.
       for (const rel of remoteDeletes) {
+        if (skipRemoteDeletes) {
+          break;
+        }
         const remoteStat = remote.files.get(rel);
         try {
+          if (passDirection === "forcePush" && remoteStat) {
+            // A mirror push destroys a server-only version. Keep a local
+            // copy first so "the server is authoritative" never means an
+            // unrecoverable deletion.
+            const content = await client.get(rel);
+            if (
+              !(await this.writeBackup(
+                content,
+                rel,
+                "remote-",
+                this.remoteBackupsRoot(),
+              ))
+            ) {
+              fileErrors++;
+              this.log(
+                "warn",
+                `remote delete skipped; backup failed for ${rel}`,
+              );
+              continue;
+            }
+          }
           if (remoteStat) {
             await client.del(
               rel,
@@ -2462,7 +2841,12 @@ export class ConfigSyncService implements vscode.Disposable {
           await manifest.save();
           completedDeletes++;
           completedDeletePaths.push(rel);
-          this.log("info", `deleted remotely (deletion propagated): ${rel}`);
+          this.log(
+            "info",
+            `deleted remotely (${
+              passDirection === "forcePush" ? "force push" : "deletion propagated"
+            }): ${rel}`,
+          );
         } catch (error) {
           if (
             error instanceof WebDavFatalError ||
@@ -2520,7 +2904,14 @@ export class ConfigSyncService implements vscode.Disposable {
           await manifest.save();
           completedDeletes++;
           completedDeletePaths.push(rel);
-          this.log("info", `deleted locally (deletion propagated): ${rel}`);
+          this.log(
+            "info",
+            `deleted locally (${
+              passDirection === "forcePull"
+                ? "force pull"
+                : "deletion propagated"
+            }): ${rel}`,
+          );
         } catch (error) {
           if (
             error instanceof WebDavFatalError ||
@@ -2627,7 +3018,17 @@ export class ConfigSyncService implements vscode.Disposable {
       if (!scoped) {
         delta.pendingCount = 0;
       }
-      if (completedDownloads > 0 && !scoped) {
+      if (passDirection === "forcePull" && !scoped) {
+        delta.notice = l10n.t(
+          "Restored {count} file(s) from the sync server.",
+          { count: completedDownloads },
+        );
+      } else if (passDirection === "forcePush" && !scoped) {
+        delta.notice = l10n.t(
+          "Uploaded {count} file(s) to the sync server.",
+          { count: completedUploads },
+        );
+      } else if (completedDownloads > 0 && !scoped) {
         delta.notice = l10n.t(
           "Downloaded {count} updated file(s) from the sync server.",
           { count: completedDownloads },
@@ -2649,6 +3050,15 @@ export class ConfigSyncService implements vscode.Disposable {
       }
       return "done";
     } catch (error) {
+      if (error instanceof SyncGuidanceError) {
+        // A deliberate refusal, not a transport failure: keep the breaker
+        // and the backoff untouched and tell the user why.
+        this.state = "idle";
+        this.pushDelta({ state: "idle", notice: error.userMessage });
+        void this.persistStatus();
+        this.log("warn", `sync pass refused (${trigger}): ${error.userMessage}`);
+        return "failed";
+      }
       if (error instanceof SyncAbortError || error instanceof WebDavAbortError) {
         // An abort is a decision, not a failure: restore the state machine
         // so every window's panel leaves "syncing", and keep the breaker
@@ -2795,7 +3205,11 @@ export class ConfigSyncService implements vscode.Disposable {
       this.pauseAutoSync("repeated transient sync failures");
       return;
     }
-    if (trigger !== "manual") {
+    if (
+      trigger !== "manual" &&
+      trigger !== "forcePull" &&
+      trigger !== "forcePush"
+    ) {
       const delay = this.nextBackoffMs;
       this.nextBackoffMs = Math.min(this.nextBackoffMs * 2, MAX_BACKOFF_MS);
       if (this.retryTimer) {
@@ -3049,6 +3463,8 @@ export class ConfigSyncService implements vscode.Disposable {
     ensureBase: boolean,
     remote: { exists: boolean; etag: string | null },
     recordConflict?: (entry: WebDavConflictEntry) => void,
+    /** Forced push: overwrite regardless of the remote state. */
+    force = false,
   ): Promise<boolean> {
     const content = await fs.promises.readFile(abs);
     const localHash = hashContent(content);
@@ -3057,12 +3473,14 @@ export class ConfigSyncService implements vscode.Disposable {
     // an unchanged remote keeps its ETag guard, a missing remote must be
     // created, not blindly clobbered. Manifest baselines can be stale.
     let conditions: WebDavPutConditions | undefined;
-    if (remote.exists) {
-      if (remote.etag) {
-        conditions = { ifMatch: remote.etag };
+    if (!force) {
+      if (remote.exists) {
+        if (remote.etag) {
+          conditions = { ifMatch: remote.etag };
+        }
+      } else {
+        conditions = { ifNoneMatchStar: true };
       }
-    } else {
-      conditions = { ifNoneMatchStar: true };
     }
     try {
       await client.put(rel, content, conditions);
@@ -3361,14 +3779,40 @@ export class ConfigSyncService implements vscode.Disposable {
       if (!stat.isFile()) {
         return false;
       }
+      const content = await fs.promises.readFile(abs);
+      return await this.writeBackup(content, rel);
+    } catch (error) {
+      this.logger.warn(
+        `[WebDavSync] backup failed for ${rel}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Write one backup generation under the given backup root and prune old
+   * ones. Local files use `sync/backups`; the pre-delete copy a forced push
+   * makes of a server-only file uses a separate root so the two retention
+   * windows cannot evict each other.
+   */
+  private async writeBackup(
+    content: Buffer,
+    rel: string,
+    namePrefix = "",
+    root: string = this.backupsRoot(),
+  ): Promise<boolean> {
+    try {
       const relDir = path.posix.dirname(rel);
       const destDir =
         relDir === "."
-          ? path.join(this.backupsRoot())
-          : path.join(this.backupsRoot(), ...relDir.split("/"));
+          ? path.join(root)
+          : path.join(root, ...relDir.split("/"));
       await fs.promises.mkdir(destDir, { recursive: true });
-      const name = `${Date.now()}-${path.posix.basename(rel)}`;
-      await fs.promises.copyFile(abs, path.join(destDir, name));
+      // The timestamp stays the first segment: pruning parses it.
+      const name = `${Date.now()}-${namePrefix}${path.posix.basename(rel)}`;
+      await fs.promises.writeFile(path.join(destDir, name), content);
       // The backup copy exists; pruning old generations is best-effort.
       try {
         const entries = await fs.promises.readdir(destDir);
@@ -3532,6 +3976,14 @@ export class ConfigSyncService implements vscode.Disposable {
 
   private backupsRoot(): string {
     return path.join(syncStorageDir(this.globalStoragePath()), "backups");
+  }
+
+  /** Server-side copies a forced push takes before deleting remote files. */
+  private remoteBackupsRoot(): string {
+    return path.join(
+      syncStorageDir(this.globalStoragePath()),
+      "backups-remote",
+    );
   }
 
   private toAbsoluteLocalPath(rel: string): string {

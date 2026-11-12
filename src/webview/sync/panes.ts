@@ -11,6 +11,7 @@ import type {
   WebDavHistoryEntry,
   WebDavServerConfig,
   WebDavSyncItemUi,
+  WebDavSyncMode,
   WebDavSyncOptions,
 } from "../../types";
 import { SYNC_ICONS } from "./icons";
@@ -62,6 +63,9 @@ export function populateGeneralForm(state: SyncUiState): void {
   input("dav-f-http").checked = settings.allowInsecureHttp;
   input("dav-f-selfsigned").checked = settings.acceptSelfSigned;
   input("dav-f-showicon").checked = settings.showStatusIcon;
+  const mode = settings.mode ?? "bidirectional";
+  select("dav-f-mode").value = mode;
+  applyModeUi(mode);
   input("dav-f-prestart").checked = settings.preStartSync ?? false;
   input("dav-f-prestart-cooldown").value = String(
     Math.max(0, settings.preStartSyncCooldownMinutes ?? 5),
@@ -123,6 +127,7 @@ export function collectSyncOptions(): WebDavSyncOptions {
       Number(input("dav-f-interval").value) || 30,
     ),
     showStatusIcon: input("dav-f-showicon").checked,
+    mode: collectSyncMode(),
     preStartSync: input("dav-f-prestart").checked,
     preStartSyncCooldownMinutes: Math.max(
       0,
@@ -130,6 +135,28 @@ export function collectSyncOptions(): WebDavSyncOptions {
     ),
     deletions: collectDeletionPolicy(),
   };
+}
+
+/** Sync mode select; unknown values fall back to the bidirectional default. */
+export function collectSyncMode(): WebDavSyncMode {
+  const value = select("dav-f-mode").value;
+  return value === "followServer" ? "followServer" : "bidirectional";
+}
+
+/**
+ * Follow-server mode has no user-resolvable conflicts and no deletion
+ * policy: remote wins by definition. Hide those controls instead of leaving
+ * settings that silently do nothing.
+ */
+export function applyModeUi(mode: WebDavSyncMode): void {
+  const follow = mode === "followServer";
+  document
+    .getElementById("dav-deletion-group")
+    ?.classList.toggle("hidden", follow);
+  const hint = document.getElementById("dav-mode-hint");
+  if (hint) {
+    hint.textContent = follow ? st.modeHintFollowServer : st.modeHintBidirectional;
+  }
 }
 
 /** Enable the cooldown input only while the pre-launch sync is on. */
@@ -651,6 +678,12 @@ function triggerLabel(trigger: WebDavHistoryEntry["trigger"]): string {
       return st.trigExcludeChange;
     case "manual":
       return st.trigManual;
+    case "modeChange":
+      return st.trigModeChange;
+    case "forcePull":
+      return st.trigForcePull;
+    case "forcePush":
+      return st.trigForcePush;
     default:
       return st.trigNone;
   }

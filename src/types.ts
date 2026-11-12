@@ -67,6 +67,8 @@ export type WebviewMessage =
   | { type: "requestRestart" }
   /** Answer to the in-webview service-restart prompt shown by the host. */
   | { type: "serviceRestartPromptAnswer"; action: ServiceRestartPromptAction }
+  /** Answer to the in-webview confirmation for a one-way sync operation. */
+  | { type: "webdavConfirmAnswer"; requestId: string; confirmed: boolean }
   | { type: "toggleEditorAttachment" }
   | { type: "openSettings" }
   | { type: "openKeyboardShortcuts" }
@@ -149,6 +151,10 @@ export type WebviewMessage =
   | { type: "removeWebdavExclude"; path: string }
   /** Manual "Sync now": popover button, panel footer and command all funnel here. */
   | { type: "syncWebdavNow" }
+  /** Replace the local synced files with the server tree (manual, always confirmed). */
+  | { type: "forcePullWebdav" }
+  /** Replace the server tree with the local synced files (manual, always confirmed). */
+  | { type: "forcePushWebdav" }
   /** Lazy-load the sync log tail when the log section becomes visible. */
   | { type: "requestWebdavLog" }
   /** Wipe the persisted sync history from the history pane toolbar. */
@@ -313,6 +319,15 @@ export type HostMessage =
     }
   /** Ask the webview to show the service-restart prompt for an upcoming terminal restart. */
   | { type: "showServiceRestartPrompt" }
+  /** Ask the webview to confirm a destructive one-way sync operation. */
+  | {
+      type: "showWebdavConfirm";
+      requestId: string;
+      title: string;
+      body: string;
+      confirmLabel: string;
+      cancelLabel: string;
+    }
   | {
       type: "keymapData";
       items: KeymapItem[];
@@ -428,11 +443,19 @@ export interface WebDavServerConfig {
 /** How a deletion on one side is handled. */
 export type WebDavDeletionPolicy = "prompt" | "ignore" | "propagate";
 
+/**
+ * Sync direction for this machine. `followServer` applies the server tree and
+ * never uploads; `bidirectional` keeps the three-way merge.
+ */
+export type WebDavSyncMode = "bidirectional" | "followServer";
+
 /** Behavior options that apply immediately when changed in the panel. */
 export interface WebDavSyncOptions {
   autoSync: WebDavAutoSyncConfig;
   pollIntervalMinutes: number;
   showStatusIcon: boolean;
+  /** Omitted by callers that do not change the sync mode. */
+  mode?: WebDavSyncMode;
   /** Omitted by callers that do not change the deletion policy. */
   deletions?: WebDavDeletionPolicy;
   /** Sync the key config files before OpenCode starts. */
@@ -443,6 +466,8 @@ export interface WebDavSyncOptions {
 
 /** Sync settings snapshot for the panel; server card plus immediate options. */
 export interface WebDavSyncSettings extends WebDavServerConfig, WebDavSyncOptions {
+  /** Always present in the snapshot; the webview renders the mode selector. */
+  mode: WebDavSyncMode;
   /** True when a password is stored in SecretStorage for this server. */
   passwordSet: boolean;
 }
@@ -493,7 +518,11 @@ export type WebDavSyncTrigger =
   | "retry"
   | "configSave"
   | "excludeChange"
-  | "manual";
+  | "manual"
+  | "modeChange"
+  /** Forced one-way passes from the panel or the command palette. */
+  | "forcePull"
+  | "forcePush";
 
 export interface WebDavHistoryEntry {
   time: number;

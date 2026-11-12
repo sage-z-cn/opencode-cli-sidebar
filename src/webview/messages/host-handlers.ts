@@ -2,6 +2,7 @@ import type { HostMessage } from "../../types";
 import type { TerminalHandle } from "../terminal/useTerminal";
 import { createMessageHandler, type MessageHandlerCallbacks } from "./index";
 import { showServiceRestartPrompt } from "../service-restart-prompt";
+import { showWebdavConfirm } from "../sync/confirm";
 import { setSendKeybindingsToShell } from "../terminal/keyboard";
 import { applyStartupPhase, showPreStartSyncResult } from "../startup-status";
 import { updateEditorAttachmentIcon } from "../toolbar";
@@ -62,6 +63,10 @@ export function installHostMessageHandlers(
 
     onShowServiceRestartPrompt() {
       showServiceRestartPrompt();
+    },
+
+    onShowWebdavConfirm(message) {
+      showWebdavConfirm(message);
     },
 
     onPlatformInfo() {},

@@ -104,6 +104,16 @@
         "command": "opencode-cli-sidebar.webdavSyncNow",
         "title": "%command.opencode-cli-sidebar.webdavSyncNow.title%",
         "category": "%command.category.opencode-cli-sidebar%"
+      },
+      {
+        "command": "opencode-cli-sidebar.webdavForcePull",
+        "title": "%command.opencode-cli-sidebar.webdavForcePull.title%",
+        "category": "%command.category.opencode-cli-sidebar%"
+      },
+      {
+        "command": "opencode-cli-sidebar.webdavForcePush",
+        "title": "%command.opencode-cli-sidebar.webdavForcePush.title%",
+        "category": "%command.category.opencode-cli-sidebar%"
       }
     ],
     "menus": {
@@ -330,6 +340,21 @@
           "type": "boolean",
           "default": false,
           "description": "%configuration.opencode-cli-sidebar.sync.enabled.description%"
+        },
+        "opencode-cli-sidebar.sync.mode": {
+          "type": "string",
+          "enum": [
+            "bidirectional",
+            "followServer"
+          ],
+          "enumDescriptions": [
+            "%configuration.opencode-cli-sidebar.sync.mode.bidirectional%",
+            "%configuration.opencode-cli-sidebar.sync.mode.followServer%"
+          ],
+          "default": "bidirectional",
+          "scope": "machine",
+          "ignoreSync": true,
+          "description": "%configuration.opencode-cli-sidebar.sync.mode.description%"
         },
         "opencode-cli-sidebar.sync.url": {
           "type": "string",
