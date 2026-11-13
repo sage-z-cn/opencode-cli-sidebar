@@ -5,6 +5,10 @@ All notable changes to the "OpenCode CLI Sidebar" extension will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+#### 6.0.2
+**New Features**
+- **Changelog**: Use the structured release feed as the primary source when generating changelog entries.
+
 #### 6.0.1
 **New Features**
 - **Sync**: Add a sync mode setting along with force pull and force push commands for manual control over syncing.
