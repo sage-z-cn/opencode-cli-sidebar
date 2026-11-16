@@ -7,6 +7,13 @@ import type {
 /** Configuration section owning every setting exposed by this service. */
 const SETTINGS_SECTION = "opencode-cli-sidebar";
 
+/**
+ * Rejection carrying wording that is already localized and safe to render in
+ * the dialog. Anything else that escapes this service is treated as internal
+ * and replaced with a generic message before it reaches the webview.
+ */
+export class ExtensionSettingError extends Error {}
+
 export type ExtensionSettingSpec =
   | { type: "string"; default: string }
   | { type: "boolean"; default: boolean }
@@ -81,14 +88,16 @@ export const EXTENSION_SETTINGS_CATALOG: Readonly<
 };
 
 function invalidValueError(): Error {
-  return new Error("This value cannot be saved.");
+  return new ExtensionSettingError(vscode.l10n.t("This value cannot be saved."));
 }
 
 function requireSpec(key: string): ExtensionSettingSpec {
   const spec = EXTENSION_SETTINGS_CATALOG[key];
   if (!spec) {
     // Wording avoids echoing the raw key: the message may reach the dialog.
-    throw new Error("This setting cannot be changed here.");
+    throw new ExtensionSettingError(
+      vscode.l10n.t("This setting cannot be changed here."),
+    );
   }
   return spec;
 }
@@ -99,13 +108,17 @@ function resolveTarget(scope: ExtensionSettingsScope): vscode.ConfigurationTarge
   }
   if (scope === "workspace") {
     if (!vscode.workspace.workspaceFolders?.length) {
-      throw new Error(
-        "Open a folder to save this setting at workspace scope.",
+      throw new ExtensionSettingError(
+        vscode.l10n.t(
+          "Open a folder to save this setting at workspace scope.",
+        ),
       );
     }
     return vscode.ConfigurationTarget.Workspace;
   }
-  throw new Error("This setting cannot be changed here.");
+  throw new ExtensionSettingError(
+    vscode.l10n.t("This setting cannot be changed here."),
+  );
 }
 
 /**

@@ -108,12 +108,19 @@ const ONE_ARG = new RegExp(
 );
 /** `t(MAP[key])` — a lookup table index, not a literal key. */
 const DYNAMIC_LOOKUP = new RegExp(`\\b${HELPER}\\(\\s*([A-Za-z_$][\\w$]*)\\s*\\[`, "g");
+/** `tr(item.label)` — a data table field, not a literal key. */
+const DYNAMIC_FIELD = new RegExp(
+  `\\b${HELPER}\\(\\s*[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)+\\s*\\)`,
+  "g",
+);
 
 const webviewFiles = fs.existsSync("src/webview")
   ? walk("src/webview", isWebviewSource)
   : [];
 const webviewKeys = new Set();
 const webviewMissing = [];
+/** `file\0key` pairs already listed, since a field scan runs per call site. */
+const reportedMissing = new Set();
 
 for (const f of webviewFiles) {
   const source = fs.readFileSync(f, "utf8");
@@ -149,6 +156,35 @@ for (const f of webviewFiles) {
       webviewKeys.add(key);
     }
   }
+
+  /*
+   * Shape 4: `tr(item.label)` — the wording is a field of the data table the
+   * file declares (the extension settings catalog). The scans above cannot
+   * resolve it, so the table's `label` / `desc` / `intro` values are collected
+   * wholesale. They are reported when missing: ignoring this shape is how 64
+   * live translations were once deleted as "stale".
+   */
+  if (source.match(DYNAMIC_FIELD)) {
+    for (const key of collectFieldValues(source)) {
+      webviewKeys.add(key);
+      const id = `${f}\0${key}`;
+      if (!bundleKeys.has(key) && !reportedMissing.has(id)) {
+        reportedMissing.add(id);
+        webviewMissing.push({ file: f, key, shape: "field" });
+      }
+    }
+  }
+}
+
+/** `label` / `desc` / `intro` string values of a data table in `source`. */
+function collectFieldValues(source) {
+  const values = [];
+  for (const m of source.matchAll(
+    /\b(?:label|desc|intro):\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g,
+  )) {
+    values.push(unescape(m[1]));
+  }
+  return values;
 }
 
 /**

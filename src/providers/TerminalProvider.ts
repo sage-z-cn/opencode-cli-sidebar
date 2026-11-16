@@ -51,7 +51,10 @@ import type { LaunchGate } from "../services/LaunchGate";
 import { TerminalBackendRegistry } from "../services/terminalBackends";
 import { OpenCodeKeymapService } from "../services/OpenCodeKeymapService";
 import { OpenCodeCliSettingsService } from "../services/OpenCodeCliSettingsService";
-import { ExtensionSettingsService } from "../services/ExtensionSettingsService";
+import {
+  ExtensionSettingError,
+  ExtensionSettingsService,
+} from "../services/ExtensionSettingsService";
 import {
   OpenCodeUpdateService,
   type OpenCodeUpdateStatus,
@@ -593,7 +596,7 @@ export class TerminalProvider
       this.postWebviewMessage({
         type: "extensionSettingsSaveResult",
         ok: false,
-        error: message,
+        error: l10n.t("Could not load the extension settings."),
       });
     }
   }
@@ -643,7 +646,8 @@ export class TerminalProvider
   ): void {
     const message = error instanceof Error ? error.message : String(error);
     // The key and scope stay in the log; the receipt carries only the
-    // short, user-facing reason.
+    // short, user-facing reason. Wording this service did not author is
+    // replaced, so a raw exception never leaks into the dialog in English.
     this.logger.error(
       `[TerminalProvider] extension setting ${action} failed (${key}, ${scope}): ${message}`,
     );
@@ -651,7 +655,10 @@ export class TerminalProvider
       type: "extensionSettingsSaveResult",
       ok: false,
       key,
-      error: message,
+      error:
+        error instanceof ExtensionSettingError
+          ? message
+          : l10n.t("This setting could not be saved."),
     });
   }
 

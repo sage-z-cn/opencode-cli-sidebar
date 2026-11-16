@@ -6,6 +6,7 @@ import { OutputCaptureManager } from "../services/OutputCaptureManager";
 import { InstanceStore } from "../services/InstanceStore";
 import { OutputChannelService } from "../services/OutputChannelService";
 import { PortManager } from "../services/PortManager";
+import { ExtensionSettingError } from "../services/ExtensionSettingsService";
 import type {
   OpenCodeUpdateService,
   OpenCodeUpdateStatus as UpdateServiceStatus,
@@ -494,7 +495,7 @@ describe("TerminalProvider", () => {
   it("reports a failed extension setting write without refreshing the snapshot", async () => {
     const configuration = mockConfiguration();
     configuration.update.mockRejectedValueOnce(
-      new Error("This value cannot be saved."),
+      new ExtensionSettingError("This value cannot be saved."),
     );
     provider = createProvider();
     const { view } = resolveProvider(provider);
@@ -513,6 +514,27 @@ describe("TerminalProvider", () => {
     expect(
       messages.some((entry: any) => entry?.type === "extensionSettingsData"),
     ).toBe(false);
+  });
+
+  it("replaces an unexpected write failure with a localized message", async () => {
+    const configuration = mockConfiguration();
+    configuration.update.mockRejectedValueOnce(
+      new Error("cannot write to remote settings"),
+    );
+    provider = createProvider();
+    const { view } = resolveProvider(provider);
+
+    await provider.updateExtensionSetting("httpTimeout", 5000, "user");
+
+    const messages = vi
+      .mocked(view.webview.postMessage)
+      .mock.calls.map((call: unknown[]) => call[0] as any);
+    expect(messages).toContainEqual({
+      type: "extensionSettingsSaveResult",
+      ok: false,
+      key: "httpTimeout",
+      error: "This setting could not be saved.",
+    });
   });
 
   describe("OpenCode self-update UI bridge", () => {

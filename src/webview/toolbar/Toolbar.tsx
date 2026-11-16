@@ -15,31 +15,41 @@ import { notifyOpenCodeUpdateCheckRequested } from "../update";
 import type { TerminalHandle } from "../terminal/useTerminal";
 import template from "../terminal/toolbar.html?raw";
 
-/** Placeholder -> l10n source string. Keys match `{{t:<key>}}` in the template. */
-const TITLE_KEYS: Record<string, string> = {
-  toggleEditor: "Switch to Editor",
-  restart: "Restart Terminal",
-  fontDecrease: "Decrease Font Size",
-  fontIncrease: "Increase Font Size",
-  fontReset: "Reset Font Size",
-  fontSize: "Font Size",
-  settings: "Settings",
-  extensionSettings: "Extension Settings",
-  keybindSettings: "Keyboard Shortcut Settings",
-  keymap: "OpenCode Keymap",
-  openCodeCliSettings: "OpenCode CLI Config",
-  openCodeGlobalAgentsMd: "Open Global AGENTS.md File",
-  openCodeGlobalConfig: "Open OpenCode Config File",
-  openCodeSlimConfig: "Open OMO-Slim Config File",
-  openCodeUpdate: "Install OpenCode",
-  checkOpenCodeUpdates: "Check for OpenCode Updates",
-  davOpenPanel: "OpenCode config sync",
-};
+/**
+ * Placeholder -> l10n source string. Keys match `{{t:<key>}}` in the template.
+ *
+ * Built on demand: the i18n dictionary resolves asynchronously after this
+ * module is imported, so a top-level literal would freeze English. The `t()`
+ * call also keeps each title visible to `scripts/check-l10n.js`, which cannot
+ * follow a plain string table.
+ */
+function buildTitleKeys(): Record<string, string> {
+  return {
+    toggleEditor: t("Switch to Editor"),
+    restart: t("Restart Terminal"),
+    fontDecrease: t("Decrease Font Size"),
+    fontIncrease: t("Increase Font Size"),
+    fontReset: t("Reset Font Size"),
+    fontSize: t("Font Size"),
+    settings: t("Settings"),
+    extensionSettings: t("Extension Settings"),
+    openExtensionSettings: t("Open Extension Settings"),
+    keybindSettings: t("Keyboard Shortcut Settings"),
+    keymap: t("OpenCode Keymap"),
+    openCodeCliSettings: t("OpenCode CLI Config"),
+    openCodeGlobalAgentsMd: t("Open Global AGENTS.md File"),
+    openCodeGlobalConfig: t("Open OpenCode Config File"),
+    openCodeSlimConfig: t("Open OMO-Slim Config File"),
+    openCodeUpdate: t("Install OpenCode"),
+    checkOpenCodeUpdates: t("Check for OpenCode Updates"),
+    davOpenPanel: t("OpenCode config sync"),
+  };
+}
 
 function localizeTitles(input: string): string {
+  const titles = buildTitleKeys();
   return input.replace(/\{\{t:(\w+)\}\}/g, (match, key: string) => {
-    const source = TITLE_KEYS[key];
-    return source ? t(source) : match;
+    return titles[key] ?? match;
   });
 }
 
