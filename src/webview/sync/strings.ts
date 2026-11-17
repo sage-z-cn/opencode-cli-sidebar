@@ -37,7 +37,6 @@ function buildStrings() {
     syncT("iconPending", "{0} file(s) pending sync", n),
   iconConflict: (n: number) =>
     syncT("iconConflict", "{0} conflict(s) to resolve", n),
-  iconError: syncT("iconError", "Sync error"),
   iconPaused: syncT("iconPaused", "Auto sync paused"),
   iconAuth: syncT("iconAuth", "WebDAV credentials required"),
 
@@ -48,7 +47,9 @@ function buildStrings() {
     syncT("stPending", "{0} file(s) pending sync", n),
   stConflict: (n: number) =>
     syncT("stConflict", "{0} file(s) need conflict resolution", n),
-  stError: syncT("stError", "Cannot reach the sync server"),
+  /** The server answered and the pass failed; not an outage. */
+  stFailed: syncT("stFailed", "Last sync failed"),
+  stUnreachable: syncT("stUnreachable", "Cannot reach the sync server"),
   stUnconfigured: syncT("stUnconfigured", "WebDAV sync is not configured"),
   stNeedsAuth: syncT("stNeedsAuth", "WebDAV credentials required"),
   lastSync: (label: string) =>
@@ -153,7 +154,9 @@ function buildStrings() {
   footConflict: (n: number, label: string) =>
     syncT("footConflict", "{0} conflict(s) · last sync {1}", n, label),
   footError: (label: string) =>
-    syncT("footError", "Offline · last sync {0}", label),
+    syncT("footError", "Sync failed · last sync {0}", label),
+  /** Reachability is a claim about now, so it replaces the timestamp line. */
+  footUnreachable: syncT("footUnreachable", "Cannot reach the sync server"),
   footPaused: (label: string) =>
     syncT("footPaused", "Auto sync paused · last sync {0}", label),
   footNeedsAuth: syncT(

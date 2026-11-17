@@ -1,6 +1,7 @@
 import type {
   WebDavConflictEntry,
   WebDavHistoryEntry,
+  WebDavSyncErrorKind,
   WebDavSyncSettings,
   WebDavSyncItemUi,
   WebDavSyncSnapshot,
@@ -11,6 +12,8 @@ import type {
 /** Merged webview-side view of the sync feature. */
 export interface SyncUiState {
   state: WebDavSyncState;
+  /** Why `state` is "error"; undefined in every other state. */
+  errorKind?: WebDavSyncErrorKind;
   pendingCount: number;
   conflictCount: number;
   lastSyncAt?: number;
@@ -49,6 +52,7 @@ export function mergeSnapshot(
 ): SyncUiState {
   return {
     state: snapshot.state,
+    errorKind: snapshot.errorKind,
     pendingCount: snapshot.pendingCount,
     conflictCount: snapshot.conflictCount,
     lastSyncAt: snapshot.lastSyncAt,
@@ -70,8 +74,14 @@ export function mergeDelta(
   prev: SyncUiState,
   delta: WebDavSyncStatusDelta,
 ): SyncUiState {
+  const nextState = delta.state ?? prev.state;
+  // The cause only exists while the state is "error": a delta that leaves
+  // the error state must not carry the old reason into a healthy status.
+  const nextErrorKind =
+    nextState === "error" ? (delta.errorKind ?? prev.errorKind) : undefined;
   return {
-    state: delta.state ?? prev.state,
+    state: nextState,
+    errorKind: nextErrorKind,
     pendingCount: delta.pendingCount ?? prev.pendingCount,
     conflictCount: delta.conflictCount ?? prev.conflictCount,
     lastSyncAt: delta.lastSyncAt ?? prev.lastSyncAt,

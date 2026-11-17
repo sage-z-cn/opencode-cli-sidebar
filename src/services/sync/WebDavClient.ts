@@ -31,6 +31,19 @@ export class WebDavTransientError extends Error {
 }
 
 /**
+ * The transport never reached the server: connection refused, DNS failure,
+ * TLS failure, socket hang-up or a timeout. Distinct from a transient error
+ * that carries a status, because only this case may be reported to the user
+ * as "cannot reach the server"; a 5xx means the server did answer.
+ */
+export class WebDavUnreachableError extends WebDavTransientError {
+  public constructor(message: string) {
+    super(message);
+    this.name = "WebDavUnreachableError";
+  }
+}
+
+/**
  * The remote resource changed since the last sync, so a conditional PUT
  * refused to overwrite it; the caller should surface a conflict.
  */
@@ -758,7 +771,7 @@ export class WebDavClient {
         };
         const totalTimer = setTimeout(() => {
           req.destroy(
-            new WebDavTransientError(
+            new WebDavUnreachableError(
               "WebDAV request exceeded the total time limit",
             ),
           );
@@ -789,11 +802,13 @@ export class WebDavClient {
             );
           });
           res.on("error", (err: Error) => {
+            // Response headers already arrived, so the server was reached; a
+            // failure here is a broken transfer, not an outage.
             settle(() => reject(new WebDavTransientError(err.message)));
           });
         });
         req.setTimeout(this.timeoutMs, () => {
-          req.destroy(new WebDavTransientError("WebDAV request timed out"));
+          req.destroy(new WebDavUnreachableError("WebDAV request timed out"));
         });
         if (this.signal) {
           this.signal.addEventListener("abort", onAbort, { once: true });
@@ -813,7 +828,9 @@ export class WebDavClient {
               reject(err);
               return;
             }
-            reject(new WebDavTransientError(err.message));
+            // A bare socket error never got a response: the server was not
+            // reached (ECONNREFUSED, ENOTFOUND, TLS handshake, hang-up).
+            reject(new WebDavUnreachableError(err.message));
           });
         });
         if (body) {

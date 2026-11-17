@@ -52,8 +52,10 @@ export function syncStatusLine(state: SyncUiState): SyncStatusLine {
     };
   }
   if (icon?.kind === "error") {
+    // Reachability is a claim about the present; a server that answered and
+    // still failed is a past pass result, not an outage.
     return {
-      text: st.stError,
+      text: state.errorKind === "unreachable" ? st.stUnreachable : st.stFailed,
       color: warn,
       iconHtml: SYNC_ICONS.off,
       blink: false,

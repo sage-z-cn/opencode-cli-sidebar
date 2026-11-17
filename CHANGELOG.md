@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Settings**: Localize the settings UI so its labels and descriptions follow the selected display language.
 - **L10n**: Detect dynamically composed localization keys so translated strings resolve correctly.
 
+**Bug Fixes**
+- **Sync**: Report a failed sync pass separately from an unreachable server, so a server-side error is no longer shown as a connection problem.
+- **Sync**: Stop showing a stale unreachable verdict indefinitely, and re-check it after a window takes over the automatic sync channels or a connection test succeeds.
+- **Sync**: Record the last failure in the shared status so the log pane explains an error state inherited from another window or surviving a reload, and stop the leadership-retry line from crowding real errors out of the log.
+
 #### 6.0.2
 **New Features**
 - **Changelog**: Use the structured release feed as the primary source when generating changelog entries.

@@ -159,7 +159,11 @@ export function footerText(state: SyncUiState): string {
     return st.footSyncing;
   }
   if (state.state === "error") {
-    return st.footError(label);
+    // Only a transport failure is an outage; a server-side failure keeps the
+    // last-sync timestamp, which is still the useful fact.
+    return state.errorKind === "unreachable"
+      ? st.footUnreachable
+      : st.footError(label);
   }
   if (state.conflictCount > 0) {
     return st.footConflict(state.conflictCount, label);

@@ -24,6 +24,7 @@ import {
   WebDavFatalError,
   WebDavRateLimitedError,
   WebDavTransientError,
+  WebDavUnreachableError,
   type WebDavPutConditions,
   type WebDavStat,
 } from "./WebDavClient";
@@ -39,7 +40,13 @@ const vscode = await vi.importActual<typeof import("../../test/mocks/vscode")>(
 class FakeClient implements WebDavClientLike {
   public readonly files = new Map<string, { etag: string | null; content: Buffer }>();
   public readonly dirs = new Set<string>([""]);
-  public failure: "fatal" | "auth" | "forbidden" | "transient" | undefined;
+  public failure:
+    | "fatal"
+    | "auth"
+    | "forbidden"
+    | "transient"
+    | "unreachable"
+    | undefined;
   /** Scripted per-attempt PUT failures, consumed in order. */
   public readonly putFailures: Array<"precondition" | "unsupported"> = [];
   /** Fired just before a scripted precondition failure, simulating a
@@ -222,6 +229,9 @@ class FakeClient implements WebDavClientLike {
     }
     if (this.failure === "transient") {
       throw new WebDavTransientError("network down", 502);
+    }
+    if (this.failure === "unreachable") {
+      throw new WebDavUnreachableError("connect ECONNREFUSED");
     }
   }
 }
@@ -917,6 +927,367 @@ describe("ConfigSyncService engine", () => {
       result: "failed",
       trigger: "manual",
     });
+  });
+
+  it("reports a server-side failure as a failed pass, not an outage", async () => {
+    writeLocal("cli.json", "v1");
+    // 502: the server answered, so the network path is fine.
+    client.failure = "transient";
+    await service.syncNow();
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.state).toBe("error");
+    expect(snapshot.errorKind).toBe("failed");
+    // The delta carries the cause so an open panel does not have to wait
+    // for the next full snapshot to stop claiming an outage.
+    expect(deltas.some((delta) => delta.errorKind === "failed")).toBe(true);
+  });
+
+  it("reports a transport failure as unreachable", async () => {
+    writeLocal("cli.json", "v1");
+    client.failure = "unreachable";
+    await service.syncNow();
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.state).toBe("error");
+    expect(snapshot.errorKind).toBe("unreachable");
+  });
+
+  it("drops an aged unreachable verdict but keeps a failed one", async () => {
+    writeLocal("cli.json", "v1");
+    client.failure = "unreachable";
+    await service.syncNow();
+    const internals = service as unknown as { errorAt?: number };
+    expect((await service.getSnapshot()).errorKind).toBe("unreachable");
+
+    // Older than the freshness window: the reachability claim is stale, so
+    // it degrades to the failure that definitely happened.
+    internals.errorAt = Date.now() - 10 * 60_000;
+    expect((await service.getSnapshot()).errorKind).toBe("failed");
+    // The state itself is untouched: the last pass really did fail.
+    expect((await service.getSnapshot()).state).toBe("error");
+
+    // A failed pass keeps its verdict however old it is.
+    client.failure = "transient";
+    await service.syncNow();
+    internals.errorAt = Date.now() - 10 * 60_000;
+    expect((await service.getSnapshot()).errorKind).toBe("failed");
+  });
+
+  it("clears an unreachable state when a connection test succeeds", async () => {
+    writeLocal("cli.json", "v1");
+    client.failure = "unreachable";
+    await service.syncNow();
+    expect((await service.getSnapshot()).errorKind).toBe("unreachable");
+
+    client.failure = undefined;
+    await service.testConnection({
+      url: "https://dav.test",
+      username: "user",
+      password: "pw",
+      basePath: "/opencode-config/",
+      allowInsecureHttp: false,
+      acceptSelfSigned: false,
+    });
+    const snapshot = await service.getSnapshot();
+    expect(snapshot.state).toBe("idle");
+    expect(snapshot.errorKind).toBeUndefined();
+  });
+
+  it("keeps a failed state after a successful connection test", async () => {
+    writeLocal("cli.json", "v1");
+    // The server answered and refused the write; a probe cannot disprove it.
+    client.failure = "forbidden";
+    await service.syncNow();
+    expect((await service.getSnapshot()).errorKind).toBe("failed");
+
+    client.failure = undefined;
+    await service.testConnection({
+      url: "https://dav.test",
+      username: "user",
+      password: "pw",
+      basePath: "/opencode-config/",
+      allowInsecureHttp: false,
+      acceptSelfSigned: false,
+    });
+    expect((await service.getSnapshot()).state).toBe("error");
+  });
+
+  it("does not clear the verdict when the probe targets another server", async () => {
+    writeLocal("cli.json", "v1");
+    client.failure = "unreachable";
+    await service.syncNow();
+
+    client.failure = undefined;
+    await service.testConnection({
+      url: "https://other.test",
+      username: "user",
+      password: "pw",
+      basePath: "/opencode-config/",
+      allowInsecureHttp: false,
+      acceptSelfSigned: false,
+    });
+    expect((await service.getSnapshot()).errorKind).toBe("unreachable");
+  });
+
+  it("verifies a failed state right after taking over leadership", async () => {
+    writeLocal("cli.json", "v1");
+    // The machine-shared status says the server was unreachable; this window
+    // just took over and must confirm that before showing it for a whole
+    // poll interval.
+    const internals = service as unknown as {
+      isLeader: boolean;
+      state: string;
+      errorKind?: string;
+      errorAt?: number;
+      verifyAfterTakeover: () => void;
+    };
+    internals.isLeader = true;
+    internals.state = "error";
+    internals.errorKind = "unreachable";
+    internals.errorAt = Date.now();
+    internals.verifyAfterTakeover();
+
+    await vi.waitFor(
+      () => {
+        if (client.calls.put.length === 0) {
+          throw new Error("waiting for the verification pass");
+        }
+      },
+      { timeout: 5_000 },
+    );
+    await vi.waitFor(
+      () => {
+        if (internals.state !== "idle") {
+          throw new Error("waiting for the verdict to clear");
+        }
+      },
+      { timeout: 5_000 },
+    );
+  });
+
+  it("skips the verification pass when there is no failure to confirm", async () => {
+    writeLocal("cli.json", "v1");
+    const internals = service as unknown as {
+      isLeader: boolean;
+      state: string;
+      verifyAfterTakeover: () => void;
+    };
+    internals.isLeader = true;
+    internals.state = "idle";
+    internals.verifyAfterTakeover();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(client.calls.propfind).toEqual([]);
+  });
+
+  it("skips the verification pass while the breaker is open", async () => {
+    writeLocal("cli.json", "v1");
+    const internals = service as unknown as {
+      isLeader: boolean;
+      state: string;
+      errorKind?: string;
+      errorAt?: number;
+      autoSyncPaused: boolean;
+      verifyAfterTakeover: () => void;
+    };
+    internals.isLeader = true;
+    internals.state = "error";
+    internals.errorKind = "unreachable";
+    internals.errorAt = Date.now();
+    internals.autoSyncPaused = true;
+
+    internals.verifyAfterTakeover();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(client.calls.propfind).toEqual([]);
+  });
+
+  it("records the failure reason in the shared status file", async () => {
+    writeLocal("cli.json", "v1");
+    client.failure = "unreachable";
+    await service.syncNow();
+    const internals = service as unknown as {
+      statusWrite: Promise<void>;
+    };
+    await internals.statusWrite;
+
+    const shared = await new SyncStatusStore(storageDir).load();
+    expect(shared?.state).toBe("error");
+    expect(shared?.errorKind).toBe("unreachable");
+    expect(shared?.lastError).toMatchObject({
+      kind: "unreachable",
+      trigger: "manual",
+      message: "connect ECONNREFUSED",
+    });
+    expect(shared?.lastError?.at).toBeTypeOf("number");
+  });
+
+  it("keeps the machine last error when a healthy window writes status", async () => {
+    writeLocal("cli.json", "v1");
+    client.failure = "unreachable";
+    await service.syncNow();
+    await (service as unknown as { statusWrite: Promise<void> }).statusWrite;
+
+    // A second window with no failure of its own writes a state-only status:
+    // the explanation a sibling recorded must survive.
+    const other = new ConfigSyncService(makeContext(storageDir), {
+      logger,
+      postWebviewMessage: () => undefined,
+      isWebviewVisible: () => true,
+      clientFactory: () => client,
+    });
+    try {
+      await (
+        other as unknown as { persistStatus: () => Promise<void> }
+      ).persistStatus();
+      const shared = await new SyncStatusStore(storageDir).load();
+      expect(shared?.lastError?.message).toBe("connect ECONNREFUSED");
+    } finally {
+      other.dispose();
+    }
+  });
+
+  it("explains an inherited error state in a follower window's log", async () => {
+    writeLocal("cli.json", "v1");
+    client.failure = "unreachable";
+    await service.syncNow();
+    await (service as unknown as { statusWrite: Promise<void> }).statusWrite;
+
+    const postedB: HostMessage[] = [];
+    const follower = new ConfigSyncService(makeContext(storageDir), {
+      logger,
+      postWebviewMessage: (message) => {
+        postedB.push(message);
+      },
+      isWebviewVisible: () => true,
+      clientFactory: () => client,
+    });
+    try {
+      // The follower never ran the failing pass; it only adopts the status.
+      await follower.getSnapshot();
+      await follower.requestLog();
+      const log = postedB.find((m) => m.type === "webdavLog");
+      expect(log).toBeDefined();
+      const lines = (log as { lines: string[] }).lines;
+      // The inherited state is explained exactly once, with the reason and
+      // the trigger that produced it.
+      const mentions = lines.filter((line) =>
+        line.includes("connect ECONNREFUSED"),
+      );
+      expect(mentions).toHaveLength(1);
+      expect(mentions[0]).toContain("adopted shared sync status error");
+      expect(mentions[0]).toContain("manual");
+    } finally {
+      follower.dispose();
+    }
+  });
+
+  it("prepends the shared failure when the buffer lost it to the cap", async () => {
+    writeLocal("cli.json", "v1");
+    client.failure = "unreachable";
+    await service.syncNow();
+    await (service as unknown as { statusWrite: Promise<void> }).statusWrite;
+
+    // A long-lived window whose 200-line buffer already scrolled past the
+    // failure: the shared record is the only remaining explanation.
+    const internals = service as unknown as {
+      logLines: string[];
+      requestLog: () => Promise<void>;
+    };
+    internals.logLines = ["[x] [debug] something else entirely"];
+    posted.length = 0;
+    await internals.requestLog();
+
+    const log = posted.find((m) => m.type === "webdavLog") as {
+      lines: string[];
+    };
+    expect(log.lines[0]).toContain("last failed pass (manual, unreachable)");
+    expect(log.lines[0]).toContain("connect ECONNREFUSED");
+  });
+
+  it("keeps the newer failure when a window writes an older record of its own", async () => {
+    writeLocal("cli.json", "v1");
+    client.failure = "unreachable";
+    await service.syncNow();
+    await (service as unknown as { statusWrite: Promise<void> }).statusWrite;
+    const first = await new SyncStatusStore(storageDir).load();
+
+    // A sibling records a newer failure, which this window adopts.
+    await new SyncStatusStore(storageDir).save({
+      ...(first as SyncStatusData),
+      writeId: "sibling-newer",
+      lastError: {
+        message: "server returned 500",
+        trigger: "poll",
+        at: Date.now() + 1_000,
+        kind: "failed",
+      },
+    });
+    const sibling = await new SyncStatusStore(storageDir).load();
+    expect(sibling?.lastError?.message).toBe("server returned 500");
+
+    // This window still remembers its own older failure. Writing status must
+    // not revert the machine record to it.
+    await (
+      service as unknown as { persistStatus: () => Promise<void> }
+    ).persistStatus();
+    const after = await new SyncStatusStore(storageDir).load();
+    expect(after?.lastError?.message).toBe("server returned 500");
+    expect(after?.lastError?.trigger).toBe("poll");
+  });
+
+  it("collapses repeated leadership retry lines into one summary", async () => {
+    const internals = service as unknown as {
+      logLines: string[];
+      retryLogCount: number;
+      flushRetryLogCount: () => void;
+      scheduleLockRetry: () => void;
+      lockRetryTimer?: ReturnType<typeof setTimeout>;
+      lockAcquireInFlight?: Promise<void>;
+    };
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    internals.scheduleLockRetry();
+    // Fire the retry callback twice the way the timer would, without waiting
+    // a real minute: the second tick must not append another log line.
+    const retryCallbacks = setTimeoutSpy.mock.calls
+      .filter(([, ms]) => ms === 60_000)
+      .map(([fn]) => fn as () => void);
+    setTimeoutSpy.mockRestore();
+    expect(retryCallbacks).toHaveLength(1);
+
+    for (let tick = 1; tick <= 3; tick += 1) {
+      // Re-arm the timer for the next tick, as armLeadership would.
+      internals.lockRetryTimer = undefined;
+      retryCallbacks[0]();
+      await Promise.resolve();
+    }
+
+    const retryLines = internals.logLines.filter((line) =>
+      line.includes("leadership retry"),
+    );
+    expect(retryLines).toHaveLength(1);
+    expect(internals.retryLogCount).toBe(3);
+
+    internals.flushRetryLogCount();
+    const summary = internals.logLines.filter((line) =>
+      line.includes("3 attempts"),
+    );
+    expect(summary).toHaveLength(1);
+    expect(internals.retryLogCount).toBe(0);
+  });
+
+  it("drops the retry count when sync is disabled", async () => {
+    const internals = service as unknown as {
+      retryLogCount: number;
+      armTriggers: () => void;
+      logLines: string[];
+    };
+    internals.retryLogCount = 7;
+    settings["sync.enabled"] = false;
+    internals.armTriggers();
+
+    expect(internals.retryLogCount).toBe(0);
+    // A re-enable must not report the stale total from the previous run.
+    expect(
+      internals.logLines.some((line) => line.includes("7 attempts")),
+    ).toBe(false);
   });
 
   it("clears the persisted history and pushes an empty snapshot", async () => {

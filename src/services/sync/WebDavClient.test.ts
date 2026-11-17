@@ -23,6 +23,7 @@ import {
   WebDavFatalError,
   WebDavRateLimitedError,
   WebDavTransientError,
+  WebDavUnreachableError,
   hrefToRelativePath,
   parseMultiStatus,
   MAX_RESPONSE_BYTES,
@@ -204,12 +205,52 @@ describe("WebDavClient", () => {
     await rejection;
   });
 
+  it("classifies a timeout as unreachable, not a server failure", async () => {
+    const client = new WebDavClient({ ...baseOptions(), timeoutMs: 50 });
+    const pending = client.propfind("", 1);
+    const rejection = expect(pending).rejects.toBeInstanceOf(
+      WebDavUnreachableError,
+    );
+    httpsCalls[0].req.timeoutHandler?.();
+    await rejection;
+  });
+
   it("classifies socket errors as transient errors", async () => {
     const client = new WebDavClient(baseOptions());
     const pending = client.propfind("", 1);
     const rejection = expect(pending).rejects.toThrow(WebDavTransientError);
     httpsCalls[0].req.emit("error", new Error("connection reset"));
     await rejection;
+  });
+
+  it("classifies a socket error as unreachable, not a server failure", async () => {
+    const client = new WebDavClient(baseOptions());
+    const pending = client.propfind("", 1);
+    const rejection = expect(pending).rejects.toBeInstanceOf(
+      WebDavUnreachableError,
+    );
+    httpsCalls[0].req.emit("error", new Error("ECONNREFUSED"));
+    await rejection;
+  });
+
+  it("classifies a broken response body as a server-side failure", async () => {
+    const client = new WebDavClient(baseOptions());
+    const pending = client.propfind("", 1);
+    const rejection = expect(pending).rejects.toThrow(WebDavTransientError);
+    // Headers already arrived, so the server was reached; the transfer broke
+    // mid-body. Reporting that as "cannot reach the server" would be wrong.
+    const res = new EventEmitter() as EventEmitter & {
+      statusCode: number;
+      headers: Record<string, string>;
+    };
+    res.statusCode = 207;
+    res.headers = {};
+    httpsCalls[0].callback(res);
+    res.emit("error", new Error("aborted"));
+    await rejection;
+    await expect(
+      pending.catch((error: WebDavTransientError) => error),
+    ).resolves.not.toBeInstanceOf(WebDavUnreachableError);
   });
 
   it("maps 401 to a fatal error", async () => {

@@ -120,8 +120,12 @@ function iconLabel(info: NonNullable<ReturnType<typeof syncIconInfo>>): string {
       return st.iconPaused;
     case "auth":
       return st.iconAuth;
-    default:
-      return st.iconError;
+    case "error":
+      // Same split as the tooltip and the footer: only a transport failure is
+      // an outage, a server-side failure is a past pass result.
+      return state.errorKind === "unreachable"
+        ? st.stUnreachable
+        : st.stFailed;
   }
 }
 

@@ -1,7 +1,12 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { WebDavConflictEntry } from "../../types";
+import type {
+  WebDavConflictEntry,
+  WebDavSyncErrorKind,
+  WebDavSyncLastError,
+  WebDavSyncTrigger,
+} from "../../types";
 import { syncStorageDir } from "./SyncManifest";
 
 /**
@@ -13,6 +18,7 @@ import { syncStorageDir } from "./SyncManifest";
 
 const STATUS_STATES = new Set(["idle", "syncing", "error", "needsAuth"]);
 const CONFLICT_KINDS = new Set(["content", "localDeleted", "remoteDeleted"]);
+const ERROR_KINDS = new Set<WebDavSyncErrorKind>(["unreachable", "failed"]);
 
 export interface SyncStatusData {
   /** Change counter; written by whichever window saves. */
@@ -23,6 +29,12 @@ export interface SyncStatusData {
   /** Epoch ms of the write. */
   updatedAt: number;
   state: "idle" | "syncing" | "error" | "needsAuth";
+  /** Why the state is "error"; absent otherwise. */
+  errorKind?: WebDavSyncErrorKind;
+  /** When the error state was entered; ages out a reachability claim. */
+  errorAt?: number;
+  /** Last failed pass on this machine; explains an inherited error state. */
+  lastError?: WebDavSyncLastError;
   conflicts: WebDavConflictEntry[];
   lastSyncAt: number | null;
   pendingCount: number;
@@ -40,6 +52,29 @@ function isConflictEntry(value: unknown): value is WebDavConflictEntry {
     typeof entry.kind === "string" &&
     CONFLICT_KINDS.has(entry.kind)
   );
+}
+
+/** Shape-check the shared last-error record; a malformed one reads as absent. */
+function parseLastError(value: unknown): WebDavSyncLastError | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.message !== "string" ||
+    typeof raw.at !== "number" ||
+    typeof raw.trigger !== "string" ||
+    typeof raw.kind !== "string" ||
+    !ERROR_KINDS.has(raw.kind as WebDavSyncErrorKind)
+  ) {
+    return undefined;
+  }
+  return {
+    message: raw.message,
+    trigger: raw.trigger as WebDavSyncTrigger,
+    at: raw.at,
+    kind: raw.kind as WebDavSyncErrorKind,
+  };
 }
 
 /** Shape-check raw parsed JSON; anything malformed reads back as absent. */
@@ -70,6 +105,15 @@ function parseStatusData(value: unknown): SyncStatusData | undefined {
     writeId: raw.writeId,
     updatedAt: raw.updatedAt,
     state: raw.state as SyncStatusData["state"],
+    ...(typeof raw.errorKind === "string" &&
+    ERROR_KINDS.has(raw.errorKind as WebDavSyncErrorKind)
+      ? { errorKind: raw.errorKind as WebDavSyncErrorKind }
+      : {}),
+    ...(typeof raw.errorAt === "number" ? { errorAt: raw.errorAt } : {}),
+    ...(() => {
+      const lastError = parseLastError(raw.lastError);
+      return lastError ? { lastError } : {};
+    })(),
     conflicts: raw.conflicts.filter(isConflictEntry),
     lastSyncAt,
     pendingCount: raw.pendingCount,

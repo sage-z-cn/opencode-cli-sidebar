@@ -21,6 +21,8 @@ import type {
   WebDavSyncState,
   WebDavSyncStatusDelta,
   WebDavSyncTrigger,
+  WebDavSyncErrorKind,
+  WebDavSyncLastError,
 } from "../../types";
 import { OutputChannelService } from "../OutputChannelService";
 import { resolveOpenCodeConfigDir } from "../openCodeConfigPath";
@@ -38,6 +40,7 @@ import {
   WebDavFatalError,
   WebDavRateLimitedError,
   WebDavTransientError,
+  WebDavUnreachableError,
   type WebDavClientOptions,
   type WebDavDeleteConditions,
   type WebDavPutConditions,
@@ -80,6 +83,13 @@ const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 600;
 const LOCK_ACQUIRE_TIMEOUT_MS = 2_000;
 const LOCK_HEARTBEAT_MS = 10_000;
 const LOCK_RETRY_MS = 60_000;
+/**
+ * How long an "unreachable" verdict stays valid. It is a claim about the
+ * present, so an aged one must not be shown as the current status: the UI
+ * falls back to "the last pass failed", which stays true either way.
+ * Server-reported failures keep their verdict — that claim is about the past.
+ */
+const UNREACHABLE_VERDICT_TTL_MS = 5 * 60_000;
 /** Pass lock: one manifest writer per machine, across windows. */
 const PASS_LOCK_STALE_MS = 8_000;
 const PASS_LOCK_ACQUIRE_MS = 1_500;
@@ -510,6 +520,10 @@ export class ConfigSyncService implements vscode.Disposable {
   public readonly onDidChange = this._onDidChange.event;
 
   private state: WebDavSyncState = "unconfigured";
+  /** Why the state is "error"; cleared whenever another state is entered. */
+  private errorKind: WebDavSyncErrorKind | undefined;
+  /** When this window entered the error state; bounds the reachability claim. */
+  private errorAt: number | undefined;
   /** Connection inputs captured when the credentials state was entered, so
    *  a later settings edit can tell whether the verdict is still relevant. */
   private needsAuthConfigKey: string | undefined;
@@ -552,6 +566,11 @@ export class ConfigSyncService implements vscode.Disposable {
   /** Serialized status persistence chain; awaited before adopting the shared
    * file so pending updates of our own are never read back as foreign. */
   private statusWrite: Promise<void> = Promise.resolve();
+  /** Last failed pass recorded on this machine, shared through status.json so
+   *  a follower window (or a reloaded one) can explain an inherited error. */
+  private lastError: WebDavSyncLastError | undefined;
+  /** Consecutive `leadership retry` ticks not yet collapsed into one line. */
+  private retryLogCount = 0;
   /** Conflict ids last pushed to the webview; removed conflicts reach the
    *  panel only through a full snapshot, never through a delta. */
   private lastPushedConflictIds: string[] = [];
@@ -807,6 +826,9 @@ export class ConfigSyncService implements vscode.Disposable {
     }
     return {
       state: configured ? this.state : "unconfigured",
+      // An aged reachability verdict degrades to "failed" instead of being
+      // shown as the current connection state.
+      errorKind: configured ? this.publishedErrorKind() : undefined,
       pendingCount: this.pendingCount,
       conflictCount: this.conflicts.size,
       lastSyncAt: this.lastSyncAt,
@@ -860,7 +882,25 @@ export class ConfigSyncService implements vscode.Disposable {
   }
 
   public async requestLog(): Promise<void> {
-    this.postWebviewMessage({ type: "webdavLog", lines: [...this.logLines] });
+    // The buffer is this window's memory only, and it resets on reload while
+    // the shared error state persists. While the state is "error", prepend
+    // the machine's last failure so the pane explains the status on screen.
+    const lines = [...this.logLines];
+    const lastError = this.lastError;
+    if (
+      this.state === "error" &&
+      lastError &&
+      // Only a record from the current failure explains the current verdict;
+      // an older one this window happens to remember would misattribute the
+      // status to an unrelated pass.
+      lastError.at >= (this.errorAt ?? 0) &&
+      !lines.some((line) => line.includes(lastError.message))
+    ) {
+      lines.unshift(
+        `[${new Date(lastError.at).toISOString()}] [warn] last failed pass (${lastError.trigger}, ${lastError.kind}): ${lastError.message}`,
+      );
+    }
+    this.postWebviewMessage({ type: "webdavLog", lines });
   }
 
   /** Wipe the persisted sync history; the open panel refreshes immediately. */
@@ -1079,6 +1119,7 @@ export class ConfigSyncService implements vscode.Disposable {
         timeoutMs: REQUEST_TIMEOUT_MS,
       });
       await client.propfind("", 1);
+      this.clearUnreachableAfterProbe(draft);
       this.postWebviewMessage({
         type: "webdavTestResult",
         ok: true,
@@ -1090,6 +1131,7 @@ export class ConfigSyncService implements vscode.Disposable {
         error.status === 404
       ) {
         // basePath 尚不存在：服务器可达且凭据已验证，目录将在首次同步时自动创建。
+        this.clearUnreachableAfterProbe(draft);
         this.postWebviewMessage({
           type: "webdavTestResult",
           ok: true,
@@ -1104,6 +1146,31 @@ export class ConfigSyncService implements vscode.Disposable {
         message: describeConnectionError(error),
       });
     }
+  }
+
+  /**
+   * A successful probe of the configured server disproves an "unreachable"
+   * verdict, which is a claim about the present. Without this the panel keeps
+   * reporting an outage the user just disproved by testing the connection.
+   * A "failed" verdict is left alone: it is about a past pass, and a probe
+   * cannot say whether that pass would succeed now.
+   */
+  private clearUnreachableAfterProbe(draft: WebDavConnectionDraft): void {
+    if (this.state !== "error" || this.errorKind !== "unreachable") {
+      return;
+    }
+    const config = readSyncConfig();
+    if (
+      config.url.trim() !== draft.url.trim() ||
+      config.username !== (draft.username ?? "")
+    ) {
+      // The probe targeted another server; it says nothing about this one.
+      return;
+    }
+    this.enterIdle();
+    this.log("info", "connection test succeeded; unreachable state cleared");
+    this.pushDelta({ state: "idle", errorKind: undefined });
+    void this.persistStatus();
   }
 
   public async setItemEnabled(id: string, enabled: boolean): Promise<void> {
@@ -1818,6 +1885,8 @@ export class ConfigSyncService implements vscode.Disposable {
       // Sync is off: no window competes for the auto-sync channels, so
       // there is nothing to elect — just drop any channels we had.
       this.clearLockRetryTimer();
+      // The election run is over; a later re-enable starts a fresh count.
+      this.retryLogCount = 0;
       this.disarmLeadership(false);
       return;
     }
@@ -1865,11 +1934,13 @@ export class ConfigSyncService implements vscode.Disposable {
       }
       this.isLeader = true;
       this.clearLockRetryTimer();
+      this.flushRetryLogCount();
       this.armWatcher();
       this.armPoller();
       this.startLockHeartbeat();
       this.log("info", "leadership acquired");
       this.pushDelta({ leader: true });
+      this.verifyAfterTakeover();
     } catch (error) {
       this.log(
         "warn",
@@ -1882,6 +1953,31 @@ export class ConfigSyncService implements vscode.Disposable {
     } finally {
       this.lockAcquireInFlight = undefined;
     }
+  }
+
+  /**
+   * A window that just took over the automatic channels must not inherit a
+   * stale failure verdict for a whole poll interval: the machine-shared
+   * status may say "cannot reach the server" from a pass that ran before a
+   * network change, while the server is reachable right now. One pass
+   * confirms or clears it immediately. Only an existing error verdict pays
+   * this cost — a healthy takeover is covered by the poller and watcher.
+   */
+  private verifyAfterTakeover(): void {
+    if (this.disposed || !this.isLeader || this.state !== "error") {
+      return;
+    }
+    const config = readSyncConfig();
+    if (
+      !config.enabled ||
+      !config.url ||
+      this.autoSyncPaused ||
+      this.rateLimitResumeTimer
+    ) {
+      return;
+    }
+    this.log("info", "verifying the failed sync state after leadership takeover");
+    void this.runSync("retry").catch(() => undefined);
   }
 
   /**
@@ -1939,9 +2035,27 @@ export class ConfigSyncService implements vscode.Disposable {
     }
     this.lockRetryTimer = setTimeout(() => {
       this.lockRetryTimer = undefined;
-      this.log("debug", "leadership retry");
+      // A follower retries every minute for as long as a sibling holds the
+      // lock, and each line would push the real failure out of the 200-line
+      // buffer within hours. Collapse the run into its first tick and count
+      // the rest, then report the total once leadership is regained.
+      this.retryLogCount += 1;
+      if (this.retryLogCount === 1) {
+        this.log("debug", "leadership retry");
+      }
       this.armLeadership();
     }, LOCK_RETRY_MS);
+  }
+
+  /** Flush the collapsed retry counter, if any, as one summary line. */
+  private flushRetryLogCount(): void {
+    if (this.retryLogCount > 1) {
+      this.log(
+        "debug",
+        `leadership retry: ${this.retryLogCount} attempts while another window held the lock`,
+      );
+    }
+    this.retryLogCount = 0;
   }
 
   private clearLockRetryTimer(): void {
@@ -2088,10 +2202,16 @@ export class ConfigSyncService implements vscode.Disposable {
 
   // ── Circuit breaker ──
 
-  private pauseAutoSync(reason: string): void {
+  private pauseAutoSync(
+    reason: string,
+    kind: WebDavSyncErrorKind = "failed",
+    detail?: { message: string; trigger: SyncTrigger },
+  ): void {
     const wasPaused = this.autoSyncPaused;
     this.autoSyncPaused = true;
-    this.state = "error";
+    // The caller owns the cause: a breaker opened by a rejected operation must
+    // not inherit an earlier reachability verdict, and vice versa.
+    this.enterErrorState(kind, detail);
     this.stopAutoTimers();
     // A paused leader must not hold the machine hostage: drop the lock
     // (and keep the retry path) so a healthy window can take over the
@@ -2101,7 +2221,11 @@ export class ConfigSyncService implements vscode.Disposable {
     this.scheduleLockRetry();
     this.log("warn", `automatic sync paused: ${reason}`);
     if (!wasPaused) {
-      this.pushDelta({ state: "error", autoSyncPaused: true });
+      this.pushDelta({
+        state: "error",
+        errorKind: this.publishedErrorKind(),
+        autoSyncPaused: true,
+      });
     }
     void this.persistStatus();
   }
@@ -2114,6 +2238,8 @@ export class ConfigSyncService implements vscode.Disposable {
     this.clearRateLimitResume();
     const config = readSyncConfig();
     this.state = config.enabled && config.url ? "idle" : "unconfigured";
+    this.errorKind = undefined;
+    this.errorAt = undefined;
     this.armTriggers();
     this.pushDelta({ state: this.state, autoSyncPaused: false });
     void this.persistStatus();
@@ -2123,7 +2249,76 @@ export class ConfigSyncService implements vscode.Disposable {
    *  based on, so unrelated option edits do not resurrect a stale verdict. */
   private enterNeedsAuth(): void {
     this.state = "needsAuth";
+    this.errorKind = undefined;
+    this.errorAt = undefined;
     this.needsAuthConfigKey = needsAuthConfigKey(readSyncConfig());
+  }
+
+  /**
+   * Enter the error state with its cause. `unreachable` is reserved for a
+   * pass that never got a response; everything the server answered with is
+   * `failed`, so the UI never claims an outage it did not observe.
+   */
+  private enterErrorState(
+    kind: WebDavSyncErrorKind,
+    detail?: { message: string; trigger: SyncTrigger },
+  ): void {
+    this.state = "error";
+    this.errorKind = kind;
+    this.errorAt = Date.now();
+    if (detail) {
+      // The log pane is per-window memory, so the reason is also recorded in
+      // the shared status file: a follower window or a reloaded one inherits
+      // the error state and needs this to explain it.
+      this.lastError = {
+        message: detail.message,
+        trigger: detail.trigger,
+        at: this.errorAt,
+        kind,
+      };
+    }
+  }
+
+  /** Leave the error state and drop its cause. */
+  private enterIdle(): void {
+    this.state = "idle";
+    this.errorKind = undefined;
+    this.errorAt = undefined;
+  }
+
+  /**
+   * True when the current error verdict still describes the present. An
+   * "unreachable" claim ages out; a "failed" one does not, because the pass
+   * really did fail and only a new pass can supersede it.
+   */
+  private errorVerdictIsFresh(): boolean {
+    if (this.state !== "error" || this.errorKind === undefined) {
+      return true;
+    }
+    if (this.errorKind !== "unreachable") {
+      return true;
+    }
+    return (
+      this.errorAt !== undefined &&
+      Date.now() - this.errorAt < UNREACHABLE_VERDICT_TTL_MS
+    );
+  }
+
+  /**
+   * Cause to publish for the current error state. Snapshots and deltas share
+   * this gate, so an aged reachability claim cannot leak through either
+   * channel. It degrades to "failed" instead of disappearing: "the last pass
+   * failed" is true regardless, and a concrete value also lets a delta clear
+   * a previously published "unreachable" in the panel.
+   */
+  private publishedErrorKind(): WebDavSyncErrorKind | undefined {
+    if (this.state !== "error") {
+      return undefined;
+    }
+    if (this.errorKind === "unreachable" && !this.errorVerdictIsFresh()) {
+      return "failed";
+    }
+    return this.errorKind ?? "failed";
   }
 
   /**
@@ -2144,6 +2339,8 @@ export class ConfigSyncService implements vscode.Disposable {
     }
     this.needsAuthConfigKey = undefined;
     this.state = config.enabled && config.url ? "idle" : "unconfigured";
+    this.errorKind = undefined;
+    this.errorAt = undefined;
     this.log("info", "sync settings changed; credentials state cleared");
     this.pushDelta({ state: this.state });
     void this.persistStatus();
@@ -2317,6 +2514,8 @@ export class ConfigSyncService implements vscode.Disposable {
     const config = readSyncConfig();
     if (!config.enabled || !config.url) {
       this.state = "unconfigured";
+      this.errorKind = undefined;
+      this.errorAt = undefined;
       this.pushDelta({ state: "unconfigured" });
       return "done";
     }
@@ -2945,7 +3144,7 @@ export class ConfigSyncService implements vscode.Disposable {
         (id) => !previousConflictIds.has(id),
       );
 
-      this.state = "idle";
+      this.enterIdle();
       this.lastSyncAt = now;
       if (!scoped) {
         this.pendingCount = 0;
@@ -3053,7 +3252,7 @@ export class ConfigSyncService implements vscode.Disposable {
       if (error instanceof SyncGuidanceError) {
         // A deliberate refusal, not a transport failure: keep the breaker
         // and the backoff untouched and tell the user why.
-        this.state = "idle";
+        this.enterIdle();
         this.pushDelta({ state: "idle", notice: error.userMessage });
         void this.persistStatus();
         this.log("warn", `sync pass refused (${trigger}): ${error.userMessage}`);
@@ -3064,7 +3263,7 @@ export class ConfigSyncService implements vscode.Disposable {
         // so every window's panel leaves "syncing", and keep the breaker
         // out of it. Per-file manifest checkpoints already landed, so the
         // next pass resumes instead of redoing work.
-        this.state = "idle";
+        this.enterIdle();
         this.pushDelta({ state: "idle" });
         void this.persistStatus();
         this.log("info", `sync pass aborted (${trigger})`);
@@ -3082,7 +3281,7 @@ export class ConfigSyncService implements vscode.Disposable {
         if (scoped) {
           // A launch pass has no resume: the cooldown belongs to the normal
           // auto channels, and the launch must not wait for it.
-          this.state = "idle";
+          this.enterIdle();
           this.pushDelta({ state: "idle" });
           void this.persistStatus();
           this.log("warn", "scoped sync rate limited; launch continues");
@@ -3128,7 +3327,10 @@ export class ConfigSyncService implements vscode.Disposable {
         // A scoped launch pass must not stop the machine-wide auto sync:
         // one opportunistic attempt is not evidence the server is broken.
         if (!scoped) {
-          this.pauseAutoSync(error.message);
+          this.pauseAutoSync(error.message, "failed", {
+            message: error.message,
+            trigger,
+          });
         }
         return "failed";
       }
@@ -3141,7 +3343,7 @@ export class ConfigSyncService implements vscode.Disposable {
       if (scoped) {
         // Log-only for a launch pass: no failure streak, no backoff timer,
         // no breaker. The gate keeps its own short negative cache.
-        this.state = "idle";
+        this.enterIdle();
         this.pushDelta({ state: "idle" });
         void this.persistStatus();
         this.log("warn", `scoped sync failed: ${transient.message}`);
@@ -3186,7 +3388,10 @@ export class ConfigSyncService implements vscode.Disposable {
     error: WebDavTransientError,
   ): void {
     this.failureStreak++;
-    this.state = "error";
+    this.enterErrorState(
+      error instanceof WebDavUnreachableError ? "unreachable" : "failed",
+      { message: error.message, trigger },
+    );
     const excludeDeletes = this.takeExcludeDeletes(trigger);
     this.appendHistory({
       time: Date.now(),
@@ -3202,7 +3407,10 @@ export class ConfigSyncService implements vscode.Disposable {
     });
     this.log("warn", `sync failed (transient, streak ${this.failureStreak}): ${error.message}`);
     if (this.failureStreak >= MAX_CONSECUTIVE_FAILURES) {
-      this.pauseAutoSync("repeated transient sync failures");
+      this.pauseAutoSync("repeated transient sync failures", this.errorKind, {
+        message: error.message,
+        trigger,
+      });
       return;
     }
     if (
@@ -3220,7 +3428,7 @@ export class ConfigSyncService implements vscode.Disposable {
         void this.triggerAuto("retry");
       }, delay);
     }
-    this.pushDelta({ state: "error" });
+    this.pushDelta({ state: "error", errorKind: this.publishedErrorKind() });
     void this.persistStatus();
   }
 
@@ -3263,7 +3471,10 @@ export class ConfigSyncService implements vscode.Disposable {
           : completedDownloads > 0
             ? "down"
             : "none";
-    this.state = "error";
+    this.enterErrorState("failed", {
+      message: `rate limited by server; resuming in ${seconds}s`,
+      trigger,
+    });
     const excludeDeletes = this.takeExcludeDeletes(trigger);
     this.appendHistory({
       time: Date.now(),
@@ -3281,7 +3492,7 @@ export class ConfigSyncService implements vscode.Disposable {
       "warn",
       `rate limited by server (${cooldownSource}); resuming in ${seconds}s`,
     );
-    this.pushDelta({ state: "error" });
+    this.pushDelta({ state: "error", errorKind: this.publishedErrorKind() });
     void this.persistStatus();
     this.clearRateLimitResume();
     this.rateLimitResumeTimer = setTimeout(() => {
@@ -4100,6 +4311,9 @@ export class ConfigSyncService implements vscode.Disposable {
       return false;
     }
     this.state = data.state;
+    this.errorKind = data.state === "error" ? data.errorKind : undefined;
+    this.errorAt = data.state === "error" ? data.errorAt : undefined;
+    this.lastError = data.lastError;
     this.conflicts = new Map(
       data.conflicts.map((entry) => [entry.id, entry] as const),
     );
@@ -4108,6 +4322,14 @@ export class ConfigSyncService implements vscode.Disposable {
     this.autoSyncPaused = data.autoSyncPaused;
     this.lastStatusRevision = data.revision;
     this.lastStatusWriteId = data.writeId;
+    // A follower window inherits the machine state without ever running the
+    // pass that produced it, so its log pane would otherwise show nothing.
+    if (data.state === "error") {
+      const why = data.lastError
+        ? `: ${data.lastError.message} (${data.lastError.trigger})`
+        : "";
+      this.log("info", `adopted shared sync status error${why}`);
+    }
     return true;
   }
 
@@ -4121,6 +4343,7 @@ export class ConfigSyncService implements vscode.Disposable {
       if (await this.adoptSharedStatus()) {
         this.pushDelta({
           state: this.state,
+          errorKind: this.publishedErrorKind(),
           pendingCount: this.pendingCount,
           conflictCount: this.conflicts.size,
           ...(this.lastSyncAt !== undefined
@@ -4202,6 +4425,18 @@ export class ConfigSyncService implements vscode.Disposable {
       // "unconfigured" is derived from this window's settings; the shared
       // file only carries runtime states.
       state: this.state === "unconfigured" ? "idle" : this.state,
+      ...(this.state === "error" && this.errorKind !== undefined
+        ? { errorKind: this.errorKind, errorAt: this.errorAt ?? Date.now() }
+        : {}),
+      // Keep the newest failure the machine knows about. A window that has not
+      // adopted in a while still holds an older record of its own, so writing
+      // `this.lastError` unconditionally would revert a sibling's newer
+      // failure — and a healthy window's state-only write must not erase the
+      // explanation either.
+      ...(() => {
+        const lastError = newestLastError(this.lastError, previous?.lastError);
+        return lastError ? { lastError } : {};
+      })(),
       conflicts: this.mergePersistedConflicts(previous?.conflicts, options),
       lastSyncAt,
       pendingCount: this.pendingCount,
@@ -4259,6 +4494,23 @@ export function relativeTimeLabel(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
 }
 
+/**
+ * The more recent of two shared failure records. Windows write the machine
+ * status independently, so "mine" is not automatically newer than the file's.
+ */
+function newestLastError(
+  mine: WebDavSyncLastError | undefined,
+  persisted: WebDavSyncLastError | undefined,
+): WebDavSyncLastError | undefined {
+  if (!mine) {
+    return persisted;
+  }
+  if (!persisted) {
+    return mine;
+  }
+  return persisted.at > mine.at ? persisted : mine;
+}
+
 /** User-facing connection-test failure text without technical detail. */
 function describeConnectionError(error: unknown): string {
   if (error instanceof WebDavFatalError) {
@@ -4267,7 +4519,14 @@ function describeConnectionError(error: unknown): string {
     }
     return l10n.t("The server address or security settings are not valid.");
   }
-  return l10n.t("Could not reach the server. Check the address and network.");
+  if (error instanceof WebDavUnreachableError) {
+    return l10n.t("Could not reach the server. Check the address and network.");
+  }
+  if (error instanceof WebDavRateLimitedError) {
+    return l10n.t("The server is limiting requests. Try again shortly.");
+  }
+  // The server answered; the failure is on its side, not in the network path.
+  return l10n.t("The server returned an error. Try again later.");
 }
 
 /** User-facing rejection reason for a custom item / exclude entry. */

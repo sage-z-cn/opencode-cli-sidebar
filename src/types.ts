@@ -507,6 +507,35 @@ export type WebDavSyncState =
   /** Password missing on this device or rejected by the server. */
   | "needsAuth";
 
+/**
+ * Why the last pass ended in `error`.
+ *
+ * `unreachable` is a transport failure — no connection, DNS, TLS, timeout —
+ * and is the only case where "cannot reach the server" is a true statement.
+ * `failed` means the server answered and the pass still failed (5xx, a
+ * rejected operation, a rate limit), which must not be reported as an outage.
+ */
+export type WebDavSyncErrorKind = "unreachable" | "failed";
+
+/**
+ * The last failed pass, kept in the machine-shared status file.
+ *
+ * The panel's log pane is a per-window in-memory buffer, so a follower window
+ * (or the same window after a reload) has no record of the pass that produced
+ * an inherited error state. This record is the shared explanation: it survives
+ * reloads and reaches every window.
+ */
+export interface WebDavSyncLastError {
+  /** User-facing reason, host-localized at the time of the failure. */
+  message: string;
+  /** What started the failed pass. */
+  trigger: WebDavSyncTrigger;
+  /** Epoch ms of the failed pass. */
+  at: number;
+  /** Same cause classification as the state that accompanies it. */
+  kind: WebDavSyncErrorKind;
+}
+
 export type WebDavHistoryDirection = "up" | "down" | "both" | "none";
 
 /** What started a sync pass; recorded on each history entry. */
@@ -550,6 +579,8 @@ export interface WebDavHistoryEntry {
 /** Complete state of the sync feature, sent on requestWebdavSyncData. */
 export interface WebDavSyncSnapshot {
   state: WebDavSyncState;
+  /** Why `state` is "error"; absent in every other state. */
+  errorKind?: WebDavSyncErrorKind;
   pendingCount: number;
   conflictCount: number;
   lastSyncAt?: number;
@@ -571,6 +602,8 @@ export interface WebDavSyncSnapshot {
 /** Partial status push; unset fields keep their previous webview values. */
 export interface WebDavSyncStatusDelta {
   state?: WebDavSyncState;
+  /** Why `state` is "error"; sent alongside the error state. */
+  errorKind?: WebDavSyncErrorKind;
   pendingCount?: number;
   conflictCount?: number;
   lastSyncAt?: number;
