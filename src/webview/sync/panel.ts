@@ -263,8 +263,8 @@ export function applySnapshotToPanel(
 
 export function setTestResult(ok: boolean, latencyMs?: number, message?: string): void {
   const span = el("dav-test-result");
-  span.classList.toggle("ok", ok);
-  span.classList.toggle("fail", !ok);
+  span.classList.toggle("oc-status-line--ok", ok);
+  span.classList.toggle("oc-status-line--bad", !ok);
   span.textContent = ok
     ? (message ?? st.testOk(latencyMs ?? 0))
     : st.testFail(message ?? "");
@@ -273,8 +273,8 @@ export function setTestResult(ok: boolean, latencyMs?: number, message?: string)
 export function setSaveResult(ok: boolean, error?: string): void {
   if (ok) {
     const span = el("dav-test-result");
-    span.classList.add("ok");
-    span.classList.remove("fail");
+    span.classList.add("oc-status-line--ok");
+    span.classList.remove("oc-status-line--bad");
     span.textContent = st.saveOk;
     return;
   }
@@ -283,7 +283,7 @@ export function setSaveResult(ok: boolean, error?: string): void {
 
 export function setTesting(): void {
   const span = el("dav-test-result");
-  span.classList.remove("ok", "fail");
+  span.classList.remove("oc-status-line--ok", "oc-status-line--bad");
   span.textContent = st.testing;
 }
 

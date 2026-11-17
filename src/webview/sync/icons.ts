@@ -25,6 +25,10 @@ export const SYNC_ICONS = {
   spinner: icon(ICONS.loader, 12),
   /** Chevron for the collapsible trigger-source group. */
   chevron: icon(ICONS.chevronDown, 13, "dav-chev"),
+  /** Error banner lead glyph (top-of-panel error strip). */
+  bannerError: icon(ICONS.circleX, 14),
+  /** Warning banner lead glyph: configuration still needs attention. */
+  bannerWarn: icon(ICONS.cloudAlert, 14),
   /** Row remove ("x") for sync item / exclusion rows. */
   close: icon(ICONS.x, 12),
   /** Header close button. */

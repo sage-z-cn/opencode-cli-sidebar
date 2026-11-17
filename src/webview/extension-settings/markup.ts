@@ -31,14 +31,14 @@ export function renderExtensionSettingsModal(): string {
       <nav class="eset-nav" id="eset-nav" aria-label="${t("Settings groups")}"></nav>
       <div class="eset-body" id="eset-body">
         <div class="eset-loading" id="eset-loading" role="status" aria-live="polite">
-          <span class="eset-spinner" aria-hidden="true"></span>
+          <span class="oc-spinner" aria-hidden="true"></span>
           <span id="eset-loading-text">${t("Loading…")}</span>
         </div>
         <div class="eset-panes" id="eset-panes"></div>
       </div>
     </div>
     <div class="eset-footer">
-      <span class="eset-status" id="eset-status" role="status" aria-live="polite"></span>
+      <span class="oc-status-line" id="eset-status" role="status" aria-live="polite"></span>
       <button type="button" class="eset-btn eset-btn--secondary" id="eset-open-settings" title="${t("Open the VS Code settings page for this extension")}">${t("Open VS Code settings")}</button>
     </div>
   </div>

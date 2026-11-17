@@ -50,33 +50,14 @@ html {
   background-color: inherit;
 }
 
-/* Startup indicator: covers the empty terminal area while the shared
-   background service boots, so a restored window never looks idle.
+/* Startup indicator: one badge for both gate phases — the shared background
+   service booting and the pre-launch config sync. It shares the toast anchor
+   instead of covering the whole terminal, so the same shape serves an empty
+   terminal and one that is about to be filled. Same anchor, same badge shape,
+   same click-through contract as `.oc-toast`.
    pointer-events stays off so it can never swallow terminal input. */
 .startup-status {
   position: absolute;
-  inset: 0;
-  z-index: 10;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 16px;
-  text-align: center;
-  background: var(--terminal-background, #0a0a0a);
-  color: var(--vscode-descriptionForeground, #999);
-  font-family: var(--vscode-font-family);
-  font-size: 12px;
-  pointer-events: none;
-}
-
-/* The pre-launch sync shares the toast anchor instead of covering the whole
-   terminal: it appears while the terminal is about to be filled, so a
-   full-screen sheet would hide the screen the launch just produced. Same
-   anchor, same badge shape, same click-through contract as `.oc-toast`. */
-.startup-status[data-phase="preStartSync"] {
-  inset: auto;
   left: 50%;
   top: 70%;
   /* Centred on the 70% line in both axes, matching `.oc-toast`: a bare
@@ -85,8 +66,10 @@ html {
   transform: translate(-50%, -50%);
   /* One row, like the toast it replaces: the spinner leads the text and the
      skip action trails it, instead of four stacked lines. */
+  display: flex;
   flex-direction: row;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: center;
   gap: 6px;
   padding: 6px 12px;
@@ -95,6 +78,7 @@ html {
   border-radius: 3px;
   background: var(--vscode-editorWidget-background, #1f1f1f);
   color: var(--vscode-foreground, #cccccc);
+  font-family: var(--vscode-font-family);
   font-size: 11px;
   text-align: left;
   opacity: 0.95;
@@ -108,19 +92,13 @@ html {
 }
 
 .startup-status-spinner {
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   border: 2px solid var(--vscode-progressBar-background, #0e70c0);
   border-top-color: transparent;
   animation: startup-status-spin 900ms linear infinite;
-}
-
-/* The badge layout is compact, so its spinner is smaller than the full-screen
-   one. Declared after the base rule so it wins on specificity ties. */
-.startup-status[data-phase="preStartSync"] .startup-status-spinner {
-  width: 12px;
-  height: 12px;
+  flex: none;
 }
 
 .startup-status-text {
@@ -128,7 +106,7 @@ html {
   max-width: 28em;
 }
 
-/* Pre-launch sync detail line and its skip action. The overlay itself is
+/* Pre-launch sync detail line and its skip action. The badge is
    click-through, so the button re-enables pointer events for itself. */
 .startup-status-progress {
   font-size: 11px;
@@ -224,6 +202,140 @@ html {
   .startup-status-spinner {
     animation-duration: 2.4s;
   }
+}
+
+/* ── 提示位置约定 ──────────────────────────────────────────────
+   新增提示先选槽位，再谈样式；槽位之外不再另起浮层。
+   1. 终端 70% 居中（点击穿透）：全局瞬时提示，`.oc-toast` 与
+      `.startup-status`，同一锚点、同一徽标形状。
+   2. 终端顶部居中：持久流程状态，只有 `.ocu-card` 一个；顶部不再新增
+      第二个浮层。
+   3. 面板内：顶部横幅 `.oc-banner`、字段旁错误 `.oc-field-error`、
+      页脚或表单旁状态行 `.oc-status-line`。
+   面板只负责间距与占位（margin / flex），视觉一律来自共享类。 */
+
+/* ── 共享提示原语 ──────────────────────────────────────────────
+   四个面板（快捷键 / CLI 设置 / 配置同步 / 扩展设置）里的同位提示共用
+   下面这几套类。外壳几何集中在变量上：面板横幅与更新卡片用同一组值，
+   改一处即可同时调整边框、圆角、底色与内边距。 */
+:root {
+  --oc-shell-border: 1px solid var(--vscode-editorWidget-border, #454545);
+  --oc-shell-radius: 6px;
+  --oc-shell-pad: 6px 8px 6px 10px;
+  --oc-shell-bg: var(--vscode-editorWidget-background, #252526);
+}
+
+/* 面板横幅：顶部错误条与警告条共用一个外壳，tone 只改配色，不改几何。 */
+.oc-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: var(--oc-shell-pad);
+  border: var(--oc-shell-border);
+  border-radius: var(--oc-shell-radius);
+  background: var(--oc-shell-bg);
+  color: var(--vscode-foreground, #cccccc);
+  font-size: 12px;
+  line-height: 1.45;
+}
+/* 文案槽是唯一可收缩的子项：basis 12em 让长文案先在自己的盒子里换行，
+   后面的操作按钮与关闭按钮因此不会被挤出横幅。 */
+.oc-banner > span {
+  flex: 1 1 12em;
+  min-width: 0;
+}
+/* 前导图标位：尺寸固定，不参与收缩。 */
+.oc-banner > .oc-banner-ic {
+  flex: none;
+  display: flex;
+}
+.oc-banner-ic svg {
+  display: block;
+}
+/* 横幅内的操作按钮保持自然宽度，窄面板时整行让给文案。 */
+.oc-banner > button {
+  flex: none;
+}
+.oc-banner--error {
+  border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, #ef4444));
+  background: var(--vscode-inputValidation-errorBackground, rgba(239, 68, 68, 0.12));
+  color: var(--vscode-errorForeground, #f87171);
+}
+.oc-banner--warn {
+  border-color: var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground, #cca700));
+  background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+/* 关闭按钮：横幅与更新卡片共用的规格。无关闭按钮的横幅不写这个节点。 */
+.oc-banner-x {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  cursor: pointer;
+}
+/* 错误横幅沿用错误色；悬停规则在下方且特异性相同，会回到前景色。 */
+.oc-banner--error .oc-banner-x {
+  color: var(--vscode-errorForeground, #f87171);
+}
+.oc-banner-x:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.14));
+  color: var(--vscode-foreground, #cccccc);
+}
+.oc-banner-x:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+.oc-banner.hidden { display: none; }
+/* 横幅紧贴面板顶栏时补内缩与抬头间距；正文内的横幅由正文内边距负责。 */
+.km-modal > .oc-banner,
+.occs-modal > .oc-banner,
+.dav-modal > .oc-banner {
+  margin: 8px 12px 0;
+}
+
+/* 字段旁错误：输入框下方一行说明，显隐仍由各面板自己控制。 */
+.oc-field-error {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--vscode-errorForeground, #f87171);
+}
+.oc-field-error.hidden { display: none; }
+
+/* 状态行：页脚保存结果与表单旁测试结果共用，位置仍由各面板摆放。 */
+.oc-status-line {
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--vscode-descriptionForeground, #8a8a8a);
+}
+.oc-status-line--ok { color: var(--vscode-charts-green, #23a123); }
+.oc-status-line--bad { color: var(--vscode-errorForeground, #f87171); }
+
+/* 加载环：18px、0.8s；减少动态偏好下停转，只留静态圆环。 */
+.oc-spinner {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  border-top-color: var(--vscode-progressBar-background, var(--vscode-focusBorder, #007fd4));
+  animation: oc-spin 0.8s linear infinite;
+}
+@keyframes oc-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-spinner { animation: none; }
 }
 
 /* xterm 6.0.0 keeps a legacy `.xterm-viewport` shell (absolute, inset 0) that
@@ -530,7 +642,7 @@ html {
 }
 .km-icon-btn.is-spinning svg,
 .occs-icon-btn.is-spinning svg {
-  animation: occs-spin 0.8s linear infinite;
+  animation: oc-spin 0.8s linear infinite;
 }
 .km-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--vscode-foreground); }
 .km-sub-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; }
@@ -540,29 +652,6 @@ html {
   width: 28px; height: 28px; border-radius: 4px; cursor: pointer; font-size: 14px;
 }
 .km-icon-btn:hover {
-  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
-  color: var(--vscode-foreground);
-}
-/* L1 错误横幅（保存/加载失败），配色复用 .km-l2-msg.error */
-.km-error {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 14px;
-  font-size: 12px;
-  line-height: 1.4;
-  background: var(--vscode-inputValidation-errorBackground, rgba(239, 68, 68, 0.12));
-  border-bottom: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, #ef4444));
-  color: var(--vscode-errorForeground, #f87171);
-}
-.km-error.hidden { display: none; }
-.km-error > span { flex: 1; }
-.km-error-dismiss {
-  background: none; border: none; cursor: pointer;
-  color: var(--vscode-errorForeground, #f87171);
-  font-size: 16px; line-height: 1; padding: 0 4px; border-radius: 4px;
-}
-.km-error-dismiss:hover {
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
   color: var(--vscode-foreground);
 }
@@ -1063,14 +1152,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
   color: var(--vscode-foreground);
 }
-.occs-error {
-  display: flex; align-items: center; gap: 8px; padding: 6px 14px; font-size: 12px;
-  background: var(--vscode-inputValidation-errorBackground, rgba(239, 68, 68, 0.12));
-  border-bottom: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, #ef4444));
-  color: var(--vscode-errorForeground, #f87171);
-}
-.occs-error.hidden { display: none; }
-.occs-error > span { flex: 1; }
 .occs-main { flex: 1; min-height: 0; display: flex; }
 .occs-body { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; position: relative; }
 .occs-loading {
@@ -1088,17 +1169,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   background: var(--vscode-editor-background, transparent);
 }
 .occs-loading.hidden { display: none; }
-.occs-spinner {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 2px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
-  border-top-color: var(--vscode-progressBar-background, var(--vscode-focusBorder, #007fd4));
-  animation: occs-spin 0.8s linear infinite;
-}
-@keyframes occs-spin {
-  to { transform: rotate(360deg); }
-}
 .occs-list.is-loading { visibility: hidden; }
 .occs-side-nav {
   width: 148px; flex-shrink: 0; overflow-y: auto; padding: 8px 0;
@@ -1366,8 +1436,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   outline: 1px solid var(--vscode-focusBorder, #007fd4);
   border-color: var(--vscode-focusBorder, #007fd4);
 }
-.occs-plugin-json-error { font-size: 10.5px; color: var(--vscode-errorForeground, #f87171); }
-.occs-plugin-json-error.hidden { display: none; }
 .occs-plugin-json-hint {
   font-size: 10px; line-height: 1.5;
   color: var(--vscode-descriptionForeground, #8a8a8a);
@@ -1438,7 +1506,7 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   box-shadow: none;
 }
 .occs-overlay.is-preview .occs-header,
-.occs-overlay.is-preview .occs-error,
+.occs-overlay.is-preview #occs-error,
 .occs-overlay.is-preview .occs-side-nav,
 .occs-overlay.is-preview .occs-plugin-section,
 .occs-overlay.is-preview .occs-row-info {
@@ -1635,20 +1703,21 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   text-overflow: ellipsis;
 }
 
-/* 面板内卡片：进度 / 成功 / 错误 / 自动处理 / 瞬时提示。
-   层级须高于更新对话框遮罩（1200），否则从版本日志弹窗内检查更新后，
-   提示卡片会被遮罩压住；仍低于安装/重启确认弹窗（1300）。 */
+/* 终端顶部卡片：当前只用于「正在检查更新」。安装进度与结果在步骤弹窗内
+   实现，不再走这张卡片。层级须高于更新对话框遮罩（1200），否则从版本日志
+   弹窗内检查更新后，卡片会被遮罩压住；仍低于安装/重启确认弹窗（1300）。
+   外壳与 `.oc-banner` 同一组变量，只是多一层投影和入场动画。 */
 .ocu-card {
   position: absolute;
   top: 8px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 1250;
-  background: var(--vscode-editorWidget-background, #252526);
-  border: 1px solid var(--vscode-editorWidget-border, #454545);
-  border-radius: 6px;
+  background: var(--oc-shell-bg);
+  border: var(--oc-shell-border);
+  border-radius: var(--oc-shell-radius);
   box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.45));
-  padding: 11px 12px;
+  padding: var(--oc-shell-pad);
   width: fit-content;
   max-width: calc(100% - 16px);
   animation: ocu-card-in 0.16s ease;
@@ -1671,23 +1740,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   color: var(--vscode-foreground, #e8e8e8);
   font-weight: 500;
   word-break: break-word;
-}
-.ocu-card-x {
-  flex-shrink: 0;
-  background: none;
-  border: none;
-  color: var(--vscode-descriptionForeground, #9d9d9d);
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.ocu-card-x:hover {
-  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.14));
-  color: var(--vscode-foreground, #cccccc);
 }
 .ocu-card-body { margin-top: 4px; }
 .ocu-card-body:empty { margin-top: 0; display: none; }
@@ -2172,7 +2224,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 /* 焦点可见性 */
 .ocu-pop-row:focus-visible,
 .ocu-btn:focus-visible,
-.ocu-card-x:focus-visible,
 .ocu-copy:focus-visible,
 .ocu-dlg-x:focus-visible,
 .ocu-dlg-head-btn:focus-visible,
@@ -2594,25 +2645,8 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   width: 28px; height: 28px; border-radius: 4px; cursor: pointer; font-size: 14px;
 }
 .dav-icon-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.12)); color: var(--vscode-foreground, #d4d4d4); }
-.dav-error {
-  display: flex; align-items: center; gap: 8px; padding: 6px 14px; font-size: 12px; line-height: 1.4;
-  background: var(--vscode-inputValidation-errorBackground, rgba(239,68,68,0.12));
-  border-bottom: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, #ef4444));
-  color: var(--vscode-errorForeground, #f87171);
-}
-.dav-error.hidden { display: none; }
-/* 未配置提示条：warning 级横幅，仅常规分区顶部 */
-.dav-banner {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 6px 10px; margin-bottom: 14px; border-radius: 6px; font-size: 12px; line-height: 1.4;
-}
-.dav-banner > span { flex: 1; min-width: 0; }
-.dav-banner--warn {
-  background: var(--vscode-inputValidation-warningBackground, rgba(204,167,0,0.12));
-  border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-editorWarning-foreground, #cca700));
-  color: var(--vscode-editorWarning-foreground, #cca700);
-}
-.dav-banner.hidden { display: none; }
+/* 正文内横幅：正文已有 14px 内边距，这里只补与下方内容的间距。 */
+.dav-pane > .oc-banner { margin-bottom: 14px; }
 .dav-main { flex: 1; min-height: 0; display: flex; }
 .dav-nav {
   width: 128px; flex-shrink: 0; overflow-y: auto; padding: 8px 0;
@@ -2733,10 +2767,7 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .dav-ratelimit-unit { font-size: 11px; color: var(--vscode-descriptionForeground, #8a8a8a); }
 /* 操作按钮右对齐收尾；测试结果靠左显示反馈 */
 .dav-form-actions { display: flex; gap: 8px; align-items: center; margin-top: 16px; flex-wrap: wrap; justify-content: flex-end; }
-.dav-form-actions .dav-test-result { margin-right: auto; }
-.dav-test-result { font-size: 11px; }
-.dav-test-result.ok { color: var(--vscode-list-activeSelectionForeground, var(--vscode-focusBorder, #007fd4)); }
-.dav-test-result.fail { color: var(--vscode-errorForeground, #f87171); }
+.dav-form-actions .oc-status-line { margin-right: auto; }
 
 /* Items pane: two quiet groups (header + teaching hint + list + add row).
    The exclusions group is indented to read as subordinate — the same
@@ -2781,13 +2812,11 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 /* Touch has no hover: keep remove reachable. */
 @media (hover: none) { .dav-item-rm { opacity: 1; } }
 .dav-item-empty { padding: 4px 0 2px; font-size: 11px; color: var(--vscode-descriptionForeground, #8a8a8a); }
-/* Add composite: input + compact button; the error slot sits directly
+/* Add composite: input + compact button; the shared field error sits directly
    under the input it belongs to and mirrors it with an error border. */
 .dav-add { margin-top: 8px; }
 .dav-add-row { display: flex; gap: 6px; align-items: stretch; }
 .dav-add-row input { flex: 1; min-width: 0; }
-.dav-add-error { font-size: 11px; line-height: 1.5; color: var(--vscode-errorForeground, #f87171); margin-top: 4px; }
-.dav-add-error.hidden { display: none; }
 .dav-add-row input.is-error { border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground, #ef4444)); }
 
 /* Conflict pane */
@@ -3065,17 +3094,7 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 }
 .eset-loading.hidden { display: none; }
 .eset-loading.is-error { color: var(--vscode-errorForeground, #f87171); text-align: center; padding: 0 24px; }
-.eset-loading.is-error .eset-spinner { display: none; }
-.eset-spinner {
-  width: 18px; height: 18px; border-radius: 50%;
-  border: 2px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
-  border-top-color: var(--vscode-progressBar-background, var(--vscode-focusBorder, #007fd4));
-  animation: eset-spin 0.8s linear infinite;
-}
-@keyframes eset-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) {
-  .eset-spinner { animation: none; }
-}
+.eset-loading.is-error .oc-spinner { display: none; }
 .eset-panes.is-loading { visibility: hidden; }
 .eset-pane { display: none; }
 .eset-pane.is-on { display: block; }
@@ -3191,11 +3210,6 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
 .eset-check input[type="checkbox"] { margin: 0; accent-color: var(--vscode-focusBorder, #007fd4); }
 
 /* Inline write failure */
-.eset-row-error {
-  margin-top: 4px; font-size: 11px; line-height: 1.45;
-  color: var(--vscode-errorForeground, #f87171);
-}
-.eset-row-error.hidden { display: none; }
 .eset-row.is-invalid .eset-input,
 .eset-row.is-invalid .eset-select,
 .eset-row.is-invalid .eset-textarea {
@@ -3216,13 +3230,11 @@ body.vscode-high-contrast .oc-ic-d { display: block; }
   border-top: 1px solid var(--vscode-panel-border, #2e2e2e);
   background: var(--vscode-editorWidget-background, #202020);
 }
-.eset-status {
-  flex: 1; min-width: 0; font-size: 11px;
-  color: var(--vscode-descriptionForeground, #8a8a8a);
+/* 页脚状态行只提供占位与截断，字号与色调来自共享 `.oc-status-line`。 */
+.eset-footer .oc-status-line {
+  flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.eset-status.is-ok { color: var(--vscode-charts-green, #23a123); }
-.eset-status.is-error { color: var(--vscode-errorForeground, #f87171); }
 .eset-btn {
   display: inline-flex; align-items: center; gap: 5px;
   border: none; border-radius: 3px; padding: 3px 10px;

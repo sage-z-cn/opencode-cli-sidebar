@@ -29,12 +29,12 @@ export function renderOpenCodeCliSettingsModal(): string {
         <button type="button" class="occs-icon-btn" id="occs-close" aria-label="${t("Close")}">${icon(ICONS.x)}</button>
       </div>
     </div>
-    <div class="occs-error hidden" id="occs-error" role="alert"><span id="occs-error-text"></span><button type="button" class="occs-icon-btn" id="occs-error-dismiss" aria-label="${t("Close")}">${icon(ICONS.x)}</button></div>
+    <div class="oc-banner oc-banner--error hidden" id="occs-error" role="alert"><span class="oc-banner-ic">${icon(ICONS.circleX, 14)}</span><span id="occs-error-text"></span><button type="button" class="oc-banner-x" id="occs-error-dismiss" aria-label="${t("Close")}">${icon(ICONS.x, 12)}</button></div>
     <div class="occs-main">
       <nav class="occs-side-nav" id="occs-side-nav" aria-label="${t("Settings groups")}"></nav>
       <div class="occs-body">
         <div class="occs-loading" id="occs-loading" role="status" aria-live="polite">
-          <span class="occs-spinner" aria-hidden="true"></span>
+          <span class="oc-spinner" aria-hidden="true"></span>
           <span id="occs-loading-text">${t("Loading…")}</span>
         </div>
         <div class="occs-list" id="occs-list"></div>

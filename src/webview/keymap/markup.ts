@@ -21,7 +21,7 @@ export function renderKeymapModals(): string {
         <button type="button" class="km-icon-btn" id="km-close" aria-label="${t("Close")}">${icon(ICONS.x)}</button>
       </div>
     </div>
-    <div class="km-error hidden" id="km-error" role="alert"><span id="km-error-text"></span><button type="button" class="km-error-dismiss" id="km-error-dismiss" aria-label="${t("Close")}">${icon(ICONS.x, 12)}</button></div>
+    <div class="oc-banner oc-banner--error hidden" id="km-error" role="alert"><span class="oc-banner-ic">${icon(ICONS.circleX, 14)}</span><span id="km-error-text"></span><button type="button" class="oc-banner-x" id="km-error-dismiss" aria-label="${t("Close")}">${icon(ICONS.x, 12)}</button></div>
     <div class="km-main">
       <nav class="km-side-nav" id="km-side-nav" aria-label="${t("Shortcut categories")}"></nav>
       <div class="km-content">

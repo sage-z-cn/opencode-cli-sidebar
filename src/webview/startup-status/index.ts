@@ -4,7 +4,8 @@
  * The startup gate blocks before the terminal is spawned, so without this the
  * sidebar looks idle while another window starts the shared OpenCode background
  * service or the pre-launch config sync runs. The host pushes `startupPhase`;
- * this module only renders that state over the empty terminal area.
+ * this module only renders that state as one badge over the terminal area.
+ * Both gate phases share the badge, so the waiting surface never changes shape.
  *
  * Browser-only: no host APIs, no process access.
  */

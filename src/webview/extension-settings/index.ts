@@ -420,7 +420,7 @@ function rowHtml(def: SettingDef): string {
         <span data-eset-layer-text></span>
         <button type="button" class="eset-layer-action hidden" data-eset-layer-switch></button>
       </div>
-      <div class="eset-row-error hidden" role="alert"></div>
+      <div class="oc-field-error hidden" role="alert"></div>
     </div>
     <div class="eset-control">
       ${meta}
@@ -590,8 +590,8 @@ function setStatus(kind: "ok" | "error" | "idle", text: string): void {
     return;
   }
   node.textContent = text;
-  node.classList.toggle("is-ok", kind === "ok");
-  node.classList.toggle("is-error", kind === "error");
+  node.classList.toggle("oc-status-line--ok", kind === "ok");
+  node.classList.toggle("oc-status-line--bad", kind === "error");
   if (statusTimer) {
     clearTimeout(statusTimer);
     statusTimer = null;
@@ -601,7 +601,7 @@ function setStatus(kind: "ok" | "error" | "idle", text: string): void {
       statusTimer = null;
       if (node.textContent === text) {
         node.textContent = "";
-        node.classList.remove("is-ok");
+        node.classList.remove("oc-status-line--ok", "oc-status-line--bad");
       }
     }, STATUS_TTL_MS);
   }
@@ -612,7 +612,7 @@ function showRowError(def: SettingDef, message: string): void {
   if (!row) {
     return;
   }
-  const error = row.querySelector<HTMLElement>(".eset-row-error");
+  const error = row.querySelector<HTMLElement>(".oc-field-error");
   if (error) {
     error.textContent = message;
     error.classList.remove("hidden");
@@ -625,7 +625,7 @@ function clearRowError(def: SettingDef): void {
   if (!row) {
     return;
   }
-  const error = row.querySelector<HTMLElement>(".eset-row-error");
+  const error = row.querySelector<HTMLElement>(".oc-field-error");
   if (error) {
     error.textContent = "";
     error.classList.add("hidden");

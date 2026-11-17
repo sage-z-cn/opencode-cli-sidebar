@@ -743,8 +743,8 @@ function pluginOptionRowHtml(
 
 function pluginOptionsJsonHtml(editor: PluginOptionsEditor): string {
   const error = editor.error
-    ? `<div class="occs-plugin-json-error" id="occs-plugin-options-error">${escapeHtml(editor.error)}</div>`
-    : `<div class="occs-plugin-json-error hidden" id="occs-plugin-options-error"></div>`;
+    ? `<div class="oc-field-error" id="occs-plugin-options-error">${escapeHtml(editor.error)}</div>`
+    : `<div class="oc-field-error hidden" id="occs-plugin-options-error"></div>`;
   return `<div class="occs-plugin-json">
     <textarea class="occs-plugin-json-input" id="occs-plugin-options-json" data-oc-plugin-options-draft="1" rows="5" spellcheck="false" aria-label="${escapeHtml(t("pluginOptions", "Plugin options"))}">${escapeHtml(editor.draft)}</textarea>
     ${error}

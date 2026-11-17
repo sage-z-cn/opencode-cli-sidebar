@@ -452,7 +452,7 @@ function renderProgressLine(): void {
   );
 }
 
-// ── Update card (checking / progress entry) ──
+// ── Update card (checking entry) ──
 
 function hideCardFull(): void {
   if (!card) return;
@@ -463,14 +463,14 @@ function hideCardFull(): void {
   if (hadFocus && pill && !pill.disabled) pill.focus();
 }
 
-/** Card head for the checking/progress states; the icon is always the spinner. */
+/** Card head for the checking state: title plus the shared dismiss button. */
 function cardHead(title: string): string {
   return (
     '<div class="ocu-card-head">' +
     '<span class="ocu-card-title">' +
     escapeHtml(title) +
     "</span>" +
-    '<button type="button" class="ocu-card-x" data-ocu-act="x" aria-label="' +
+    '<button type="button" class="oc-banner-x" data-ocu-act="x" aria-label="' +
     escapeHtml(t("closeLabel", "Close")) +
     '">' +
     ICONS.x +

@@ -110,7 +110,7 @@ export function renderSyncShell(d: SyncShellStrings): string {
         <button type="button" class="dav-icon-btn" id="dav-modal-close" title="${d.closeTitle}" aria-label="${d.closeTitle}">${SYNC_ICONS.panelClose}</button>
       </div>
     </div>
-    <div class="dav-error hidden" id="dav-error" role="alert"><span id="dav-error-text"></span></div>
+    <div class="oc-banner oc-banner--error hidden" id="dav-error" role="alert"><span class="oc-banner-ic">${SYNC_ICONS.bannerError}</span><span id="dav-error-text"></span></div>
     <div class="dav-main">
       <nav class="dav-nav" id="dav-nav" aria-label="${d.panelTitle}">
         <button type="button" class="dav-nav-item is-on" data-pane="general">${d.navGeneral}</button>
@@ -122,11 +122,13 @@ export function renderSyncShell(d: SyncShellStrings): string {
       </nav>
       <div class="dav-body" id="dav-body">
         <div class="dav-pane is-on" data-pane="general" id="dav-pane-general">
-          <div class="dav-banner dav-banner--warn hidden" id="dav-unconfigured-banner" role="status">
+          <div class="oc-banner oc-banner--warn hidden" id="dav-unconfigured-banner" role="status">
+            <span class="oc-banner-ic">${SYNC_ICONS.bannerWarn}</span>
             <span>${d.unconfiguredBanner}</span>
             <button type="button" class="dav-btn dav-btn--secondary" id="dav-unconfigured-go">${d.unconfiguredGo} ›</button>
           </div>
-          <div class="dav-banner dav-banner--warn hidden" id="dav-auth-banner" role="status">
+          <div class="oc-banner oc-banner--warn hidden" id="dav-auth-banner" role="status">
+            <span class="oc-banner-ic">${SYNC_ICONS.bannerWarn}</span>
             <span id="dav-auth-banner-text"></span>
             <button type="button" class="dav-btn dav-btn--secondary" id="dav-auth-go"></button>
           </div>
@@ -218,7 +220,7 @@ export function renderSyncShell(d: SyncShellStrings): string {
           <label class="dav-check"><input type="checkbox" id="dav-f-http"><span>${d.fHttp}<span class="dav-hint">${d.fHttpHint}</span></span></label>
           <label class="dav-check"><input type="checkbox" id="dav-f-selfsigned"><span>${d.fSelfSigned}<span class="dav-hint">${d.fSelfSignedHint}</span></span></label>
           <div class="dav-form-actions">
-            <span class="dav-test-result" id="dav-test-result"></span>
+            <span class="oc-status-line" id="dav-test-result"></span>
             <button type="button" class="dav-btn dav-btn--secondary" id="dav-btn-test">${d.testBtn}</button>
             <button type="button" class="dav-btn" id="dav-btn-save" title="${d.saveBtnHint}">${d.saveBtn}</button>
           </div>
@@ -235,7 +237,7 @@ export function renderSyncShell(d: SyncShellStrings): string {
                 <input type="text" id="dav-item-add-input" placeholder="${d.addPlaceholder}" spellcheck="false" autocomplete="off">
                 <button type="button" class="dav-btn dav-btn--secondary" id="dav-item-add-btn">${d.addBtn}</button>
               </div>
-              <div class="dav-add-error hidden" id="dav-item-add-error" role="alert"></div>
+              <div class="oc-field-error hidden" id="dav-item-add-error" role="alert"></div>
             </div>
           </section>
           <section class="dav-item-group">
@@ -249,7 +251,7 @@ export function renderSyncShell(d: SyncShellStrings): string {
                 <input type="text" id="dav-exclude-add-input" placeholder="${d.excludePlaceholder}" spellcheck="false" autocomplete="off">
                 <button type="button" class="dav-btn dav-btn--secondary" id="dav-exclude-add-btn">${d.excludeAddBtn}</button>
               </div>
-              <div class="dav-add-error hidden" id="dav-exclude-add-error" role="alert"></div>
+              <div class="oc-field-error hidden" id="dav-exclude-add-error" role="alert"></div>
             </div>
           </section>
         </div>
