@@ -268,6 +268,78 @@ describe("SessionRuntime (native-only)", () => {
     expect(order).toEqual(["sync-start", "sync-end", "spawn"]);
   });
 
+  it("runs beforeSpawn on the first launch and on later launches", async () => {
+    instanceStore.upsert({
+      config: { id: "default" },
+      runtime: { terminalKey: "default" },
+      state: "disconnected",
+    });
+    const launchGate: LaunchGate = {
+      beforeOpenCodeStart: vi.fn(async () => {}),
+      beforeSpawn: vi.fn(async () => {}),
+    };
+    sessionRuntime = createSessionRuntime({ launchGate });
+
+    await sessionRuntime.startOpenCode();
+    expect(launchGate.beforeSpawn).toHaveBeenCalledTimes(1);
+
+    // A restart re-enters startDefaultSession; the backing service must be
+    // checked again even though the config sync is first-launch-only.
+    mockRequestStartOpenCode.mockImplementation(async () => {
+      await sessionRuntime.startOpenCode();
+    });
+    await sessionRuntime.switchToInstance("default", { forceRestart: true });
+    expect(launchGate.beforeSpawn).toHaveBeenCalledTimes(2);
+    expect(launchGate.beforeOpenCodeStart).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps spawning when beforeSpawn throws", async () => {
+    instanceStore.upsert({
+      config: { id: "default" },
+      runtime: { terminalKey: "default" },
+      state: "disconnected",
+    });
+    const launchGate: LaunchGate = {
+      beforeOpenCodeStart: vi.fn(async () => {}),
+      beforeSpawn: vi.fn(async () => {
+        throw new Error("gate exploded");
+      }),
+    };
+    sessionRuntime = createSessionRuntime({ launchGate });
+    const createTerminal = vi.spyOn(terminalManager, "createTerminal");
+
+    await sessionRuntime.startOpenCode();
+
+    expect(createTerminal).toHaveBeenCalledTimes(1);
+    expect(sessionRuntime.isStartedFlag()).toBe(true);
+  });
+
+  it("calls beforeOpenCodeStart, beforeSpawn, then createTerminal", async () => {
+    instanceStore.upsert({
+      config: { id: "default" },
+      runtime: { terminalKey: "default" },
+      state: "disconnected",
+    });
+    const order: string[] = [];
+    const launchGate: LaunchGate = {
+      beforeOpenCodeStart: async () => {
+        order.push("beforeOpenCodeStart");
+      },
+      beforeSpawn: async () => {
+        order.push("beforeSpawn");
+      },
+    };
+    sessionRuntime = createSessionRuntime({ launchGate });
+    vi.spyOn(terminalManager, "createTerminal").mockImplementation(() => {
+      order.push("createTerminal");
+      return {} as never;
+    });
+
+    await sessionRuntime.startOpenCode();
+
+    expect(order).toEqual(["beforeOpenCodeStart", "beforeSpawn", "createTerminal"]);
+  });
+
   it("getActiveSession returns session after creation", () => {
     instanceStore.upsert({
       config: { id: "default" },

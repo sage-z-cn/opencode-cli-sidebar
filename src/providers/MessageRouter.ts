@@ -98,6 +98,7 @@ export interface MessageRouterProviderBridge {
     scope: ExtensionSettingsScope,
   ): Promise<void>;
   skipPreStartSync?: () => boolean;
+  skipMagpieWait?: () => boolean;
 }
 
 export class MessageRouter {
@@ -449,6 +450,9 @@ export class MessageRouter {
         break;
       case "skipPreStartSync":
         await this.provider.skipPreStartSync?.();
+        return;
+      case "skipMagpieWait":
+        await this.provider.skipMagpieWait?.();
         return;
       default:
         break;

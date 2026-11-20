@@ -18,4 +18,12 @@ export interface LaunchGate {
    * continues.
    */
   beforeOpenCodeStart(outcome: StartupGateOutcome | "v1"): Promise<void>;
+  /**
+   * Runs before every spawn, including restarts and instance switches.
+   *
+   * Unlike `beforeOpenCodeStart`, this is not first-launch-only: a restarted
+   * TUI also needs its backing service on the same machine. Must never throw
+   * and never block longer than its own budget; the launch always continues.
+   */
+  beforeSpawn?(): Promise<void>;
 }

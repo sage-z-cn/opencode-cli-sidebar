@@ -6,6 +6,7 @@ import { postMessage } from "../shared/vscode-api";
 import { scheduleRefresh } from "../shared/utils";
 import { fitFullWidth } from "../terminal/fit";
 import { isInstallPromptVisible } from "../update";
+import { showMagpieWaitTimeout } from "../startup-status";
 import {
   applyExtensionSettingsData,
   handleExtensionSettingsSaveResult,
@@ -162,6 +163,10 @@ export function createMessageHandler(
 
         case "preStartSyncResult":
           callbacks.onPreStartSyncResult?.(message);
+          break;
+
+        case "magpieWaitTimeout":
+          showMagpieWaitTimeout(message.elapsedMs);
           break;
 
         case "platformInfo":

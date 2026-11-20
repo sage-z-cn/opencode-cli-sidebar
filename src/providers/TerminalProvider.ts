@@ -232,6 +232,12 @@ export class TerminalProvider
           .then(undefined, () => undefined);
         return true;
       },
+      skipMagpieWait: () => {
+        void vscode.commands
+          .executeCommand("opencode-cli-sidebar.skipMagpieWait")
+          .then(undefined, () => undefined);
+        return true;
+      },
     };
 
     this.messageRouter = new MessageRouter(

@@ -442,7 +442,7 @@ describe("TerminalProvider", () => {
     expect(message).toBeDefined();
     expect(message.settings.hasWorkspace).toBe(false);
     expect(message.settings.defaults.focusIndicatorMode).toBe("bottomBorder");
-    expect(Object.keys(message.settings.values)).toHaveLength(20);
+    expect(Object.keys(message.settings.values)).toHaveLength(25);
   });
 
   it("persists an extension setting and pushes a success receipt with a fresh snapshot", async () => {

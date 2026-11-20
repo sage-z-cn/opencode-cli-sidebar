@@ -33,6 +33,7 @@ import {
   type PreStartSyncOutcome,
 } from "../services/sync/PreStartSyncGate";
 import type { LaunchGate } from "../services/LaunchGate";
+import { MagpieReadinessGate } from "../services/MagpieReadinessGate";
 import { OpenCodeReadiness } from "../services/OpenCodeReadiness";
 import { StartupCoordinator } from "../services/StartupCoordinator";
 import { IdeContextServer } from "../services/ideContext/IdeContextServer";
@@ -92,10 +93,12 @@ export class ExtensionLifecycle {
   private openCodeReadiness: OpenCodeReadiness | undefined;
   private startupCoordinator: StartupCoordinator | undefined;
   private preStartSyncGate: PreStartSyncGate | undefined;
+  /** Parks each launch until the local magpie service answers. */
+  private magpieGate: MagpieReadinessGate | undefined;
   /** Status-bar entry shown while the pre-launch sync holds the start. */
   private preStartSyncStatusItem: vscode.StatusBarItem | undefined;
   /** Startup indicator state posted to the webview, plus its delayed timer. */
-  private startupPhase: "starting" | "idle" = "idle";
+  private startupPhase: "starting" | "waitingForMagpie" | "idle" = "idle";
   private startupPhaseVisible = false;
   private startupPhaseTimer: NodeJS.Timeout | undefined;
   private activated = false;
@@ -373,6 +376,18 @@ export class ExtensionLifecycle {
         onResult: (outcome) => this.showPreStartSyncResult(outcome),
       });
       context.subscriptions.push(this.preStartSyncGate);
+      const magpieGate = new MagpieReadinessGate({
+        logger,
+        onActiveChange: (active) => {
+          if (active) {
+            this.showStartupProgress("waitingForMagpie");
+          } else {
+            this.hideStartupProgress();
+          }
+        },
+      });
+      this.magpieGate = magpieGate;
+      context.subscriptions.push(magpieGate);
       const startupCoordinator = this.startupCoordinator;
       const preStartSyncGate = this.preStartSyncGate;
       const launchGate: LaunchGate = {
@@ -381,6 +396,16 @@ export class ExtensionLifecycle {
           await preStartSyncGate.beforeOpenCodeStart({
             v2ServiceReady: outcome === "ready",
           });
+        },
+        beforeSpawn: async () => {
+          const startedAt = Date.now();
+          const outcome = await magpieGate.waitForReady();
+          if (outcome === "timeout") {
+            this.tuiProvider?.postWebviewMessage({
+              type: "magpieWaitTimeout",
+              elapsedMs: Date.now() - startedAt,
+            });
+          }
         },
       };
 
@@ -537,6 +562,7 @@ export class ExtensionLifecycle {
         return self.configSyncService;
       },
       skipPreStartSync: () => this.preStartSyncGate?.skip() ?? false,
+      skipMagpieWait: () => this.magpieGate?.cancel() ?? false,
       getActiveTerminalId: () => this.getActiveTerminalId(),
       sendTerminalCwd: () => this.sendTerminalCwd(),
       sendPrompt: (prompt: string) =>
@@ -829,7 +855,7 @@ export class ExtensionLifecycle {
    * looks idle while another window warms the shared background service. The
    * delay keeps a fast start from flashing the indicator.
    */
-  private showStartupProgress(phase: "starting"): void {
+  private showStartupProgress(phase: "starting" | "waitingForMagpie"): void {
     this.startupPhase = phase;
     if (this.startupPhaseVisible) {
       this.tuiProvider?.postWebviewMessage({ type: "startupPhase", phase });
@@ -989,6 +1015,7 @@ export class ExtensionLifecycle {
     this.hideStartupProgress();
 
     this.preStartSyncGate = undefined;
+    this.magpieGate = undefined;
     this.preStartSyncStatusItem?.dispose();
     this.preStartSyncStatusItem = undefined;
 

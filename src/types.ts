@@ -168,6 +168,8 @@ export type WebviewMessage =
   | { type: "openOpenCodeConfigDir" }
   /** Abort the pre-start config sync from the sidebar overlay or status bar. */
   | { type: "skipPreStartSync" }
+  /** Abort the wait for magpie and launch OpenCode immediately. */
+  | { type: "skipMagpieWait" }
   /* ===================== Extension settings dialog ===================== */
   /** Dialog open or scope switch: request every setting value and layer. */
   | { type: "requestExtensionSettingsData" }
@@ -292,6 +294,11 @@ export type HostMessage =
    * would cover the terminal OpenCode is starting in.
    */
   | { type: "preStartSyncResult"; result: PreStartSyncResult }
+  /**
+   * The magpie wait hit its budget and the launch continued anyway. Carries the
+   * elapsed time so the toast can name the configured timeout.
+   */
+  | { type: "magpieWaitTimeout"; elapsedMs: number }
   | {
       type: "platformInfo";
       platform: string;
@@ -396,7 +403,12 @@ export type HostMessage =
 /* ===================== WebDAV config sync payload types ===================== */
 
 /** Phases the in-sidebar startup indicator can render. */
-export type StartupPhase = "starting" | "preStartSync" | "idle";
+export type StartupPhase =
+  | "starting"
+  | "preStartSync"
+  /** The launch is parked until the local magpie service answers. */
+  | "waitingForMagpie"
+  | "idle";
 
 /**
  * How the pre-launch config sync ended, as far as the user can tell.

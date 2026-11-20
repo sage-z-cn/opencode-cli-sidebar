@@ -85,6 +85,24 @@ export const EXTENSION_SETTINGS_CATALOG: Readonly<
   httpTimeout: { type: "number", default: 5000, min: 1000, max: 30000 },
   "update.autoCheck": { type: "boolean", default: true },
   "update.checkIntervalHours": { type: "number", default: 24, min: 1 },
+  "magpie.waitForStartup": { type: "boolean", default: false },
+  "magpie.baseUrl": {
+    type: "string",
+    default: "http://127.0.0.1:3425/v1",
+  },
+  "magpie.probePath": { type: "string", default: "/models" },
+  "magpie.waitTimeoutSeconds": {
+    type: "number",
+    default: 180,
+    min: 5,
+    max: 1800,
+  },
+  "magpie.pollIntervalMs": {
+    type: "number",
+    default: 1000,
+    min: 200,
+    max: 5000,
+  },
 };
 
 function invalidValueError(): Error {

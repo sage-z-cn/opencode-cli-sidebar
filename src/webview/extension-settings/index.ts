@@ -255,6 +255,47 @@ const GROUPS: GroupDef[] = [
     ],
   },
   {
+    id: "magpie",
+    label: "Magpie integration",
+    intro: "Wait for the local magpie model gateway before starting OpenCode. Off by default.",
+    settings: [
+      {
+        key: "magpie.waitForStartup",
+        kind: "boolean",
+        label: "Wait for magpie before starting OpenCode",
+        desc: "Hold the launch until the local magpie service answers. Off by default; takes effect the next time a session starts.",
+      },
+      {
+        key: "magpie.baseUrl",
+        kind: "string",
+        label: "magpie address",
+        desc: "Base URL of the magpie service. Only used when the wait above is on.",
+      },
+      {
+        key: "magpie.probePath",
+        kind: "string",
+        label: "Health check path",
+        desc: "Path appended to the address for the readiness probe. Only used when the wait above is on.",
+      },
+      {
+        key: "magpie.waitTimeoutSeconds",
+        kind: "number",
+        label: "Wait limit",
+        desc: "Longest time the launch waits for magpie, in seconds. Only used when the wait above is on.",
+        min: 5,
+        max: 1800,
+      },
+      {
+        key: "magpie.pollIntervalMs",
+        kind: "number",
+        label: "Probe interval",
+        desc: "Wait time between readiness probes, in milliseconds. Only used when the wait above is on.",
+        min: 200,
+        max: 5000,
+      },
+    ],
+  },
+  {
     id: "sync",
     label: "Config sync",
     sync: true,

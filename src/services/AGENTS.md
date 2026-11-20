@@ -38,6 +38,7 @@
 - `OpenCodeReadiness` reports the machine-wide background-service state (`down` / `starting` / `ready` / `failed`) by combining the registration file with `GET /api/info`; every window shares one daemon, so this state is global, not per-session.
 - `StartupCoordinator` serializes the first start across windows through a lease file under `globalStorage/startup`. The lease owner starts the service through its own TUI; the others wait for readiness instead of spawning a contender. Call it only for v2 launches that do not pass `--standalone` / `--server`.
 - The gate must never block a launch indefinitely: every wait is bounded and falls through to a direct start. Do not add an unbounded loop to `acquire()`; the lease delete can fail on Windows while another handle is open.
+- `MagpieReadinessGate` (`src/services/MagpieReadinessGate.ts`) parks a launch until the local magpie service answers, when `magpie.waitForStartup` is on. It probes `magpie.baseUrl` + `magpie.probePath`; any HTTP response counts as up (authorization failures included), because it only needs proof that the process is listening. The wait is bounded by `magpie.waitTimeoutSeconds` (default 180s), logs a warning and pushes `magpieWaitTimeout` to the sidebar on timeout, then lets the launch continue. `LaunchGate.beforeSpawn` runs it on every spawn, unlike the first-launch-only config sync; `cancel()` backs the sidebar Skip button and the `skipMagpieWait` command.
 
 ## Config Sync
 

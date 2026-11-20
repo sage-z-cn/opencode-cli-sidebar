@@ -13,6 +13,7 @@ Unofficial third-party extension, not affiliated with the OpenCode team.
 ## Features
 
 - **Auto-launch OpenCode**: Automatically start OpenCode when the sidebar is activated
+- **magpie Startup Gate**: Optionally wait for the local magpie model gateway before launching OpenCode, with a bounded timeout and a skip action
 - **Full TUI Support**: Complete terminal emulation with xterm.js and WebGL rendering
 - **Single-Terminal**: Focused single-terminal experience with session/instance switching
 - **Pill Toolbar**: Static OpenCode badge in the sidebar toolbar
@@ -227,6 +228,18 @@ Available settings in VS Code settings (`Cmd+,` / `Ctrl+,`):
 | `opencode-cli-sidebar.logLevel`                | string | `"info"`                | Log level: `debug`, `info`, `warn`, `error`      |
 | `opencode-cli-sidebar.maxDiagnosticLength`     | number | `500`                   | Maximum length of diagnostic messages (100-2000) |
 | `opencode-cli-sidebar.codeActionSeverities`    | array  | `["error", "warning"]`  | Diagnostic severities that trigger code actions  |
+
+### Magpie Integration
+
+| Setting                                       | Type   | Default                 | Description                                      |
+| --------------------------------------------- | ------ | ----------------------- | ------------------------------------------------ |
+| `opencode-cli-sidebar.magpie.waitForStartup`   | boolean | `false`                | Wait for the local magpie service before starting OpenCode |
+| `opencode-cli-sidebar.magpie.baseUrl`          | string | `"http://127.0.0.1:3425/v1"` | magpie service base URL                     |
+| `opencode-cli-sidebar.magpie.probePath`        | string | `"/models"`             | Readiness probe path appended to the base URL    |
+| `opencode-cli-sidebar.magpie.waitTimeoutSeconds` | number | `180`                 | Longest wait for magpie in seconds (5-1800)      |
+| `opencode-cli-sidebar.magpie.pollIntervalMs`   | number | `1000`                  | Delay between readiness probes in ms (200-5000)  |
+
+These settings are grouped under **Magpie integration** in the in-sidebar settings dialog. magpie is a local OpenAI-compatible model gateway. With `magpie.waitForStartup` on, a launch parks until the configured endpoint answers or `magpie.waitTimeoutSeconds` elapses. Any HTTP response counts as reachable, including an authorization error, because it proves the process is listening. The sidebar overlay shows the wait and offers **Skip** (also available as the `opencode-cli-sidebar.skipMagpieWait` command) to start OpenCode immediately. A timeout is logged and shown as a warning, and the launch always continues. The setting is off by default.
 
 ### Example Configuration
 

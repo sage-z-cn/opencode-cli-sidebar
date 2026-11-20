@@ -159,9 +159,22 @@ describe("registerTerminalCommands", () => {
         "opencode-cli-sidebar.paste",
         "opencode-cli-sidebar.focus",
         "opencode-cli-sidebar.checkOpenCodeUpdates",
+        "opencode-cli-sidebar.skipMagpieWait",
       ]),
     );
-    expect(commands.size).toBe(17);
+    expect(commands.size).toBe(18);
+  });
+
+  it("forwards the magpie skip to the injected gate and returns its result", () => {
+    const skipMagpieWait = vi.fn(() => true);
+    const commands = registerAndGetCommands(
+      createDependencies({ skipMagpieWait }),
+    );
+
+    const result = getCommand(commands, "opencode-cli-sidebar.skipMagpieWait")();
+
+    expect(skipMagpieWait).toHaveBeenCalledTimes(1);
+    expect(result).toBe(true);
   });
 
   it("registers legacy ai-sidebar-terminal aliases for all old command IDs", () => {

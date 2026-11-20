@@ -93,6 +93,8 @@ export interface TerminalCommandDependencies {
    * fall back to the terminal text path.
    */
   sendFileMentions?: (payloads: EditorMentionPayload[]) => boolean;
+  /** Aborts the wait for the local magpie service; true when one was running. */
+  skipMagpieWait?: () => boolean;
 }
 
 function focusSidebarIfConfigured(
@@ -595,6 +597,11 @@ export function registerTerminalCommands(
     },
   );
 
+  const skipMagpieWaitCommand = vscode.commands.registerCommand(
+    "opencode-cli-sidebar.skipMagpieWait",
+    () => deps.skipMagpieWait?.() ?? false,
+  );
+
   const legacyAliasCommands = Object.entries(LEGACY_COMMAND_ALIASES).map(
     ([legacyId, currentId]) =>
       vscode.commands.registerCommand(legacyId, (...args: unknown[]) =>
@@ -612,6 +619,7 @@ export function registerTerminalCommands(
     pasteCommand,
     focusCommand,
     checkOpenCodeUpdatesCommand,
+    skipMagpieWaitCommand,
     ...legacyAliasCommands,
   ];
 }

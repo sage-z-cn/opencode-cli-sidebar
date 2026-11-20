@@ -450,6 +450,17 @@ export class SessionRuntime {
           // sync must not block the launch.
           await this.launchGate.beforeOpenCodeStart(outcome);
         }
+        if (this.launchGate.beforeSpawn) {
+          try {
+            await this.launchGate.beforeSpawn();
+          } catch (error) {
+            this.logger.warn(
+              `[TerminalProvider] Launch gate beforeSpawn failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
       }
 
       this.terminalManager.createTerminal(

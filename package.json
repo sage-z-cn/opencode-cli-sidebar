@@ -336,6 +336,37 @@
           "minimum": 1,
           "description": "%configuration.opencode-cli-sidebar.update.checkIntervalHours.description%"
         },
+        "opencode-cli-sidebar.magpie.waitForStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.opencode-cli-sidebar.magpie.waitForStartup.description%"
+        },
+        "opencode-cli-sidebar.magpie.baseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:3425/v1",
+          "description": "%configuration.opencode-cli-sidebar.magpie.baseUrl.description%"
+        },
+        "opencode-cli-sidebar.magpie.probePath": {
+          "type": "string",
+          "default": "/models",
+          "description": "%configuration.opencode-cli-sidebar.magpie.probePath.description%"
+        },
+        "opencode-cli-sidebar.magpie.waitTimeoutSeconds": {
+          "type": "number",
+          "default": 180,
+          "minimum": 5,
+          "maximum": 1800,
+          "step": 1,
+          "description": "%configuration.opencode-cli-sidebar.magpie.waitTimeoutSeconds.description%"
+        },
+        "opencode-cli-sidebar.magpie.pollIntervalMs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 200,
+          "maximum": 5000,
+          "step": 100,
+          "description": "%configuration.opencode-cli-sidebar.magpie.pollIntervalMs.description%"
+        },
         "opencode-cli-sidebar.sync.enabled": {
           "type": "boolean",
           "default": false,

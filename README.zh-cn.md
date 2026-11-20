@@ -13,6 +13,7 @@
 ## 功能特性
 
 - **自动启动 OpenCode**: 侧边栏激活时自动启动 OpenCode
+- **magpie 启动等待**: 可选地在启动 OpenCode 前等待本机 magpie 模型网关就绪，带超时上限与跳过操作
 - **完整 TUI 支持**: xterm.js + WebGL 渲染的终端模拟
 - **单终端模式**: 专注的单终端体验，支持会话/实例切换
 - **Pill 工具栏**: 侧边栏工具栏中的静态 OpenCode 标识
@@ -218,6 +219,18 @@
 | `opencode-cli-sidebar.logLevel`                  | string | `"info"`               | 日志级别：`debug`、`info`、`warn`、`error` |
 | `opencode-cli-sidebar.maxDiagnosticLength`       | number | `500`                  | 诊断消息最大长度（100-2000）              |
 | `opencode-cli-sidebar.codeActionSeverities`      | array  | `["error", "warning"]` | 触发代码操作的诊断严重级别                |
+
+### Magpie 联动
+
+| 设置                                            | 类型   | 默认值                 | 描述                                     |
+| ----------------------------------------------- | ------ | ---------------------- | ---------------------------------------- |
+| `opencode-cli-sidebar.magpie.waitForStartup`     | boolean | `false`               | 启动 OpenCode 前等待本机 magpie 服务就绪  |
+| `opencode-cli-sidebar.magpie.baseUrl`            | string | `"http://127.0.0.1:3425/v1"` | magpie 服务的基础地址              |
+| `opencode-cli-sidebar.magpie.probePath`          | string | `"/models"`            | 追加在基础地址后的探活路径                |
+| `opencode-cli-sidebar.magpie.waitTimeoutSeconds` | number | `180`                  | 等待 magpie 的最长秒数（5-1800）          |
+| `opencode-cli-sidebar.magpie.pollIntervalMs`     | number | `1000`                 | 两次探活之间的间隔（毫秒，200-5000）      |
+
+以上设置对应侧边栏设置弹窗中的「Magpie 联动」分组。magpie 是本机的 OpenAI 兼容模型网关。开启 `magpie.waitForStartup` 后，启动会等待配置的端点响应或 `magpie.waitTimeoutSeconds` 到期。任意 HTTP 响应都视为服务可达，包括鉴权失败，因为这说明进程已在监听。侧边栏覆盖层会显示等待状态并提供「跳过」（也可通过 `opencode-cli-sidebar.skipMagpieWait` 命令触发），立即启动 OpenCode。超时会写入日志并以警告提示，启动始终会继续。该设置默认关闭。
 
 ### 示例配置
 

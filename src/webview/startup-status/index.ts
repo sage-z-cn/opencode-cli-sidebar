@@ -25,13 +25,18 @@ const L10N_FALLBACK = {
   preStartText: "Syncing OpenCode configuration...",
   preStartScanning: "Scanning configuration ({0}/{1})",
   preStartFile: "Syncing {0} ({1}/{2})",
+  magpieAria: "Waiting for magpie",
+  magpieText: "Waiting for magpie to start...",
   skip: "Skip",
   skipTitle: "Click to skip this sync and start OpenCode",
+  magpieSkipTitle: "Click to skip this wait and start OpenCode",
   skipping: "Skipping...",
   resultSynced: "Config synced",
   resultCooldown: "Config already current",
   resultTimeout: "Sync timed out",
   resultFailed: "Sync failed",
+  magpieTimeout:
+    "magpie was not ready within {0} seconds; OpenCode starts without it",
 } as const;
 
 /** How long the verdict stays; long enough to read, short enough not to
@@ -103,7 +108,7 @@ function renderSkip(visible: boolean): void {
   button.textContent = message(skipRequested ? "skipping" : "skip");
 }
 
-/** Skip action: tell the host to abort the running pre-launch sync. */
+/** Skip action: tell the host to abort the running gate phase. */
 function onSkipClick(): void {
   const button = skipElement;
   if (!button || button.disabled) {
@@ -115,6 +120,14 @@ function onSkipClick(): void {
   skipRequested = true;
   button.disabled = true;
   button.textContent = message("skipping");
+  if (currentPhase === "waitingForMagpie") {
+    if (textElement) {
+      textElement.textContent = message("skipping");
+    }
+    renderProgress("");
+    postMessage({ type: "skipMagpieWait" });
+    return;
+  }
   renderSyncText(currentProgress);
   postMessage({ type: "skipPreStartSync" });
 }
@@ -179,6 +192,11 @@ export function applyStartupPhase(
   phase: StartupPhase,
   progress?: PreStartSyncProgress,
 ): void {
+  // A pending skip belongs to the phase that showed it. The next gate phase
+  // must offer its own action instead of inheriting a disabled button.
+  if (phase !== currentPhase) {
+    skipRequested = false;
+  }
   currentPhase = phase;
   currentProgress = progress;
   const element = root;
@@ -197,22 +215,29 @@ export function applyStartupPhase(
   }
 
   const syncPhase = phase === "preStartSync";
+  const magpiePhase = phase === "waitingForMagpie";
   element.classList.remove("hidden");
   element.dataset.phase = phase;
   element.setAttribute(
     "aria-label",
-    message(syncPhase ? "preStartAria" : "aria"),
+    message(magpiePhase ? "magpieAria" : syncPhase ? "preStartAria" : "aria"),
   );
   if (syncPhase) {
     renderSyncText(progress);
+  } else if (magpiePhase) {
+    if (textElement) {
+      textElement.textContent = message("magpieText");
+    }
+    renderProgress("");
   } else if (textElement) {
     textElement.textContent = message("starting");
     renderProgress("");
   }
-  renderSkip(syncPhase);
-  if (syncPhase && skipElement) {
-    skipElement.title = message("skipTitle");
-    skipElement.setAttribute("aria-label", message("skipTitle"));
+  renderSkip(syncPhase || magpiePhase);
+  if ((syncPhase || magpiePhase) && skipElement) {
+    const skipTitle = message(magpiePhase ? "magpieSkipTitle" : "skipTitle");
+    skipElement.title = skipTitle;
+    skipElement.setAttribute("aria-label", skipTitle);
   }
 }
 
@@ -240,6 +265,18 @@ export function showPreStartSyncResult(result: PreStartSyncResult): void {
   showToast({
     text: message(resultKey(result)),
     tone: result === "failed" ? "error" : result === "timeout" ? "warn" : "info",
+    ttlMs: PRE_START_RESULT_TTL_MS,
+  });
+}
+
+/**
+ * Settled verdict for a timed-out magpie wait. The launch continues without
+ * the service, so the toast warns instead of blocking the terminal.
+ */
+export function showMagpieWaitTimeout(elapsedMs: number): void {
+  showToast({
+    text: message("magpieTimeout", Math.round(elapsedMs / 1000)),
+    tone: "warn",
     ttlMs: PRE_START_RESULT_TTL_MS,
   });
 }
