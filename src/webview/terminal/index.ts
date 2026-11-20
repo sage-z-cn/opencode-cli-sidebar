@@ -24,6 +24,32 @@ const isWindowsPlatform = (): boolean =>
   typeof navigator !== "undefined" &&
   /Windows|Win32|Win64/i.test(navigator.userAgent ?? "");
 
+/**
+ * Gate for the WebGL renderer: the addon assigns canvas font strings in the
+ * shape `${style} ${weight} ${size}px ${family}`, which for non-italic text
+ * starts with a leading space (` normal 14px ...`). Chromium builds with a
+ * broken canvas font-shorthand parser reject exactly that shape and silently
+ * keep the previous font, corrupting every glyph and cell metric the renderer
+ * measures. Probe with the user's real font settings in the identical shape
+ * and compare against a control assignment; when the probe is rejected, skip
+ * the WebGL addon so xterm stays on its DOM renderer, which routes fonts
+ * through CSS and is unaffected.
+ */
+function canvasFontParserBroken(fontFamily: string, fontSize: number): boolean {
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (!ctx) {
+    return false;
+  }
+  // Control first: no leading space, parses on every engine. Italic also
+  // makes collisions impossible — the non-italic probe can never serialize
+  // back to an italic string when it is accepted, so equality means the
+  // assignment was rejected and the old value was kept.
+  ctx.font = "italic 12px serif";
+  const control = ctx.font;
+  ctx.font = ` normal ${fontSize}px ${fontFamily}`;
+  return ctx.font === control;
+}
+
 export interface WheelHandlerOptions {
   isWindows: () => boolean;
   getMouseTrackingMode: () => string;
@@ -97,11 +123,17 @@ export function initTerminal(
   terminal.focus();
 
   try {
-    const webglAddon = new WebglAddon();
-    webglAddon.onContextLoss(() => {
-      webglAddon.dispose();
-    });
-    terminal.loadAddon(webglAddon);
+    if (canvasFontParserBroken(config.fontFamily, config.fontSize)) {
+      console.warn(
+        "WebGL renderer skipped: this browser build rejects canvas font strings with a leading space; falling back to the DOM renderer.",
+      );
+    } else {
+      const webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => {
+        webglAddon.dispose();
+      });
+      terminal.loadAddon(webglAddon);
+    }
   } catch (error) {
     console.warn(
       "WebGL renderer not available, falling back to canvas:",
