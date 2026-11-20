@@ -5,6 +5,10 @@ All notable changes to the "OpenCode CLI Sidebar" extension will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+#### 6.0.6
+**New Features**
+- **Magpie**: Add a startup readiness check that waits until everything is ready before launching OpenCode, preventing failed or premature startups.
+
 #### 6.0.5
 **Bug Fixes**
 - **Terminal**: Fall back to a compatible renderer when the canvas font parser is unavailable, so the terminal still renders correctly instead of failing.
